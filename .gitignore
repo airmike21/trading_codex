@@ -17,5 +17,5 @@ build/
 dist/
 *.egg-info/
 
-# Local data (we'll create this soon)
-data/
+# Local data cache
+/data/
