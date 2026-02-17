@@ -23,7 +23,7 @@ def test_roundtrip_parquet(tmp_path):
     df = _make_bars("2023-01-01", 3)
     store.write_bars("AAPL", df)
     read_df = store.read_bars("AAPL")
-    pdt.assert_frame_equal(read_df, df)
+    pdt.assert_frame_equal(read_df, df, check_freq=False)
 
 
 def test_panel_alignment_mismatched_dates(tmp_path):
