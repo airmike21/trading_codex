@@ -109,6 +109,23 @@ def parse_args() -> argparse.Namespace:
         help="Rebalance cadence for dual momentum / sma200: monthly (M) or weekly (W).",
     )
     parser.add_argument(
+        "--regime-gate",
+        choices=["none", "sma200"],
+        default="none",
+        help="Optional regime gate for dual momentum (default: none).",
+    )
+    parser.add_argument(
+        "--gate-symbol",
+        default="SPY",
+        help="Gate symbol used by regime-gate=sma200 (default: SPY).",
+    )
+    parser.add_argument(
+        "--gate-sma-window",
+        type=int,
+        default=200,
+        help="SMA window for regime-gate=sma200 (default: 200).",
+    )
+    parser.add_argument(
         "--vol-target",
         type=float,
         default=None,
@@ -803,6 +820,10 @@ def maybe_print_latest_dual(
     weights: pd.DataFrame,
     rebalance: str,
     print_latest: bool,
+    regime_gate: str = "none",
+    gate_symbol: str = "SPY",
+    gate_sma_window: int = 200,
+    defensive_symbol: str | None = None,
     latest_realized_vol: float | None = None,
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
@@ -847,6 +868,15 @@ def maybe_print_latest_dual(
         print("Last Action Date:", last_action_date.date().isoformat())
     print("Last Action Type:", last_action_type)
     print("Next Rebalance:", _next_rebalance_hint(last_date, rebalance))
+    if regime_gate == "sma200":
+        gate_close = close_panel[gate_symbol].astype(float)
+        gate_risk_on = _sma200_risk_on_series(gate_close, gate_sma_window)
+        gate_on_latest = bool(gate_risk_on.iloc[-1])
+        print("Gate State:", "RISK-ON" if gate_on_latest else "RISK-OFF")
+        if not gate_on_latest:
+            forced_symbol = defensive_symbol if defensive_symbol else "CASH"
+            print("GATE OVERRIDE:", "TRUE")
+            print("Gate Forced Holding:", forced_symbol)
     if latest_leverage is not None:
         latest_realized_txt = (
             f"{latest_realized_vol:.4f}" if latest_realized_vol is not None and pd.notna(latest_realized_vol) else "N/A"
@@ -1025,18 +1055,25 @@ def main() -> None:
         plot_label = args.symbol
     elif args.strategy == "dual_mom":
         defensive_symbol = _normalize_defensive_symbol(args.defensive)
-        symbols_to_load = args.symbols + ([defensive_symbol] if defensive_symbol else [])
+        gate_symbol = args.gate_symbol.strip()
+        gate_symbols_to_load = [gate_symbol] if args.regime_gate == "sma200" and gate_symbol else []
+        symbols_to_load = args.symbols + ([defensive_symbol] if defensive_symbol else []) + gate_symbols_to_load
+        symbols_to_load = list(dict.fromkeys(symbols_to_load))
         bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
         strategy = DualMomentumStrategy(
             risk_universe=args.symbols,
             defensive=defensive_symbol,
             lookback=args.mom_lookback,
             rebalance=args.rebalance,
+            regime_gate=args.regime_gate,
+            gate_symbol=gate_symbol,
+            gate_sma_window=args.gate_sma_window,
         )
         plot_label = "dual_momentum"
     else:
         defensive_symbol = _normalize_defensive_symbol(args.defensive)
         symbols_to_load = [args.risk_symbol] + ([defensive_symbol] if defensive_symbol else [])
+        symbols_to_load = list(dict.fromkeys(symbols_to_load))
         bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
         strategy = Sma200RegimeStrategy(
             risk_symbol=args.risk_symbol,
@@ -1132,6 +1169,10 @@ def main() -> None:
             result.weights,  # type: ignore[arg-type]
             args.rebalance,
             args.print_latest,
+            regime_gate=args.regime_gate,
+            gate_symbol=args.gate_symbol.strip(),
+            gate_sma_window=args.gate_sma_window,
+            defensive_symbol=defensive_symbol,
             latest_realized_vol=latest_realized_vol,
             latest_leverage=latest_leverage,
             leverage_last_update_date=leverage_last_update_date,
