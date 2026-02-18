@@ -19,3 +19,6 @@ dist/
 
 # Local data cache
 /data/
+
+# Backtest plots
+outputs/

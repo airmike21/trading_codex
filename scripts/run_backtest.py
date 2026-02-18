@@ -37,6 +37,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip plotting.",
     )
+    parser.add_argument(
+        "--lookback",
+        type=int,
+        default=20,
+        help="Trend lookback window in trading days (default: 20).",
+    )
+    parser.add_argument(
+        "--long-only",
+        action="store_true",
+        help="Disable short exposure (negative signals become flat).",
+    )
+    parser.add_argument(
+        "--slippage-bps",
+        type=float,
+        default=1.0,
+        help="Slippage in basis points per unit turnover (default: 1.0).",
+    )
+    parser.add_argument(
+        "--commission-bps",
+        type=float,
+        default=0.5,
+        help="Commission in basis points per unit turnover (default: 0.5).",
+    )
     return parser.parse_args()
 
 
@@ -85,8 +108,13 @@ def main() -> None:
             f"No bars available for symbol={args.symbol!r} in the requested date range."
         )
 
-    strat = TrendTSMOM(lookback=20)
-    result = run_backtest(bars, strat, slippage_bps=1.0, commission_bps=0.5)
+    strat = TrendTSMOM(lookback=args.lookback, allow_short=not args.long_only)
+    result = run_backtest(
+        bars,
+        strat,
+        slippage_bps=args.slippage_bps,
+        commission_bps=args.commission_bps,
+    )
 
     print("CAGR:", round(metrics.cagr(result.returns), 4))
     print("Vol:", round(metrics.vol(result.returns), 4))

@@ -8,13 +8,19 @@ from trading_codex.strategies.base import Strategy
 
 
 class TrendTSMOM(Strategy):
-    def __init__(self, lookback: int = 20) -> None:
+    def __init__(self, lookback: int = 20, allow_short: bool = True) -> None:
         self.lookback = lookback
+        self.allow_short = allow_short
 
     def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame:
         close = bars["close"].astype(float)
         rets = close.pct_change()
         # Use only info available up to t-1 by shifting the rolling signal.
         rolling_mean = rets.rolling(self.lookback).mean().shift(1)
-        signal = rolling_mean.apply(lambda x: 1.0 if x > 0 else (-1.0 if x < 0 else 0.0))
+        if self.allow_short:
+            signal = rolling_mean.apply(
+                lambda x: 1.0 if x > 0 else (-1.0 if x < 0 else 0.0)
+            )
+        else:
+            signal = rolling_mean.apply(lambda x: 1.0 if x > 0 else 0.0)
         return pd.DataFrame({"signal": signal}, index=bars.index)
