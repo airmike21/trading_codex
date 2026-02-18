@@ -108,6 +108,36 @@ def parse_args() -> argparse.Namespace:
         default="M",
         help="Rebalance cadence for dual momentum / sma200: monthly (M) or weekly (W).",
     )
+    parser.add_argument(
+        "--vol-target",
+        type=float,
+        default=None,
+        help="Optional annualized vol target for overlay sizing (disabled by default).",
+    )
+    parser.add_argument(
+        "--vol-lookback",
+        type=int,
+        default=20,
+        help="Lookback window for realized vol estimate (default: 20).",
+    )
+    parser.add_argument(
+        "--vol-max",
+        type=float,
+        default=1.0,
+        help="Maximum leverage for vol overlay (default: 1.0).",
+    )
+    parser.add_argument(
+        "--vol-min",
+        type=float,
+        default=0.0,
+        help="Minimum leverage for vol overlay (default: 0.0).",
+    )
+    parser.add_argument(
+        "--vol-update",
+        choices=["rebalance", "daily"],
+        default="rebalance",
+        help="Leverage update cadence for vol overlay: rebalance changes or daily.",
+    )
 
     parser.add_argument(
         "--trades-out",
@@ -240,7 +270,7 @@ def compute_extended_metrics(result: BacktestResult) -> dict[str, float]:
     else:
         trades_per_year = 0.0
 
-    return {
+    summary = {
         "cagr": cagr_v,
         "vol": vol_v,
         "sharpe": sharpe_v,
@@ -250,6 +280,10 @@ def compute_extended_metrics(result: BacktestResult) -> dict[str, float]:
         "turnover_avg_abs_change": turnover_avg,
         "trades_per_year": trades_per_year,
     }
+    if result.leverage is not None:
+        summary["avg_leverage"] = float(result.leverage.mean()) if len(result.leverage) else 0.0
+        summary["max_leverage"] = float(result.leverage.max()) if len(result.leverage) else 0.0
+    return summary
 
 
 def compute_spy_benchmark(
@@ -589,12 +623,23 @@ def _position_label(pos: int, allow_short: bool) -> str:
     return "CASH"
 
 
+def _target_shares_for_weight(weight: float, price: float, capital: float = 10_000.0) -> int:
+    notional = capital * abs(weight)
+    if price <= 0:
+        return 0
+    return int(notional // price)
+
+
 def maybe_print_latest_tsmom(
     symbol: str,
     bars: pd.DataFrame,
     weights: pd.Series,
     allow_short: bool,
     print_latest: bool,
+    latest_realized_vol: float | None = None,
+    latest_leverage: float | None = None,
+    leverage_last_update_date: str | None = None,
+    realized_vol_at_last_update: float | None = None,
 ) -> None:
     if not print_latest:
         return
@@ -623,6 +668,27 @@ def maybe_print_latest_tsmom(
         print("Most Recent Position Change:", recent_change_date.date().isoformat())
     else:
         print("Most Recent Position Change:", "N/A")
+    if latest_leverage is not None:
+        latest_realized_txt = (
+            f"{latest_realized_vol:.4f}" if latest_realized_vol is not None and pd.notna(latest_realized_vol) else "N/A"
+        )
+        last_update_vol_txt = (
+            f"{realized_vol_at_last_update:.4f}"
+            if realized_vol_at_last_update is not None and pd.notna(realized_vol_at_last_update)
+            else "N/A"
+        )
+        latest_price = float(bars["close"].iloc[-1]) if last_pos != 0 else 0.0
+        target_shares = (
+            _target_shares_for_weight(float(aligned_weights.iloc[-1]), latest_price)
+            if last_pos != 0
+            else 0
+        )
+        price_txt = f"{latest_price:.2f}" if last_pos != 0 else "N/A"
+        print("Leverage last updated on:", leverage_last_update_date or "N/A")
+        print("Realized vol at last update:", last_update_vol_txt)
+        print("Realized Vol (ann, latest):", latest_realized_txt)
+        print("Leverage (latest):", round(latest_leverage, 4))
+        print(f"Target Shares ($10,000): {target_shares} @ {price_txt}")
     print("ACTION:", action)
 
 
@@ -644,6 +710,30 @@ def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
     if rebalance == "W":
         return f"next Friday ({next_rebalance.date().isoformat()})"
     return f"next business month-end ({next_rebalance.date().isoformat()})"
+
+
+def _vol_update_mask_for_print(
+    index: pd.DatetimeIndex,
+    vol_update: str,
+    rebalance: str,
+) -> pd.Series:
+    if vol_update == "daily":
+        return pd.Series(True, index=index, dtype=bool)
+
+    cadence = rebalance.upper()
+    if cadence == "M":
+        periods = pd.Series(index.to_period("M"), index=index)
+        rebalance_day = periods.ne(periods.shift(-1)).fillna(False)
+    elif cadence == "W":
+        rebalance_day = pd.Series(index.weekday == 4, index=index, dtype=bool)
+    else:
+        raise ValueError("rebalance must be one of {'M', 'W'}.")
+
+    update_mask = pd.Series(False, index=index, dtype=bool)
+    for idx_pos in range(len(index) - 1):
+        if bool(rebalance_day.iloc[idx_pos]):
+            update_mask.iloc[idx_pos + 1] = True
+    return update_mask
 
 
 def maybe_write_dual_checklist(
@@ -713,6 +803,10 @@ def maybe_print_latest_dual(
     weights: pd.DataFrame,
     rebalance: str,
     print_latest: bool,
+    latest_realized_vol: float | None = None,
+    latest_leverage: float | None = None,
+    leverage_last_update_date: str | None = None,
+    realized_vol_at_last_update: float | None = None,
 ) -> None:
     if not print_latest:
         return
@@ -740,8 +834,9 @@ def maybe_print_latest_dual(
         target_shares = 0
         price_txt = "N/A"
     else:
+        target_weight = float(weights.loc[last_date, current])
         latest_price = float(close_panel.loc[last_date, current])
-        target_shares = int(10_000 // latest_price)
+        target_shares = _target_shares_for_weight(target_weight, latest_price)
         price_txt = f"{latest_price:.2f}"
 
     print("Latest Date:", last_date.date().isoformat())
@@ -752,6 +847,19 @@ def maybe_print_latest_dual(
         print("Last Action Date:", last_action_date.date().isoformat())
     print("Last Action Type:", last_action_type)
     print("Next Rebalance:", _next_rebalance_hint(last_date, rebalance))
+    if latest_leverage is not None:
+        latest_realized_txt = (
+            f"{latest_realized_vol:.4f}" if latest_realized_vol is not None and pd.notna(latest_realized_vol) else "N/A"
+        )
+        last_update_vol_txt = (
+            f"{realized_vol_at_last_update:.4f}"
+            if realized_vol_at_last_update is not None and pd.notna(realized_vol_at_last_update)
+            else "N/A"
+        )
+        print("Leverage last updated on:", leverage_last_update_date or "N/A")
+        print("Realized vol at last update:", last_update_vol_txt)
+        print("Realized Vol (ann, latest):", latest_realized_txt)
+        print("Leverage (latest):", round(latest_leverage, 4))
     print(f"Target Shares ($10,000): {target_shares} @ {price_txt}")
     print("ACTION:", action_last_bar)
 
@@ -840,6 +948,10 @@ def maybe_print_latest_sma200(
     sma_window: int,
     rebalance: str,
     print_latest: bool,
+    latest_realized_vol: float | None = None,
+    latest_leverage: float | None = None,
+    leverage_last_update_date: str | None = None,
+    realized_vol_at_last_update: float | None = None,
 ) -> None:
     if not print_latest:
         return
@@ -869,8 +981,9 @@ def maybe_print_latest_sma200(
         target_shares = 0
         price_txt = "N/A"
     else:
+        target_weight = float(weights.loc[last_date, current])
         latest_price = float(close_panel.loc[last_date, current])
-        target_shares = int(10_000 // latest_price)
+        target_shares = _target_shares_for_weight(target_weight, latest_price)
         price_txt = f"{latest_price:.2f}"
 
     print("Latest Date:", last_date.date().isoformat())
@@ -882,6 +995,19 @@ def maybe_print_latest_sma200(
         print("Last Action Date:", last_action_date.date().isoformat())
     print("Last Action Type:", last_action_type)
     print("Next Rebalance:", _next_rebalance_hint(last_date, rebalance))
+    if latest_leverage is not None:
+        latest_realized_txt = (
+            f"{latest_realized_vol:.4f}" if latest_realized_vol is not None and pd.notna(latest_realized_vol) else "N/A"
+        )
+        last_update_vol_txt = (
+            f"{realized_vol_at_last_update:.4f}"
+            if realized_vol_at_last_update is not None and pd.notna(realized_vol_at_last_update)
+            else "N/A"
+        )
+        print("Leverage last updated on:", leverage_last_update_date or "N/A")
+        print("Realized vol at last update:", last_update_vol_txt)
+        print("Realized Vol (ann, latest):", latest_realized_txt)
+        print("Leverage (latest):", round(latest_leverage, 4))
     print(f"Target Shares ($10,000): {target_shares} @ {price_txt}")
 
 
@@ -925,6 +1051,12 @@ def main() -> None:
         strategy,
         slippage_bps=args.slippage_bps,
         commission_bps=args.commission_bps,
+        vol_target=args.vol_target,
+        vol_lookback=args.vol_lookback,
+        vol_min=args.vol_min,
+        vol_max=args.vol_max,
+        vol_update=args.vol_update,
+        rebalance_cadence=args.rebalance,
     )
 
     print("CAGR:", round(metrics.cagr(result.returns), 4))
@@ -938,6 +1070,9 @@ def main() -> None:
     print("Exposure %:", round(extended["exposure_pct"], 2))
     print("Turnover Avg:", round(extended["turnover_avg_abs_change"], 4))
     print("Trades/Year:", round(extended["trades_per_year"], 2))
+    if "avg_leverage" in extended:
+        print("Avg Leverage:", round(extended["avg_leverage"], 4))
+        print("Max Leverage:", round(extended["max_leverage"], 4))
 
     benchmark = compute_spy_benchmark(
         store,
@@ -962,6 +1097,21 @@ def main() -> None:
 
     maybe_write_metrics_json(args.metrics_out, args.strategy, extended, benchmark)
 
+    latest_realized_vol = None
+    latest_leverage = None
+    leverage_last_update_date = None
+    realized_vol_at_last_update = None
+    if result.leverage is not None and result.realized_vol is not None and len(result.returns):
+        latest_dt = result.returns.index[-1]
+        latest_realized_vol = float(result.realized_vol.loc[latest_dt])
+        latest_leverage = float(result.leverage.loc[latest_dt])
+        update_mask = _vol_update_mask_for_print(result.returns.index, args.vol_update, args.rebalance)
+        update_dates = update_mask.index[update_mask]
+        if len(update_dates):
+            last_update_dt = update_dates[-1]
+            leverage_last_update_date = last_update_dt.date().isoformat()
+            realized_vol_at_last_update = float(result.realized_vol.loc[last_update_dt])
+
     dual_actions = pd.DataFrame()
     if args.strategy in {"dual_mom", "sma200"}:
         dual_actions = build_dual_actions(bars, result.weights)  # type: ignore[arg-type]
@@ -982,6 +1132,10 @@ def main() -> None:
             result.weights,  # type: ignore[arg-type]
             args.rebalance,
             args.print_latest,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
         )
     elif args.strategy == "sma200":
         checklist_path = args.checklist_out or "outputs/sma200_regime_checklist.md"
@@ -1002,6 +1156,10 @@ def main() -> None:
             args.sma_window,
             args.rebalance,
             args.print_latest,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
         )
     else:
         maybe_print_latest_tsmom(
@@ -1010,6 +1168,10 @@ def main() -> None:
             result.weights,  # type: ignore[arg-type]
             allow_short=not args.long_only,
             print_latest=args.print_latest,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
         )
 
     maybe_write_trades(
