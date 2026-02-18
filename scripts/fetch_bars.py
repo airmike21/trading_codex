@@ -5,7 +5,7 @@ from typing import Iterable
 
 from trading_codex.data import LocalStore
 from trading_codex.data.datasource import DataSource
-from trading_codex.data.providers import TastytradeDataSource
+from trading_codex.data.providers import StooqDataSource, TastytradeDataSource
 
 
 def fetch_and_store(
@@ -35,6 +35,8 @@ def main() -> None:
 
     if args.provider == "tastytrade":
         data_source = TastytradeDataSource()
+    elif args.provider == "stooq":
+        data_source = StooqDataSource()
     else:
         raise ValueError(f"Unknown provider: {args.provider}")
 

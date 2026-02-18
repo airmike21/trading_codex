@@ -1,3 +1,3 @@
-from trading_codex.data.providers.tastytrade import TastytradeDataSource
+from trading_codex.data.providers.tastytrade import StooqDataSource, TastytradeDataSource
 
-__all__ = ["TastytradeDataSource"]
+__all__ = ["TastytradeDataSource", "StooqDataSource"]
