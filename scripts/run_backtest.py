@@ -14,6 +14,7 @@ from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult, run_backtest
 from trading_codex.data import LocalStore
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
+from trading_codex.strategies.sma200 import Sma200RegimeStrategy
 from trading_codex.strategies.trend_tsmom import TrendTSMOM
 
 DUAL_MOM_DEFAULT_SYMBOLS = ["SPY", "QQQ", "IWM", "EFA"]
@@ -33,7 +34,7 @@ TRACKER_COLUMNS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run strategy backtests on cached daily bars.")
-    parser.add_argument("--strategy", choices=["tsmom", "dual_mom"], default="tsmom")
+    parser.add_argument("--strategy", choices=["tsmom", "dual_mom", "sma200"], default="tsmom")
     parser.add_argument("--symbol", default="SPY", help="Ticker symbol for single-asset strategy.")
     parser.add_argument("--start", default=None, help="Inclusive start date (YYYY-MM-DD).")
     parser.add_argument("--end", default=None, help="Inclusive end date (YYYY-MM-DD).")
@@ -82,7 +83,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--defensive",
         default="TLT",
-        help='Defensive ETF for dual momentum. Use "" to disable and rotate to cash.',
+        help='Defensive ETF for dual momentum / sma200. Use "" to disable and rotate to cash.',
+    )
+    parser.add_argument(
+        "--risk-symbol",
+        default="SPY",
+        help="Risk symbol for sma200 regime strategy (default: SPY).",
+    )
+    parser.add_argument(
+        "--sma-window",
+        type=int,
+        default=200,
+        help="SMA window for sma200 regime strategy (default: 200).",
     )
     parser.add_argument(
         "--mom-lookback",
@@ -94,7 +106,7 @@ def parse_args() -> argparse.Namespace:
         "--rebalance",
         choices=["M", "W"],
         default="M",
-        help="Dual momentum rebalance cadence: monthly (M) or weekly (W).",
+        help="Rebalance cadence for dual momentum / sma200: monthly (M) or weekly (W).",
     )
 
     parser.add_argument(
@@ -136,6 +148,13 @@ def _position_from_weight(weight: float) -> int:
     if weight < 0:
         return -1
     return 0
+
+
+def _normalize_defensive_symbol(raw_defensive: str | None) -> str | None:
+    if raw_defensive is None:
+        return None
+    defensive = raw_defensive.strip()
+    return defensive if defensive else None
 
 
 def has_interactive_display() -> bool:
@@ -535,7 +554,7 @@ def maybe_write_trades(
     out_path = Path(trades_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if strategy_name == "dual_mom":
+    if strategy_name in {"dual_mom", "sma200"}:
         dual_actions.to_csv(out_path, index=False)
         return
 
@@ -555,7 +574,7 @@ def maybe_write_actions_csv(
     out_path = Path(actions_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if strategy_name == "dual_mom":
+    if strategy_name in {"dual_mom", "sma200"}:
         tracker_actions = build_dual_tracker_actions(bars, dual_actions)
         tracker_actions.to_csv(out_path, index=False)
     else:
@@ -607,12 +626,24 @@ def maybe_print_latest_tsmom(
     print("ACTION:", action)
 
 
-def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
+def _next_rebalance_date(last_date: pd.Timestamp, rebalance: str) -> pd.Timestamp:
     if rebalance == "W":
-        next_week = last_date + pd.offsets.Week(weekday=4)
-        return f"next week-end ({next_week.date().isoformat()})"
-    next_month_end = last_date + pd.offsets.MonthEnd(1)
-    return f"next month-end ({next_month_end.date().isoformat()})"
+        days_ahead = (4 - int(last_date.weekday())) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return last_date + pd.Timedelta(days=days_ahead)
+
+    next_month_end = last_date + pd.offsets.BMonthEnd(0)
+    if next_month_end <= last_date:
+        next_month_end = last_date + pd.offsets.BMonthEnd(1)
+    return next_month_end
+
+
+def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
+    next_rebalance = _next_rebalance_date(last_date, rebalance)
+    if rebalance == "W":
+        return f"next Friday ({next_rebalance.date().isoformat()})"
+    return f"next business month-end ({next_rebalance.date().isoformat()})"
 
 
 def maybe_write_dual_checklist(
@@ -725,6 +756,135 @@ def maybe_print_latest_dual(
     print("ACTION:", action_last_bar)
 
 
+def _sma200_risk_on_series(close: pd.Series, sma_window: int) -> pd.Series:
+    sma = close.rolling(sma_window).mean()
+    return (close.shift(1) > sma.shift(1)).fillna(False)
+
+
+def maybe_write_sma200_checklist(
+    out_path: str | None,
+    rebalance: str,
+    risk_symbol: str,
+    defensive: str | None,
+    sma_window: int,
+    bars: pd.DataFrame,
+    weights: pd.DataFrame,
+) -> None:
+    if not out_path:
+        return
+
+    actions = build_dual_actions(bars, weights)
+    active_symbol = _active_symbol_from_weights(weights)
+    last_date = bars.index[-1]
+    current = str(active_symbol.iloc[-1])
+
+    previous_symbol = active_symbol.shift(1).fillna("CASH")
+    change_dates = active_symbol.index[active_symbol != previous_symbol]
+    if len(change_dates):
+        last_action_date = change_dates[-1].date().isoformat()
+        last_action_type = _classify_symbol_action(
+            str(previous_symbol.loc[change_dates[-1]]),
+            str(active_symbol.loc[change_dates[-1]]),
+        )
+    elif actions.empty:
+        last_action_date = "N/A"
+        last_action_type = "HOLD"
+    else:
+        last_action_date = str(actions.iloc[-1]["date"])
+        last_action_type = str(actions.iloc[-1]["action"])
+
+    close_panel = bars.xs("close", axis=1, level=1)
+    risk_close = close_panel[risk_symbol].astype(float)
+    risk_on = bool(_sma200_risk_on_series(risk_close, sma_window).iloc[-1])
+    risk_state = "RISK-ON" if risk_on else "RISK-OFF"
+
+    if current == "CASH":
+        target_shares = 0
+        price_txt = "N/A"
+    else:
+        latest_price = float(close_panel.loc[last_date, current])
+        target_shares = int(10_000 // latest_price)
+        price_txt = f"{latest_price:.2f}"
+
+    check_day = (
+        "last trading day of each week after close"
+        if rebalance == "W"
+        else "month-end after close (last trading day of each month)"
+    )
+    next_rebalance = _next_rebalance_hint(last_date, rebalance)
+    defensive_txt = defensive if defensive else "CASH"
+
+    content = "\n".join(
+        [
+            "# SMA200 Regime Checklist",
+            "",
+            f"- Check day: {check_day}.",
+            f"- Risk-On State: {risk_state}.",
+            f"- Current holding: {current}.",
+            f"- Last action: {last_action_type} on {last_action_date}.",
+            f"- Next rebalance window: {next_rebalance}.",
+            f"- Universe: risk={risk_symbol} | defensive={defensive_txt} | sma_window={sma_window}.",
+            f"- Target shares for $10,000: {target_shares} (price: {price_txt}).",
+        ]
+    )
+
+    checklist_path = Path(out_path)
+    checklist_path.parent.mkdir(parents=True, exist_ok=True)
+    checklist_path.write_text(content + "\n", encoding="utf-8")
+
+
+def maybe_print_latest_sma200(
+    bars: pd.DataFrame,
+    weights: pd.DataFrame,
+    risk_symbol: str,
+    sma_window: int,
+    rebalance: str,
+    print_latest: bool,
+) -> None:
+    if not print_latest:
+        return
+
+    active_symbol = _active_symbol_from_weights(weights)
+    last_date = bars.index[-1]
+    current = str(active_symbol.iloc[-1])
+
+    previous_symbol = active_symbol.shift(1).fillna("CASH")
+    change_dates = active_symbol.index[active_symbol != previous_symbol]
+    if len(change_dates):
+        last_action_date = change_dates[-1]
+        last_action_type = _classify_symbol_action(
+            str(previous_symbol.loc[last_action_date]),
+            str(active_symbol.loc[last_action_date]),
+        )
+    else:
+        last_action_date = None
+        last_action_type = "HOLD"
+
+    close_panel = bars.xs("close", axis=1, level=1)
+    risk_close = close_panel[risk_symbol].astype(float)
+    risk_on = bool(_sma200_risk_on_series(risk_close, sma_window).iloc[-1])
+    risk_state = "RISK-ON" if risk_on else "RISK-OFF"
+
+    if current == "CASH":
+        target_shares = 0
+        price_txt = "N/A"
+    else:
+        latest_price = float(close_panel.loc[last_date, current])
+        target_shares = int(10_000 // latest_price)
+        price_txt = f"{latest_price:.2f}"
+
+    print("Latest Date:", last_date.date().isoformat())
+    print("Risk-On State:", risk_state)
+    print("Currently Held:", current)
+    if last_action_date is None:
+        print("Last Action Date:", "N/A")
+    else:
+        print("Last Action Date:", last_action_date.date().isoformat())
+    print("Last Action Type:", last_action_type)
+    print("Next Rebalance:", _next_rebalance_hint(last_date, rebalance))
+    print(f"Target Shares ($10,000): {target_shares} @ {price_txt}")
+
+
 def main() -> None:
     args = parse_args()
     store = LocalStore(base_dir=args.data_dir)
@@ -737,9 +897,8 @@ def main() -> None:
             )
         strategy = TrendTSMOM(lookback=args.lookback, allow_short=not args.long_only)
         plot_label = args.symbol
-    else:
-        defensive = args.defensive.strip() if args.defensive is not None else ""
-        defensive_symbol = defensive if defensive else None
+    elif args.strategy == "dual_mom":
+        defensive_symbol = _normalize_defensive_symbol(args.defensive)
         symbols_to_load = args.symbols + ([defensive_symbol] if defensive_symbol else [])
         bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
         strategy = DualMomentumStrategy(
@@ -749,6 +908,17 @@ def main() -> None:
             rebalance=args.rebalance,
         )
         plot_label = "dual_momentum"
+    else:
+        defensive_symbol = _normalize_defensive_symbol(args.defensive)
+        symbols_to_load = [args.risk_symbol] + ([defensive_symbol] if defensive_symbol else [])
+        bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
+        strategy = Sma200RegimeStrategy(
+            risk_symbol=args.risk_symbol,
+            defensive=defensive_symbol,
+            sma_window=args.sma_window,
+            rebalance=args.rebalance,
+        )
+        plot_label = "sma200_regime"
 
     result = run_backtest(
         bars,
@@ -793,10 +963,12 @@ def main() -> None:
     maybe_write_metrics_json(args.metrics_out, args.strategy, extended, benchmark)
 
     dual_actions = pd.DataFrame()
-    if args.strategy == "dual_mom":
+    if args.strategy in {"dual_mom", "sma200"}:
         dual_actions = build_dual_actions(bars, result.weights)  # type: ignore[arg-type]
+
+    if args.strategy == "dual_mom":
         checklist_path = args.checklist_out or "outputs/dual_momentum_checklist.md"
-        defensive_symbol = args.defensive.strip() if args.defensive.strip() else None
+        defensive_symbol = _normalize_defensive_symbol(args.defensive)
         maybe_write_dual_checklist(
             checklist_path,
             args.rebalance,
@@ -808,6 +980,26 @@ def main() -> None:
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]
+            args.rebalance,
+            args.print_latest,
+        )
+    elif args.strategy == "sma200":
+        checklist_path = args.checklist_out or "outputs/sma200_regime_checklist.md"
+        defensive_symbol = _normalize_defensive_symbol(args.defensive)
+        maybe_write_sma200_checklist(
+            checklist_path,
+            args.rebalance,
+            args.risk_symbol,
+            defensive_symbol,
+            args.sma_window,
+            bars,
+            result.weights,  # type: ignore[arg-type]
+        )
+        maybe_print_latest_sma200(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            args.risk_symbol,
+            args.sma_window,
             args.rebalance,
             args.print_latest,
         )
