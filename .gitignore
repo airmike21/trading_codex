@@ -21,4 +21,5 @@ dist/
 /data/
 
 # Run artifacts
+# Backtest plots
 outputs/
