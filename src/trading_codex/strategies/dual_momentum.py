@@ -18,15 +18,28 @@ class DualMomentumStrategy(Strategy):
         defensive: str | None = "TLT",
         lookback: int = 252,
         rebalance: str = "M",
+        regime_gate: str = "none",
+        gate_symbol: str = "SPY",
+        gate_sma_window: int = 200,
     ) -> None:
         self.risk_universe = [sym for sym in risk_universe]
         self.defensive = defensive if defensive else None
         self.lookback = int(lookback)
         self.rebalance = rebalance.upper()
+        self.regime_gate = regime_gate.lower()
+        self.gate_symbol = gate_symbol
+        self.gate_sma_window = int(gate_sma_window)
         if self.rebalance not in {"M", "W"}:
             raise ValueError(f"Unsupported rebalance frequency: {rebalance}")
         if not self.risk_universe:
             raise ValueError("risk_universe must not be empty.")
+        if self.regime_gate not in {"none", "sma200"}:
+            raise ValueError(f"Unsupported regime_gate: {regime_gate}")
+        if self.regime_gate == "sma200":
+            if not self.gate_symbol:
+                raise ValueError("gate_symbol must not be empty when regime_gate='sma200'.")
+            if self.gate_sma_window <= 0:
+                raise ValueError("gate_sma_window must be > 0 when regime_gate='sma200'.")
 
     def _rebalance_mask(self, index: pd.DatetimeIndex) -> pd.Series:
         if self.rebalance == "M":
@@ -44,13 +57,22 @@ class DualMomentumStrategy(Strategy):
             raise ValueError("Bars must include close field for all symbols.")
 
         all_symbols = list(dict.fromkeys(self.risk_universe + ([self.defensive] if self.defensive else [])))
+        required_symbols = list(all_symbols)
+        if self.regime_gate == "sma200":
+            required_symbols.append(self.gate_symbol)
+
         close = bars.xs("close", axis=1, level=1)
-        missing = [sym for sym in all_symbols if sym not in close.columns]
+        missing = [sym for sym in required_symbols if sym not in close.columns]
         if missing:
             raise ValueError(f"Missing close prices for symbols: {missing}")
 
         close = close.loc[:, all_symbols]
         momentum = close.pct_change(self.lookback).shift(1)
+        gate_risk_on = pd.Series(True, index=bars.index, dtype=bool)
+        if self.regime_gate == "sma200":
+            gate_close = bars.xs("close", axis=1, level=1)[self.gate_symbol].astype(float)
+            gate_sma = gate_close.rolling(self.gate_sma_window).mean()
+            gate_risk_on = (gate_close.shift(1) > gate_sma.shift(1)).fillna(False)
 
         rebalance_mask = self._rebalance_mask(bars.index)
         selected = pd.Series(index=bars.index, dtype=object)
@@ -70,6 +92,9 @@ class DualMomentumStrategy(Strategy):
 
             if chosen is None and self.defensive:
                 chosen = self.defensive
+
+            if self.regime_gate == "sma200" and not bool(gate_risk_on.loc[dt]):
+                chosen = self.defensive if self.defensive else None
 
             selected.loc[next_dt] = chosen
 
