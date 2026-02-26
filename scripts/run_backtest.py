@@ -449,9 +449,10 @@ def build_tsmom_trade_log(
 
 
 def _active_symbol_from_weights(weights: pd.DataFrame) -> pd.Series:
-    max_weight = weights.max(axis=1)
-    top_symbol = weights.idxmax(axis=1)
-    return top_symbol.where(max_weight > 0.0, "CASH")
+    abs_weights = weights.abs()
+    max_abs_weight = abs_weights.max(axis=1)
+    top_symbol = abs_weights.idxmax(axis=1)
+    return top_symbol.where(max_abs_weight > 0.0, "CASH")
 
 
 def _classify_symbol_action(from_symbol: str, to_symbol: str) -> str:
@@ -464,7 +465,96 @@ def _classify_symbol_action(from_symbol: str, to_symbol: str) -> str:
     return "ROTATE"
 
 
-def build_dual_actions(bars: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFrame:
+def _target_shares_for_active_symbol(
+    weights: pd.DataFrame,
+    close_panel: pd.DataFrame,
+    capital: float = 10_000.0,
+) -> pd.Series:
+    active_symbol = _active_symbol_from_weights(weights)
+    target_shares = pd.Series(0, index=weights.index, dtype=int)
+    for dt in weights.index:
+        symbol = str(active_symbol.loc[dt])
+        if symbol == "CASH":
+            continue
+        price = float(close_panel.loc[dt, symbol])
+        target_shares.loc[dt] = _target_shares_for_weight(
+            float(weights.loc[dt, symbol]),
+            price,
+            capital=capital,
+        )
+    return target_shares
+
+
+def _resize_mask_and_target_shares(
+    bars: pd.DataFrame,
+    weights: pd.DataFrame,
+    vol_target: float | None,
+    vol_update: str,
+    rebalance: str,
+    capital: float = 10_000.0,
+) -> tuple[pd.Series, pd.Series]:
+    if weights.empty:
+        empty_mask = pd.Series(False, index=weights.index, dtype=bool)
+        empty_shares = pd.Series(0, index=weights.index, dtype=int)
+        return empty_mask, empty_shares
+
+    close_panel = bars.xs("close", axis=1, level=1)
+    close_panel = close_panel.reindex(index=weights.index, columns=weights.columns)
+    target_shares = _target_shares_for_active_symbol(weights, close_panel, capital=capital)
+
+    if vol_target is None:
+        return pd.Series(False, index=weights.index, dtype=bool), target_shares
+
+    update_mask = _vol_update_mask_for_print(weights.index, vol_update, rebalance)
+    active_symbol = _active_symbol_from_weights(weights)
+    previous_symbol = active_symbol.shift(1).fillna("CASH")
+    previous_target = target_shares.shift(1).fillna(0).astype(int)
+    resize_mask = (
+        update_mask
+        & active_symbol.eq(previous_symbol)
+        & target_shares.ne(previous_target)
+    )
+    return resize_mask, target_shares
+
+
+def _latest_resize_details(
+    bars: pd.DataFrame,
+    weights: pd.DataFrame,
+    vol_target: float | None,
+    vol_update: str,
+    rebalance: str,
+    up_to_date: pd.Timestamp | None = None,
+) -> tuple[pd.Timestamp | None, int | None, int | None]:
+    if weights.empty or vol_target is None:
+        return None, None, None
+
+    resize_mask, target_shares = _resize_mask_and_target_shares(
+        bars,
+        weights,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        rebalance=rebalance,
+    )
+    if up_to_date is not None:
+        resize_mask = resize_mask & (resize_mask.index <= up_to_date)
+
+    resize_dates = resize_mask.index[resize_mask]
+    if not len(resize_dates):
+        return None, None, None
+
+    resize_date = resize_dates[-1]
+    previous_target = int(target_shares.shift(1).fillna(0).loc[resize_date])
+    new_target = int(target_shares.loc[resize_date])
+    return resize_date, previous_target, new_target
+
+
+def build_dual_actions(
+    bars: pd.DataFrame,
+    weights: pd.DataFrame,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
+    rebalance: str = "M",
+) -> pd.DataFrame:
     columns = [
         "date",
         "action",
@@ -478,15 +568,29 @@ def build_dual_actions(bars: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFram
         return pd.DataFrame(columns=columns)
 
     close_panel = bars.xs("close", axis=1, level=1)
+    close_panel = close_panel.reindex(index=weights.index, columns=weights.columns)
     current_symbol = _active_symbol_from_weights(weights)
     previous_symbol = current_symbol.shift(1).fillna("CASH")
     previous_weights = weights.shift(1).fillna(0.0)
+    resize_mask, _ = _resize_mask_and_target_shares(
+        bars,
+        weights,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        rebalance=rebalance,
+    )
 
     records: list[dict[str, object]] = []
-    for dt in current_symbol.index[current_symbol != previous_symbol]:
+    for dt in current_symbol.index:
         from_symbol = str(previous_symbol.loc[dt])
         to_symbol = str(current_symbol.loc[dt])
-        action = _classify_symbol_action(from_symbol, to_symbol)
+        if from_symbol != to_symbol:
+            action = _classify_symbol_action(from_symbol, to_symbol)
+        elif bool(resize_mask.loc[dt]):
+            action = "RESIZE"
+            from_symbol = to_symbol
+        else:
+            continue
         price_symbol = to_symbol if to_symbol != "CASH" else from_symbol
         price = float(close_panel.loc[dt, price_symbol]) if price_symbol != "CASH" else ""
         weight_from = (
@@ -507,6 +611,37 @@ def build_dual_actions(bars: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFram
         )
 
     return pd.DataFrame(records, columns=columns)
+
+
+def _tsmom_action_inputs(
+    symbol: str,
+    bars: pd.DataFrame,
+    weights: pd.Series,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    action_bars = pd.concat({symbol: bars.copy()}, axis=1)
+    action_weights = pd.DataFrame(
+        {symbol: weights.reindex(bars.index).fillna(0.0).astype(float)},
+        index=bars.index,
+    )
+    return action_bars, action_weights
+
+
+def build_tsmom_actions(
+    symbol: str,
+    bars: pd.DataFrame,
+    weights: pd.Series,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
+    rebalance: str = "M",
+) -> pd.DataFrame:
+    action_bars, action_weights = _tsmom_action_inputs(symbol, bars, weights)
+    return build_dual_actions(
+        action_bars,
+        action_weights,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        rebalance=rebalance,
+    )
 
 
 def build_dual_tracker_actions(
@@ -558,6 +693,36 @@ def build_dual_tracker_actions(
             held_symbol = to_symbol
             held_shares = shares
             notes = f"Sold {from_symbol} at {sell_price:.2f}"
+        elif action == "RESIZE":
+            price = float(close_panel.loc[date, to_symbol])
+            row_loc = close_panel.index.get_loc(date)
+            if isinstance(row_loc, slice):
+                row_pos = int(row_loc.start or 0)
+            else:
+                row_pos = int(row_loc)
+            prev_date = close_panel.index[row_pos - 1] if row_pos > 0 else date
+            prev_price = float(close_panel.loc[prev_date, to_symbol])
+
+            prev_weight = float(row.get("weight_from", 0.0))
+            next_weight = float(row.get("weight_to", 0.0))
+            prev_target = _target_shares_for_weight(
+                prev_weight,
+                prev_price,
+                capital=starting_equity,
+            )
+            next_target = _target_shares_for_weight(
+                next_weight,
+                price,
+                capital=starting_equity,
+            )
+
+            delta_shares = int(next_target - held_shares)
+            shares = int(abs(delta_shares))
+            notional = float(shares * price)
+            cash -= float(delta_shares * price)
+            held_symbol = to_symbol
+            held_shares = int(next_target)
+            notes = f"Target shares {prev_target}->{next_target}"
         else:
             continue
 
@@ -619,17 +784,20 @@ def maybe_write_actions_csv(
     actions_out: str | None,
     bars: pd.DataFrame,
     dual_actions: pd.DataFrame,
+    actions_bars: pd.DataFrame | None = None,
 ) -> None:
     if not actions_out:
         return
     out_path = Path(actions_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if strategy_name in {"dual_mom", "sma200"}:
-        tracker_actions = build_dual_tracker_actions(bars, dual_actions)
-        tracker_actions.to_csv(out_path, index=False)
-    else:
+    if dual_actions.empty:
         pd.DataFrame(columns=TRACKER_COLUMNS).to_csv(out_path, index=False)
+        return
+
+    tracker_source_bars = actions_bars if actions_bars is not None else bars
+    tracker_actions = build_dual_tracker_actions(tracker_source_bars, dual_actions)
+    tracker_actions.to_csv(out_path, index=False)
 
 
 def _position_label(pos: int, allow_short: bool) -> str:
@@ -647,12 +815,58 @@ def _target_shares_for_weight(weight: float, price: float, capital: float = 10_0
     return int(notional // price)
 
 
+def _latest_resize_details_tsmom(
+    symbol: str,
+    close: pd.Series,
+    weights: pd.Series,
+    vol_target: float | None,
+    vol_update: str,
+    rebalance: str,
+) -> tuple[pd.Timestamp | None, int | None, int | None]:
+    if vol_target is None or close.empty:
+        return None, None, None
+
+    aligned_weights = weights.reindex(close.index).fillna(0.0).astype(float)
+    held_symbol = pd.Series(symbol, index=close.index, dtype=object).where(
+        aligned_weights.abs() > 0.0,
+        "CASH",
+    )
+    target_shares = pd.Series(0, index=close.index, dtype=int)
+    for dt in close.index:
+        if str(held_symbol.loc[dt]) == "CASH":
+            continue
+        target_shares.loc[dt] = _target_shares_for_weight(
+            float(aligned_weights.loc[dt]),
+            float(close.loc[dt]),
+        )
+
+    update_mask = _vol_update_mask_for_print(close.index, vol_update, rebalance)
+    previous_symbol = held_symbol.shift(1).fillna("CASH")
+    previous_target = target_shares.shift(1).fillna(0).astype(int)
+    resize_mask = (
+        update_mask
+        & held_symbol.eq(previous_symbol)
+        & target_shares.ne(previous_target)
+    )
+    resize_dates = resize_mask.index[resize_mask]
+    if not len(resize_dates):
+        return None, None, None
+
+    resize_date = resize_dates[-1]
+    prev_shares = int(previous_target.loc[resize_date])
+    new_shares = int(target_shares.loc[resize_date])
+    return resize_date, prev_shares, new_shares
+
+
 def maybe_print_latest_tsmom(
     symbol: str,
     bars: pd.DataFrame,
     weights: pd.Series,
     allow_short: bool,
     print_latest: bool,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
+    rebalance: str = "M",
     latest_realized_vol: float | None = None,
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
@@ -678,6 +892,22 @@ def maybe_print_latest_tsmom(
         action = "EXIT"
     else:
         action = "HOLD"
+
+    resize_prev_shares: int | None = None
+    resize_new_shares: int | None = None
+    if action == "HOLD":
+        resize_date, prev_shares, new_shares = _latest_resize_details_tsmom(
+            symbol,
+            bars["close"].astype(float),
+            aligned_weights,
+            vol_target=vol_target,
+            vol_update=vol_update,
+            rebalance=rebalance,
+        )
+        if resize_date is not None and last_date >= resize_date:
+            action = "RESIZE"
+            resize_prev_shares = prev_shares
+            resize_new_shares = new_shares
 
     print("Latest Date:", last_date.date().isoformat())
     print(f"Latest Position ({symbol}):", latest_label)
@@ -707,6 +937,9 @@ def maybe_print_latest_tsmom(
         print("Leverage (latest):", round(latest_leverage, 4))
         print(f"Target Shares ($10,000): {target_shares} @ {price_txt}")
     print("ACTION:", action)
+    if action == "RESIZE" and resize_prev_shares is not None and resize_new_shares is not None:
+        print("Previous Shares:", resize_prev_shares)
+        print("New Shares:", resize_new_shares)
 
 
 def _next_rebalance_date(last_date: pd.Timestamp, rebalance: str) -> pd.Timestamp:
@@ -760,26 +993,33 @@ def maybe_write_dual_checklist(
     defensive: str | None,
     bars: pd.DataFrame,
     weights: pd.DataFrame,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
 ) -> None:
     if not out_path:
         return
 
-    actions = build_dual_actions(bars, weights)
+    actions = build_dual_actions(
+        bars,
+        weights,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        rebalance=rebalance,
+    )
     active_symbol = _active_symbol_from_weights(weights)
     last_date = bars.index[-1]
     current = str(active_symbol.iloc[-1])
     previous = str(active_symbol.iloc[-2]) if len(active_symbol) >= 2 else "CASH"
     action = _classify_symbol_action(previous, current)
-    if action == "HOLD":
-        if actions.empty:
-            last_action_date = "N/A"
-            last_action = "HOLD"
-        else:
-            last_action_date = str(actions.iloc[-1]["date"])
-            last_action = str(actions.iloc[-1]["action"])
+    if actions.empty:
+        last_action_date = "N/A"
+        last_action = "HOLD"
     else:
-        last_action_date = last_date.date().isoformat()
-        last_action = action
+        last_action_date = str(actions.iloc[-1]["date"])
+        last_action = str(actions.iloc[-1]["action"])
+
+    if action == "HOLD" and last_action == "RESIZE":
+        action = "RESIZE"
 
     close_panel = bars.xs("close", axis=1, level=1)
     if current == "CASH":
@@ -820,6 +1060,8 @@ def maybe_print_latest_dual(
     weights: pd.DataFrame,
     rebalance: str,
     print_latest: bool,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
     regime_gate: str = "none",
     gate_symbol: str = "SPY",
     gate_sma_window: int = 200,
@@ -832,23 +1074,38 @@ def maybe_print_latest_dual(
     if not print_latest:
         return
 
+    actions = build_dual_actions(
+        bars,
+        weights,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        rebalance=rebalance,
+    )
     active_symbol = _active_symbol_from_weights(weights)
     last_date = bars.index[-1]
     current = str(active_symbol.iloc[-1])
     previous = str(active_symbol.iloc[-2]) if len(active_symbol) >= 2 else "CASH"
     action_last_bar = _classify_symbol_action(previous, current)
 
-    previous_symbol = active_symbol.shift(1).fillna("CASH")
-    change_dates = active_symbol.index[active_symbol != previous_symbol]
-    if len(change_dates):
-        last_action_date = change_dates[-1]
-        last_action_type = _classify_symbol_action(
-            str(previous_symbol.loc[last_action_date]),
-            str(active_symbol.loc[last_action_date]),
-        )
-    else:
+    if actions.empty:
         last_action_date = None
         last_action_type = "HOLD"
+    else:
+        last_action_date = pd.to_datetime(actions.iloc[-1]["date"])
+        last_action_type = str(actions.iloc[-1]["action"])
+
+    resize_prev_shares: int | None = None
+    resize_new_shares: int | None = None
+    if action_last_bar == "HOLD" and last_action_type == "RESIZE":
+        action_last_bar = "RESIZE"
+        _, resize_prev_shares, resize_new_shares = _latest_resize_details(
+            bars,
+            weights,
+            vol_target=vol_target,
+            vol_update=vol_update,
+            rebalance=rebalance,
+            up_to_date=last_date,
+        )
 
     close_panel = bars.xs("close", axis=1, level=1)
     if current == "CASH":
@@ -892,6 +1149,13 @@ def maybe_print_latest_dual(
         print("Leverage (latest):", round(latest_leverage, 4))
     print(f"Target Shares ($10,000): {target_shares} @ {price_txt}")
     print("ACTION:", action_last_bar)
+    if (
+        action_last_bar == "RESIZE"
+        and resize_prev_shares is not None
+        and resize_new_shares is not None
+    ):
+        print("Previous Shares:", resize_prev_shares)
+        print("New Shares:", resize_new_shares)
 
 
 def _sma200_risk_on_series(close: pd.Series, sma_window: int) -> pd.Series:
@@ -907,29 +1171,33 @@ def maybe_write_sma200_checklist(
     sma_window: int,
     bars: pd.DataFrame,
     weights: pd.DataFrame,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
 ) -> None:
     if not out_path:
         return
 
-    actions = build_dual_actions(bars, weights)
+    actions = build_dual_actions(
+        bars,
+        weights,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        rebalance=rebalance,
+    )
     active_symbol = _active_symbol_from_weights(weights)
     last_date = bars.index[-1]
     current = str(active_symbol.iloc[-1])
 
-    previous_symbol = active_symbol.shift(1).fillna("CASH")
-    change_dates = active_symbol.index[active_symbol != previous_symbol]
-    if len(change_dates):
-        last_action_date = change_dates[-1].date().isoformat()
-        last_action_type = _classify_symbol_action(
-            str(previous_symbol.loc[change_dates[-1]]),
-            str(active_symbol.loc[change_dates[-1]]),
-        )
-    elif actions.empty:
+    previous = str(active_symbol.iloc[-2]) if len(active_symbol) >= 2 else "CASH"
+    action_now = _classify_symbol_action(previous, current)
+    if actions.empty:
         last_action_date = "N/A"
         last_action_type = "HOLD"
     else:
         last_action_date = str(actions.iloc[-1]["date"])
         last_action_type = str(actions.iloc[-1]["action"])
+    if action_now == "HOLD" and last_action_type == "RESIZE":
+        action_now = "RESIZE"
 
     close_panel = bars.xs("close", axis=1, level=1)
     risk_close = close_panel[risk_symbol].astype(float)
@@ -962,6 +1230,7 @@ def maybe_write_sma200_checklist(
             f"- Last action: {last_action_type} on {last_action_date}.",
             f"- Next rebalance window: {next_rebalance}.",
             f"- Universe: risk={risk_symbol} | defensive={defensive_txt} | sma_window={sma_window}.",
+            f"- ACTION NOW: {action_now}.",
             f"- Target shares for $10,000: {target_shares} (price: {price_txt}).",
         ]
     )
@@ -978,6 +1247,8 @@ def maybe_print_latest_sma200(
     sma_window: int,
     rebalance: str,
     print_latest: bool,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
     latest_realized_vol: float | None = None,
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
@@ -986,21 +1257,38 @@ def maybe_print_latest_sma200(
     if not print_latest:
         return
 
+    actions = build_dual_actions(
+        bars,
+        weights,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        rebalance=rebalance,
+    )
     active_symbol = _active_symbol_from_weights(weights)
     last_date = bars.index[-1]
     current = str(active_symbol.iloc[-1])
+    previous = str(active_symbol.iloc[-2]) if len(active_symbol) >= 2 else "CASH"
+    action_last_bar = _classify_symbol_action(previous, current)
 
-    previous_symbol = active_symbol.shift(1).fillna("CASH")
-    change_dates = active_symbol.index[active_symbol != previous_symbol]
-    if len(change_dates):
-        last_action_date = change_dates[-1]
-        last_action_type = _classify_symbol_action(
-            str(previous_symbol.loc[last_action_date]),
-            str(active_symbol.loc[last_action_date]),
-        )
-    else:
+    if actions.empty:
         last_action_date = None
         last_action_type = "HOLD"
+    else:
+        last_action_date = pd.to_datetime(actions.iloc[-1]["date"])
+        last_action_type = str(actions.iloc[-1]["action"])
+
+    resize_prev_shares: int | None = None
+    resize_new_shares: int | None = None
+    if action_last_bar == "HOLD" and last_action_type == "RESIZE":
+        action_last_bar = "RESIZE"
+        _, resize_prev_shares, resize_new_shares = _latest_resize_details(
+            bars,
+            weights,
+            vol_target=vol_target,
+            vol_update=vol_update,
+            rebalance=rebalance,
+            up_to_date=last_date,
+        )
 
     close_panel = bars.xs("close", axis=1, level=1)
     risk_close = close_panel[risk_symbol].astype(float)
@@ -1039,6 +1327,14 @@ def maybe_print_latest_sma200(
         print("Realized Vol (ann, latest):", latest_realized_txt)
         print("Leverage (latest):", round(latest_leverage, 4))
     print(f"Target Shares ($10,000): {target_shares} @ {price_txt}")
+    print("ACTION:", action_last_bar)
+    if (
+        action_last_bar == "RESIZE"
+        and resize_prev_shares is not None
+        and resize_new_shares is not None
+    ):
+        print("Previous Shares:", resize_prev_shares)
+        print("New Shares:", resize_new_shares)
 
 
 def main() -> None:
@@ -1150,8 +1446,30 @@ def main() -> None:
             realized_vol_at_last_update = float(result.realized_vol.loc[last_update_dt])
 
     dual_actions = pd.DataFrame()
+    actions_bars: pd.DataFrame | None = None
     if args.strategy in {"dual_mom", "sma200"}:
-        dual_actions = build_dual_actions(bars, result.weights)  # type: ignore[arg-type]
+        dual_actions = build_dual_actions(  # type: ignore[arg-type]
+            bars,
+            result.weights,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            rebalance=args.rebalance,
+        )
+        actions_bars = bars
+    else:
+        tsmom_action_bars, tsmom_action_weights = _tsmom_action_inputs(
+            args.symbol,
+            bars,
+            result.weights,  # type: ignore[arg-type]
+        )
+        dual_actions = build_dual_actions(
+            tsmom_action_bars,
+            tsmom_action_weights,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            rebalance=args.rebalance,
+        )
+        actions_bars = tsmom_action_bars
 
     if args.strategy == "dual_mom":
         checklist_path = args.checklist_out or "outputs/dual_momentum_checklist.md"
@@ -1163,12 +1481,16 @@ def main() -> None:
             defensive_symbol,
             bars,
             result.weights,  # type: ignore[arg-type]
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
         )
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]
             args.rebalance,
             args.print_latest,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
             regime_gate=args.regime_gate,
             gate_symbol=args.gate_symbol.strip(),
             gate_sma_window=args.gate_sma_window,
@@ -1189,6 +1511,8 @@ def main() -> None:
             args.sma_window,
             bars,
             result.weights,  # type: ignore[arg-type]
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
         )
         maybe_print_latest_sma200(
             bars,
@@ -1197,6 +1521,8 @@ def main() -> None:
             args.sma_window,
             args.rebalance,
             args.print_latest,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
             latest_realized_vol=latest_realized_vol,
             latest_leverage=latest_leverage,
             leverage_last_update_date=leverage_last_update_date,
@@ -1209,6 +1535,9 @@ def main() -> None:
             result.weights,  # type: ignore[arg-type]
             allow_short=not args.long_only,
             print_latest=args.print_latest,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            rebalance=args.rebalance,
             latest_realized_vol=latest_realized_vol,
             latest_leverage=latest_leverage,
             leverage_last_update_date=leverage_last_update_date,
@@ -1223,7 +1552,13 @@ def main() -> None:
         result.weights,
         dual_actions,
     )
-    maybe_write_actions_csv(args.strategy, args.actions_out, bars, dual_actions)
+    maybe_write_actions_csv(
+        args.strategy,
+        args.actions_out,
+        bars,
+        dual_actions,
+        actions_bars=actions_bars,
+    )
     maybe_write_tracker_template(args.tracker_template_out)
     maybe_plot_equity(result.equity, plot_label, args.plot_out, args.no_plot)
 
