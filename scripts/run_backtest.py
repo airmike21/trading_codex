@@ -186,6 +186,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print latest manual-execution status.",
     )
+    parser.add_argument(
+        "--next-action",
+        action="store_true",
+        help="Print a single-line next action alert for reminders/workflow automation.",
+    )
     return parser.parse_args()
 
 
@@ -962,6 +967,100 @@ def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
     return f"next business month-end ({next_rebalance.date().isoformat()})"
 
 
+def render_next_action_line(
+    strategy_label: str,
+    bars: pd.DataFrame,
+    weights: pd.DataFrame,
+    actions: pd.DataFrame,
+    resize_rebalance: str,
+    next_rebalance: str | None,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
+    latest_leverage: float | None = None,
+    leverage_last_update_date: str | None = None,
+) -> str:
+    if weights.empty:
+        line = f"{pd.Timestamp.today().date().isoformat()} | {strategy_label} | HOLD | CASH | sh=0"
+        if next_rebalance is not None:
+            next_txt = _next_rebalance_date(pd.Timestamp.today(), next_rebalance).date().isoformat()
+            line += f" | next={next_txt}"
+        if vol_target is not None:
+            line += f" | lev=N/A upd={leverage_last_update_date or 'N/A'}"
+        return line
+
+    active_symbol = _active_symbol_from_weights(weights)
+    last_date = weights.index[-1]
+    current = str(active_symbol.iloc[-1])
+    previous = str(active_symbol.iloc[-2]) if len(active_symbol) >= 2 else "CASH"
+    action_last_bar = _classify_symbol_action(previous, current)
+
+    last_action_type = "HOLD"
+    last_action_date: pd.Timestamp | None = None
+    if not actions.empty:
+        last_action_type = str(actions.iloc[-1]["action"])
+        last_action_date = pd.to_datetime(actions.iloc[-1]["date"])
+
+    resize_prev_shares: int | None = None
+    resize_new_shares: int | None = None
+    if (
+        action_last_bar == "HOLD"
+        and last_action_type == "RESIZE"
+        and last_action_date is not None
+        and last_action_date.normalize() == last_date.normalize()
+    ):
+        action_last_bar = "RESIZE"
+        _, resize_prev_shares, resize_new_shares = _latest_resize_details(
+            bars,
+            weights,
+            vol_target=vol_target,
+            vol_update=vol_update,
+            rebalance=resize_rebalance,
+            up_to_date=last_date,
+        )
+
+    close_panel = bars.xs("close", axis=1, level=1)
+    if current == "CASH":
+        target_shares = 0
+        latest_price = None
+    else:
+        latest_weight = float(weights.loc[last_date, current])
+        latest_price = float(close_panel.loc[last_date, current])
+        target_shares = _target_shares_for_weight(latest_weight, latest_price)
+
+    if (
+        action_last_bar == "RESIZE"
+        and resize_prev_shares is not None
+        and resize_new_shares is not None
+        and current != "CASH"
+    ):
+        shares_txt = f"{resize_prev_shares}->{resize_new_shares}"
+    else:
+        shares_txt = f"sh={target_shares}"
+
+    if latest_price is not None:
+        shares_txt = f"{shares_txt} px={latest_price:.2f}"
+
+    line_parts = [
+        last_date.date().isoformat(),
+        strategy_label,
+        action_last_bar,
+        current,
+        shares_txt,
+    ]
+    if next_rebalance is not None:
+        next_txt = _next_rebalance_date(last_date, next_rebalance).date().isoformat()
+        line_parts.append(f"next={next_txt}")
+    if vol_target is not None:
+        lev_txt = (
+            f"{latest_leverage:.3f}"
+            if latest_leverage is not None and pd.notna(latest_leverage)
+            else "N/A"
+        )
+        line_parts.append(f"lev={lev_txt} upd={leverage_last_update_date or 'N/A'}")
+
+    return " | ".join(line_parts)
+
+
 def _vol_update_mask_for_print(
     index: pd.DatetimeIndex,
     vol_update: str,
@@ -1392,6 +1491,71 @@ def main() -> None:
         rebalance_cadence=args.rebalance,
     )
 
+    latest_realized_vol = None
+    latest_leverage = None
+    leverage_last_update_date = None
+    realized_vol_at_last_update = None
+    if result.leverage is not None and result.realized_vol is not None and len(result.returns):
+        latest_dt = result.returns.index[-1]
+        latest_realized_vol = float(result.realized_vol.loc[latest_dt])
+        latest_leverage = float(result.leverage.loc[latest_dt])
+        update_mask = _vol_update_mask_for_print(result.returns.index, args.vol_update, args.rebalance)
+        update_dates = update_mask.index[update_mask]
+        if len(update_dates):
+            last_update_dt = update_dates[-1]
+            leverage_last_update_date = last_update_dt.date().isoformat()
+            realized_vol_at_last_update = float(result.realized_vol.loc[last_update_dt])
+
+    dual_actions = pd.DataFrame()
+    actions_bars: pd.DataFrame | None = None
+    actions_weights: pd.DataFrame | None = None
+    if args.strategy in {"dual_mom", "sma200"}:
+        dual_actions = build_dual_actions(  # type: ignore[arg-type]
+            bars,
+            result.weights,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            rebalance=args.rebalance,
+        )
+        actions_bars = bars
+        actions_weights = result.weights  # type: ignore[assignment]
+    else:
+        tsmom_action_bars, tsmom_action_weights = _tsmom_action_inputs(
+            args.symbol,
+            bars,
+            result.weights,  # type: ignore[arg-type]
+        )
+        dual_actions = build_dual_actions(
+            tsmom_action_bars,
+            tsmom_action_weights,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            rebalance=args.rebalance,
+        )
+        actions_bars = tsmom_action_bars
+        actions_weights = tsmom_action_weights
+
+    if args.next_action and actions_bars is not None and actions_weights is not None:
+        strategy_label = (
+            "BASELINE" if args.strategy == "tsmom" and args.long_only else args.strategy
+        )
+        next_rebalance = args.rebalance if args.strategy in {"dual_mom", "sma200"} else None
+        print(
+            render_next_action_line(
+                strategy_label=strategy_label,
+                bars=actions_bars,
+                weights=actions_weights,
+                actions=dual_actions,
+                resize_rebalance=args.rebalance,
+                next_rebalance=next_rebalance,
+                vol_target=args.vol_target,
+                vol_update=args.vol_update,
+                latest_leverage=latest_leverage,
+                leverage_last_update_date=leverage_last_update_date,
+            )
+        )
+        return
+
     print("CAGR:", round(metrics.cagr(result.returns), 4))
     print("Vol:", round(metrics.vol(result.returns), 4))
     print("Sharpe:", round(metrics.sharpe(result.returns), 4))
@@ -1430,46 +1594,7 @@ def main() -> None:
 
     maybe_write_metrics_json(args.metrics_out, args.strategy, extended, benchmark)
 
-    latest_realized_vol = None
-    latest_leverage = None
-    leverage_last_update_date = None
-    realized_vol_at_last_update = None
-    if result.leverage is not None and result.realized_vol is not None and len(result.returns):
-        latest_dt = result.returns.index[-1]
-        latest_realized_vol = float(result.realized_vol.loc[latest_dt])
-        latest_leverage = float(result.leverage.loc[latest_dt])
-        update_mask = _vol_update_mask_for_print(result.returns.index, args.vol_update, args.rebalance)
-        update_dates = update_mask.index[update_mask]
-        if len(update_dates):
-            last_update_dt = update_dates[-1]
-            leverage_last_update_date = last_update_dt.date().isoformat()
-            realized_vol_at_last_update = float(result.realized_vol.loc[last_update_dt])
-
-    dual_actions = pd.DataFrame()
-    actions_bars: pd.DataFrame | None = None
-    if args.strategy in {"dual_mom", "sma200"}:
-        dual_actions = build_dual_actions(  # type: ignore[arg-type]
-            bars,
-            result.weights,
-            vol_target=args.vol_target,
-            vol_update=args.vol_update,
-            rebalance=args.rebalance,
-        )
-        actions_bars = bars
-    else:
-        tsmom_action_bars, tsmom_action_weights = _tsmom_action_inputs(
-            args.symbol,
-            bars,
-            result.weights,  # type: ignore[arg-type]
-        )
-        dual_actions = build_dual_actions(
-            tsmom_action_bars,
-            tsmom_action_weights,
-            vol_target=args.vol_target,
-            vol_update=args.vol_update,
-            rebalance=args.rebalance,
-        )
-        actions_bars = tsmom_action_bars
+    print_latest_enabled = args.print_latest and (not args.next_action)
 
     if args.strategy == "dual_mom":
         checklist_path = args.checklist_out or "outputs/dual_momentum_checklist.md"
@@ -1488,7 +1613,7 @@ def main() -> None:
             bars,
             result.weights,  # type: ignore[arg-type]
             args.rebalance,
-            args.print_latest,
+            print_latest_enabled,
             vol_target=args.vol_target,
             vol_update=args.vol_update,
             regime_gate=args.regime_gate,
@@ -1520,7 +1645,7 @@ def main() -> None:
             args.risk_symbol,
             args.sma_window,
             args.rebalance,
-            args.print_latest,
+            print_latest_enabled,
             vol_target=args.vol_target,
             vol_update=args.vol_update,
             latest_realized_vol=latest_realized_vol,
@@ -1534,7 +1659,7 @@ def main() -> None:
             bars,
             result.weights,  # type: ignore[arg-type]
             allow_short=not args.long_only,
-            print_latest=args.print_latest,
+            print_latest=print_latest_enabled,
             vol_target=args.vol_target,
             vol_update=args.vol_update,
             rebalance=args.rebalance,
