@@ -30,3 +30,13 @@ Data flow:
 
 - `TastytradeDataSource` is scaffolded only; auth and API calls are intentionally not implemented yet.
 - Signals are expected to use information available up to t-1 to avoid lookahead bias.
+
+### Next-action alerts (one line only)
+- `--next-action` prints exactly one human-readable line (for alerting).
+- `--next-action-json` prints exactly one minified JSON line (for alerting / automation).
+
+Example:
+```bash
+.venv/bin/python scripts/run_backtest.py --strategy dual_mom --symbols SPY QQQ IWM EFA --defensive TLT \
+  --start 2005-01-01 --end 2005-05-02 --no-plot --next-action-json --vol-target 0.10 --vol-update rebalance
+```
