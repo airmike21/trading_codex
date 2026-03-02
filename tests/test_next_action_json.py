@@ -37,6 +37,24 @@ def make_regime_shift_close(index: pd.DatetimeIndex) -> pd.Series:
     return 100.0 * (1.0 + returns).cumprod()
 
 
+def expected_event_id(obj: dict[str, object]) -> str:
+    def g(key: str) -> str:
+        value = obj.get(key, "")
+        return "" if value is None else str(value)
+
+    return ":".join(
+        [
+            g("date"),
+            g("strategy"),
+            g("action"),
+            g("symbol"),
+            g("target_shares"),
+            g("resize_new_shares"),
+            g("next_rebalance"),
+        ]
+    )
+
+
 def test_next_action_json_is_single_line_and_parseable_and_has_resize_fields():
     idx = pd.date_range("2020-01-01", "2020-08-31", freq="B")
     bars = make_panel({"A": make_regime_shift_close(idx)})
@@ -92,6 +110,8 @@ def test_next_action_json_is_single_line_and_parseable_and_has_resize_fields():
     assert "\n" not in output
 
     obj = json.loads(output)
+    assert "event_id" in obj
+    assert obj["event_id"] == expected_event_id(obj)
     assert obj["schema_version"] == 1
     assert obj["schema_minor"] == 0
     assert obj["schema_name"] == "next_action"
@@ -161,6 +181,8 @@ def test_next_action_json_no_stale_resize_on_next_day():
     )
     output = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     obj = json.loads(output)
+    assert "event_id" in obj
+    assert obj["event_id"] == expected_event_id(obj)
     assert obj["schema_version"] == 1
     assert obj["schema_minor"] == 0
     assert obj["schema_name"] == "next_action"
