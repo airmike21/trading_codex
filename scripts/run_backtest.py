@@ -1001,6 +1001,8 @@ def build_next_action_payload(
             ).date().isoformat()
         return {
             "schema_version": 1,
+            "schema_minor": 0,
+            "schema_name": "next_action",
             "date": today,
             "strategy": strategy_label,
             "action": "HOLD",
@@ -1064,6 +1066,8 @@ def build_next_action_payload(
 
     return {
         "schema_version": 1,
+        "schema_minor": 0,
+        "schema_name": "next_action",
         "date": last_date.date().isoformat(),
         "strategy": strategy_label,
         "action": action_last_bar,
