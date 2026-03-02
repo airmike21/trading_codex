@@ -186,10 +186,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print latest manual-execution status.",
     )
-    parser.add_argument(
+    next_action_group = parser.add_mutually_exclusive_group()
+    next_action_group.add_argument(
         "--next-action",
         action="store_true",
         help="Print a single-line next action alert for reminders/workflow automation.",
+    )
+    next_action_group.add_argument(
+        "--next-action-json",
+        action="store_true",
+        help="Print a single-line JSON next action payload for automation/parsing.",
     )
     return parser.parse_args()
 
@@ -967,7 +973,7 @@ def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
     return f"next business month-end ({next_rebalance.date().isoformat()})"
 
 
-def render_next_action_line(
+def build_next_action_payload(
     strategy_label: str,
     bars: pd.DataFrame,
     weights: pd.DataFrame,
@@ -978,15 +984,36 @@ def render_next_action_line(
     vol_update: str = "rebalance",
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
-) -> str:
+) -> dict[str, object]:
+    leverage_value = (
+        float(latest_leverage)
+        if latest_leverage is not None and pd.notna(latest_leverage)
+        else None
+    )
+    leverage_update_value = leverage_last_update_date if vol_target is not None else None
     if weights.empty:
-        line = f"{pd.Timestamp.today().date().isoformat()} | {strategy_label} | HOLD | CASH | sh=0"
+        today = pd.Timestamp.today().date().isoformat()
+        next_rebalance_value = None
         if next_rebalance is not None:
-            next_txt = _next_rebalance_date(pd.Timestamp.today(), next_rebalance).date().isoformat()
-            line += f" | next={next_txt}"
-        if vol_target is not None:
-            line += f" | lev=N/A upd={leverage_last_update_date or 'N/A'}"
-        return line
+            next_rebalance_value = _next_rebalance_date(
+                pd.Timestamp.today(),
+                next_rebalance,
+            ).date().isoformat()
+        return {
+            "date": today,
+            "strategy": strategy_label,
+            "action": "HOLD",
+            "symbol": "CASH",
+            "price": None,
+            "target_shares": 0,
+            "resize_prev_shares": None,
+            "resize_new_shares": None,
+            "next_rebalance": next_rebalance_value,
+            "vol_target": float(vol_target) if vol_target is not None else None,
+            "vol_update": vol_update if vol_target is not None else None,
+            "leverage": leverage_value if vol_target is not None else None,
+            "leverage_update": leverage_update_value,
+        }
 
     active_symbol = _active_symbol_from_weights(weights)
     last_date = weights.index[-1]
@@ -1027,36 +1054,86 @@ def render_next_action_line(
         latest_price = float(close_panel.loc[last_date, current])
         target_shares = _target_shares_for_weight(latest_weight, latest_price)
 
-    if (
-        action_last_bar == "RESIZE"
-        and resize_prev_shares is not None
-        and resize_new_shares is not None
-        and current != "CASH"
-    ):
-        shares_txt = f"{resize_prev_shares}->{resize_new_shares}"
-    else:
-        shares_txt = f"sh={target_shares}"
+    next_rebalance_value = None
+    if next_rebalance is not None:
+        next_rebalance_value = _next_rebalance_date(
+            last_date,
+            next_rebalance,
+        ).date().isoformat()
 
-    if latest_price is not None:
-        shares_txt = f"{shares_txt} px={latest_price:.2f}"
+    return {
+        "date": last_date.date().isoformat(),
+        "strategy": strategy_label,
+        "action": action_last_bar,
+        "symbol": current,
+        "price": latest_price,
+        "target_shares": int(target_shares),
+        "resize_prev_shares": int(resize_prev_shares)
+        if action_last_bar == "RESIZE" and resize_prev_shares is not None
+        else None,
+        "resize_new_shares": int(resize_new_shares)
+        if action_last_bar == "RESIZE" and resize_new_shares is not None
+        else None,
+        "next_rebalance": next_rebalance_value,
+        "vol_target": float(vol_target) if vol_target is not None else None,
+        "vol_update": vol_update if vol_target is not None else None,
+        "leverage": leverage_value if vol_target is not None else None,
+        "leverage_update": leverage_update_value,
+    }
+
+
+def render_next_action_line(
+    strategy_label: str,
+    bars: pd.DataFrame,
+    weights: pd.DataFrame,
+    actions: pd.DataFrame,
+    resize_rebalance: str,
+    next_rebalance: str | None,
+    vol_target: float | None = None,
+    vol_update: str = "rebalance",
+    latest_leverage: float | None = None,
+    leverage_last_update_date: str | None = None,
+) -> str:
+    payload = build_next_action_payload(
+        strategy_label=strategy_label,
+        bars=bars,
+        weights=weights,
+        actions=actions,
+        resize_rebalance=resize_rebalance,
+        next_rebalance=next_rebalance,
+        vol_target=vol_target,
+        vol_update=vol_update,
+        latest_leverage=latest_leverage,
+        leverage_last_update_date=leverage_last_update_date,
+    )
+
+    if (
+        payload["action"] == "RESIZE"
+        and payload["resize_prev_shares"] is not None
+        and payload["resize_new_shares"] is not None
+        and str(payload["symbol"]) != "CASH"
+    ):
+        shares_txt = f"{payload['resize_prev_shares']}->{payload['resize_new_shares']}"
+    else:
+        shares_txt = f"sh={payload['target_shares']}"
+
+    price_value = payload["price"]
+    if price_value is not None:
+        shares_txt = f"{shares_txt} px={float(price_value):.2f}"
 
     line_parts = [
-        last_date.date().isoformat(),
-        strategy_label,
-        action_last_bar,
-        current,
+        str(payload["date"]),
+        str(payload["strategy"]),
+        str(payload["action"]),
+        str(payload["symbol"]),
         shares_txt,
     ]
-    if next_rebalance is not None:
-        next_txt = _next_rebalance_date(last_date, next_rebalance).date().isoformat()
-        line_parts.append(f"next={next_txt}")
-    if vol_target is not None:
-        lev_txt = (
-            f"{latest_leverage:.3f}"
-            if latest_leverage is not None and pd.notna(latest_leverage)
-            else "N/A"
-        )
-        line_parts.append(f"lev={lev_txt} upd={leverage_last_update_date or 'N/A'}")
+    if payload["next_rebalance"] is not None:
+        line_parts.append(f"next={payload['next_rebalance']}")
+    if payload["vol_target"] is not None:
+        lev_value = payload["leverage"]
+        lev_txt = f"{float(lev_value):.3f}" if lev_value is not None else "N/A"
+        line_parts.append(f"lev={lev_txt} upd={payload['leverage_update'] or 'N/A'}")
 
     return " | ".join(line_parts)
 
@@ -1535,25 +1612,41 @@ def main() -> None:
         actions_bars = tsmom_action_bars
         actions_weights = tsmom_action_weights
 
-    if args.next_action and actions_bars is not None and actions_weights is not None:
+    if (args.next_action_json or args.next_action) and actions_bars is not None and actions_weights is not None:
         strategy_label = (
             "BASELINE" if args.strategy == "tsmom" and args.long_only else args.strategy
         )
         next_rebalance = args.rebalance if args.strategy in {"dual_mom", "sma200"} else None
-        print(
-            render_next_action_line(
-                strategy_label=strategy_label,
-                bars=actions_bars,
-                weights=actions_weights,
-                actions=dual_actions,
-                resize_rebalance=args.rebalance,
-                next_rebalance=next_rebalance,
-                vol_target=args.vol_target,
-                vol_update=args.vol_update,
-                latest_leverage=latest_leverage,
-                leverage_last_update_date=leverage_last_update_date,
-            )
+
+        payload = build_next_action_payload(
+            strategy_label=strategy_label,
+            bars=actions_bars,
+            weights=actions_weights,
+            actions=dual_actions,
+            resize_rebalance=args.rebalance,
+            next_rebalance=next_rebalance,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
         )
+        if args.next_action_json:
+            print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        else:
+            print(
+                render_next_action_line(
+                    strategy_label=strategy_label,
+                    bars=actions_bars,
+                    weights=actions_weights,
+                    actions=dual_actions,
+                    resize_rebalance=args.rebalance,
+                    next_rebalance=next_rebalance,
+                    vol_target=args.vol_target,
+                    vol_update=args.vol_update,
+                    latest_leverage=latest_leverage,
+                    leverage_last_update_date=leverage_last_update_date,
+                )
+            )
         return
 
     print("CAGR:", round(metrics.cagr(result.returns), 4))
@@ -1594,7 +1687,7 @@ def main() -> None:
 
     maybe_write_metrics_json(args.metrics_out, args.strategy, extended, benchmark)
 
-    print_latest_enabled = args.print_latest and (not args.next_action)
+    print_latest_enabled = args.print_latest and (not args.next_action) and (not args.next_action_json)
 
     if args.strategy == "dual_mom":
         checklist_path = args.checklist_out or "outputs/dual_momentum_checklist.md"
