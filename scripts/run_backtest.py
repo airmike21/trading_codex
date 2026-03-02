@@ -973,6 +973,23 @@ def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
     return f"next business month-end ({next_rebalance.date().isoformat()})"
 
 
+def _next_action_event_id(payload: dict[str, object]) -> str:
+    def g(key: str) -> str:
+        value = payload.get(key, "")
+        return "" if value is None else str(value)
+
+    parts = [
+        g("date"),
+        g("strategy"),
+        g("action"),
+        g("symbol"),
+        g("target_shares"),
+        g("resize_new_shares"),
+        g("next_rebalance"),
+    ]
+    return ":".join(parts)
+
+
 def build_next_action_payload(
     strategy_label: str,
     bars: pd.DataFrame,
@@ -999,7 +1016,7 @@ def build_next_action_payload(
                 pd.Timestamp.today(),
                 next_rebalance,
             ).date().isoformat()
-        return {
+        payload = {
             "schema_version": 1,
             "schema_minor": 0,
             "schema_name": "next_action",
@@ -1017,6 +1034,8 @@ def build_next_action_payload(
             "leverage": leverage_value if vol_target is not None else None,
             "leverage_update": leverage_update_value,
         }
+        payload["event_id"] = _next_action_event_id(payload)
+        return payload
 
     active_symbol = _active_symbol_from_weights(weights)
     last_date = weights.index[-1]
@@ -1064,7 +1083,7 @@ def build_next_action_payload(
             next_rebalance,
         ).date().isoformat()
 
-    return {
+    payload = {
         "schema_version": 1,
         "schema_minor": 0,
         "schema_name": "next_action",
@@ -1086,6 +1105,8 @@ def build_next_action_payload(
         "leverage": leverage_value if vol_target is not None else None,
         "leverage_update": leverage_update_value,
     }
+    payload["event_id"] = _next_action_event_id(payload)
+    return payload
 
 
 def render_next_action_line(
