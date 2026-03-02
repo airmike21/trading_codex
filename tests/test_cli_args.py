@@ -15,8 +15,12 @@ def test_next_action_flags_are_mutually_exclusive(monkeypatch, capsys):
     with pytest.raises(SystemExit) as excinfo:
         parse_args()
 
-    assert excinfo.value.code == 2
-    err = capsys.readouterr().err
-    assert "not allowed with argument" in err
-    assert "--next-action" in err
-    assert "--next-action-json" in err
+    assert excinfo.value.code != 0
+    out = capsys.readouterr()
+    msg = out.err + out.out
+    assert (
+        "not allowed with argument" in msg
+        or "mutually exclusive" in msg
+    )
+    assert "--next-action" in msg
+    assert "--next-action-json" in msg

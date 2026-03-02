@@ -161,33 +161,3 @@ def test_next_action_json_no_stale_resize_on_next_day():
     assert obj["action"] == "HOLD"
     assert obj["resize_prev_shares"] is None
     assert obj["resize_new_shares"] is None
-
-
-
-def test_next_action_flags_mutually_exclusive(monkeypatch, capsys):
-    # Passing both flags should cause argparse to exit with an error.
-    import pytest
-    from scripts.run_backtest import main
-
-    argv = [
-        "run_backtest.py",
-        "--strategy", "dual_mom",
-        "--symbols", "SPY", "QQQ", "IWM", "EFA",
-        "--defensive", "TLT",
-        "--start", "2005-01-01",
-        "--end", "2005-05-02",
-        "--no-plot",
-        "--next-action",
-        "--next-action-json",
-        "--vol-target", "0.10",
-        "--vol-update", "rebalance",
-    ]
-
-    monkeypatch.setattr("sys.argv", argv)
-    with pytest.raises(SystemExit) as e:
-        main()
-    assert e.value.code != 0
-    out = capsys.readouterr()
-    # argparse typically emits to stderr
-    assert "not allowed with argument" in (out.err + out.out)
-
