@@ -92,6 +92,7 @@ def test_next_action_json_is_single_line_and_parseable_and_has_resize_fields():
     assert "\n" not in output
 
     obj = json.loads(output)
+    assert obj["schema_version"] == 1
     assert obj["action"] == "RESIZE"
     assert isinstance(obj["resize_prev_shares"], int)
     assert isinstance(obj["resize_new_shares"], int)
@@ -158,6 +159,7 @@ def test_next_action_json_no_stale_resize_on_next_day():
     )
     output = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     obj = json.loads(output)
+    assert obj["schema_version"] == 1
     assert obj["action"] == "HOLD"
     assert obj["resize_prev_shares"] is None
     assert obj["resize_new_shares"] is None
