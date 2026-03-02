@@ -1000,6 +1000,7 @@ def build_next_action_payload(
                 next_rebalance,
             ).date().isoformat()
         return {
+            "schema_version": 1,
             "date": today,
             "strategy": strategy_label,
             "action": "HOLD",
@@ -1062,6 +1063,7 @@ def build_next_action_payload(
         ).date().isoformat()
 
     return {
+        "schema_version": 1,
         "date": last_date.date().isoformat(),
         "strategy": strategy_label,
         "action": action_last_bar,
