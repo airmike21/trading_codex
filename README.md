@@ -41,6 +41,30 @@ Example:
   --start 2005-01-01 --end 2005-05-02 --no-plot --next-action-json --vol-target 0.10 --vol-update rebalance
 ```
 
+### Alerts: `next_action_alert.py` (prints only on change)
+Use the repo venv + worktree source path:
+```bash
+PY=~/trading_codex/.venv/bin/python
+export PYTHONPATH=$PWD/src
+```
+
+One-line JSON directly from backtest:
+```bash
+$PY scripts/run_backtest.py --strategy dual_mom_v1 --symbols SPY QQQ IWM EFA --dm-defensive-symbol TLT \
+  --start 2005-01-01 --end 2005-05-02 --no-plot --next-action-json \
+  --dm-lookback 252 --dm-top-n 1 --dm-rebalance 21 --data-dir ~/trading_codex/data
+```
+
+Canonical wrapper invocation (pass `run_backtest.py` args after `--`; no `--input` flag):
+```bash
+$PY scripts/next_action_alert.py --state-file /tmp/na_state.json --emit json -- \
+  --strategy dual_mom_v1 --symbols SPY QQQ IWM EFA --dm-defensive-symbol TLT \
+  --start 2005-01-01 --end 2005-05-02 --no-plot --dm-lookback 252 --dm-top-n 1 --dm-rebalance 21 \
+  --data-dir ~/trading_codex/data
+```
+- First run prints one line.
+- Second run prints nothing if `event_id` is unchanged.
+
 ### Windows Alert Monitors
 - Multi-monitor config example: `scripts/windows/trading_codex_alerts.example.json`
 - Windows config location: `%USERPROFILE%\trading_codex_alerts.json`
