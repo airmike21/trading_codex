@@ -95,3 +95,31 @@ def test_risk_parity_cli_args_parse(monkeypatch):
     assert args.rp_rebalance == "W"
     assert args.rp_max_iter == 300
     assert args.rp_tol == 1e-7
+
+
+def test_tsmom_v1_cli_args_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "tsmom_v1",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "--defensive",
+            "TLT",
+            "--ts-lookback",
+            "180",
+            "--ts-rebalance",
+            "W",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "tsmom_v1"
+    assert args.symbols == ["SPY", "QQQ"]
+    assert args.defensive == "TLT"
+    assert args.ts_lookback == 180
+    assert args.ts_rebalance == "W"

@@ -16,6 +16,7 @@ from trading_codex.data import LocalStore
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
 from trading_codex.strategies.risk_parity_erc import RiskParityERCStrategy
 from trading_codex.strategies.sma200 import Sma200RegimeStrategy
+from trading_codex.strategies.tsmom_v1 import TimeSeriesMomentumV1Strategy
 from trading_codex.strategies.trend_tsmom import TrendTSMOM
 
 DUAL_MOM_DEFAULT_SYMBOLS = ["SPY", "QQQ", "IWM", "EFA"]
@@ -37,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run strategy backtests on cached daily bars.")
     parser.add_argument(
         "--strategy",
-        choices=["tsmom", "dual_mom", "sma200", "risk_parity_erc"],
+        choices=["tsmom", "dual_mom", "sma200", "risk_parity_erc", "tsmom_v1"],
         default="tsmom",
     )
     parser.add_argument("--symbol", default="SPY", help="Ticker symbol for single-asset strategy.")
@@ -153,6 +154,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1e-8,
         help="Convergence tolerance for ERC solver updates (default: 1e-8).",
+    )
+    parser.add_argument(
+        "--ts-lookback",
+        type=int,
+        default=252,
+        help="Lookback in trading days for tsmom_v1 momentum filter (default: 252).",
+    )
+    parser.add_argument(
+        "--ts-rebalance",
+        choices=["M", "W"],
+        default="M",
+        help="Rebalance cadence for tsmom_v1: monthly (M) or weekly (W).",
     )
     parser.add_argument(
         "--vol-target",
@@ -814,7 +827,7 @@ def maybe_write_trades(
     out_path = Path(trades_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if strategy_name in {"dual_mom", "sma200", "risk_parity_erc"}:
+    if strategy_name in {"dual_mom", "sma200", "risk_parity_erc", "tsmom_v1"}:
         dual_actions.to_csv(out_path, index=False)
         return
 
@@ -1642,6 +1655,19 @@ def main() -> None:
         )
         plot_label = "risk_parity_erc"
         rebalance_cadence = args.rp_rebalance
+    elif args.strategy == "tsmom_v1":
+        defensive_symbol = _normalize_defensive_symbol(args.defensive)
+        symbols_to_load = args.symbols + ([defensive_symbol] if defensive_symbol else [])
+        symbols_to_load = list(dict.fromkeys(symbols_to_load))
+        bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
+        strategy = TimeSeriesMomentumV1Strategy(
+            symbols=args.symbols,
+            lookback=args.ts_lookback,
+            rebalance=args.ts_rebalance,
+            defensive=defensive_symbol,
+        )
+        plot_label = "tsmom_v1"
+        rebalance_cadence = args.ts_rebalance
     else:
         raise ValueError(f"Unsupported strategy: {args.strategy}")
 
@@ -1676,7 +1702,7 @@ def main() -> None:
     dual_actions = pd.DataFrame()
     actions_bars: pd.DataFrame | None = None
     actions_weights: pd.DataFrame | None = None
-    if args.strategy in {"dual_mom", "sma200", "risk_parity_erc"}:
+    if args.strategy in {"dual_mom", "sma200", "risk_parity_erc", "tsmom_v1"}:
         dual_actions = build_dual_actions(  # type: ignore[arg-type]
             bars,
             result.weights,
@@ -1706,7 +1732,11 @@ def main() -> None:
         strategy_label = (
             "BASELINE" if args.strategy == "tsmom" and args.long_only else args.strategy
         )
-        next_rebalance = rebalance_cadence if args.strategy in {"dual_mom", "sma200", "risk_parity_erc"} else None
+        next_rebalance = (
+            rebalance_cadence
+            if args.strategy in {"dual_mom", "sma200", "risk_parity_erc", "tsmom_v1"}
+            else None
+        )
 
         payload = build_next_action_payload(
             strategy_label=strategy_label,
@@ -1841,6 +1871,19 @@ def main() -> None:
             realized_vol_at_last_update=realized_vol_at_last_update,
         )
     elif args.strategy == "risk_parity_erc":
+        maybe_print_latest_dual(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            rebalance_cadence,
+            print_latest_enabled,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
+        )
+    elif args.strategy == "tsmom_v1":
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]
