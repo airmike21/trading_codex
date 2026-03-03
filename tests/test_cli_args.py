@@ -123,3 +123,33 @@ def test_tsmom_v1_cli_args_parse(monkeypatch):
     assert args.defensive == "TLT"
     assert args.ts_lookback == 180
     assert args.ts_rebalance == "W"
+
+def test_xsmom_v1_cli_args_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "xsmom_v1",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "--defensive",
+            "TLT",
+            "--xs-lookback",
+            "200",
+            "--xs-top-n",
+            "1",
+            "--xs-rebalance",
+            "W",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "xsmom_v1"
+    assert args.symbols == ["SPY", "QQQ"]
+    assert args.defensive == "TLT"
+    assert args.xs_lookback == 200
+    assert args.xs_top_n == 1
+    assert args.xs_rebalance == "W"
