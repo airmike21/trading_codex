@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -10,9 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 
 
-def _default_state_file() -> Path:
-    base = Path.home() / ".cache" / "trading_codex"
-    return base / "next_action_event_id.txt"
+def _default_state_dir() -> Path:
+    return Path.home() / ".cache" / "trading_codex" / "next_action_alert"
 
 
 def _run_cmd(argv: List[str]) -> str:
@@ -45,6 +45,59 @@ def _read_state(path: Path) -> Optional[str]:
         return None
 
 
+def _extract_option_value(args: List[str], flag: str) -> Optional[str]:
+    for i, arg in enumerate(args):
+        if arg == flag:
+            if i + 1 < len(args):
+                return args[i + 1]
+            return None
+        prefix = flag + "="
+        if arg.startswith(prefix):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _extract_option_values(args: List[str], flag: str) -> List[str]:
+    for i, arg in enumerate(args):
+        if arg == flag:
+            values: List[str] = []
+            j = i + 1
+            while j < len(args) and not args[j].startswith("-"):
+                values.append(args[j])
+                j += 1
+            return values
+        prefix = flag + "="
+        if arg.startswith(prefix):
+            raw = arg.split("=", 1)[1]
+            if not raw:
+                return []
+            return [item for item in raw.split(",") if item]
+    return []
+
+
+def resolve_state_path(
+    state_file: Optional[str | Path],
+    state_dir: Path,
+    state_key: Optional[str],
+    derived_key_inputs: dict[str, object],
+) -> Path:
+    if state_file is not None:
+        return Path(state_file)
+
+    if state_key:
+        key_source = state_key
+    else:
+        key_source = json.dumps(
+            derived_key_inputs,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+
+    derived_key = hashlib.sha1(key_source.encode("utf-8")).hexdigest()[:12]
+    return state_dir / f"next_action_alert.{derived_key}.json"
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Emit a one-line alert ONLY when next_action event_id changes."
@@ -52,8 +105,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--state-file",
         type=Path,
-        default=_default_state_file(),
-        help="Where to store last seen event_id (default: ~/.cache/trading_codex/next_action_event_id.txt)",
+        default=None,
+        help="Explicit state file path for last seen event_id. If set, keyed state files are disabled.",
+    )
+    p.add_argument(
+        "--state-key",
+        default=None,
+        help="Optional key for per-monitor state isolation when --state-file is not set.",
     )
     p.add_argument(
         "--emit",
@@ -109,10 +167,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise RuntimeError("Payload missing event_id. Ensure --next-action-json includes event_id.")
 
     event_id = str(payload["event_id"])
-    prev = _read_state(args.state_file)
+    derived_key_inputs = {
+        "strategy": payload.get("strategy"),
+        "symbol": payload.get("symbol"),
+        "symbols": _extract_option_values(rb_args, "--symbols"),
+        "defensive": _extract_option_value(rb_args, "--defensive"),
+        "args_fingerprint": " ".join(rb_args),
+    }
+    state_path = resolve_state_path(
+        state_file=args.state_file,
+        state_dir=_default_state_dir(),
+        state_key=args.state_key,
+        derived_key_inputs=derived_key_inputs,
+    )
+    prev = _read_state(state_path)
 
     if args.verbose:
-        print(f"[next_action_alert] prev={prev!r} new={event_id!r} state={args.state_file}", file=sys.stderr)
+        print(f"[next_action_alert] prev={prev!r} new={event_id!r} state={state_path}", file=sys.stderr)
 
     # No change -> no output
     if prev == event_id:
@@ -120,7 +191,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Change -> update state, then emit exactly one line
     if not args.dry_run:
-        _atomic_write(args.state_file, event_id + "\n")
+        _atomic_write(state_path, event_id + "\n")
 
     if args.emit == "json":
         # print exactly one line (the JSON line from run_backtest)
