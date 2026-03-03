@@ -14,6 +14,7 @@ from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult, run_backtest
 from trading_codex.data import LocalStore
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
+from trading_codex.strategies.risk_parity_erc import RiskParityERCStrategy
 from trading_codex.strategies.sma200 import Sma200RegimeStrategy
 from trading_codex.strategies.trend_tsmom import TrendTSMOM
 
@@ -34,7 +35,11 @@ TRACKER_COLUMNS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run strategy backtests on cached daily bars.")
-    parser.add_argument("--strategy", choices=["tsmom", "dual_mom", "sma200"], default="tsmom")
+    parser.add_argument(
+        "--strategy",
+        choices=["tsmom", "dual_mom", "sma200", "risk_parity_erc"],
+        default="tsmom",
+    )
     parser.add_argument("--symbol", default="SPY", help="Ticker symbol for single-asset strategy.")
     parser.add_argument("--start", default=None, help="Inclusive start date (YYYY-MM-DD).")
     parser.add_argument("--end", default=None, help="Inclusive end date (YYYY-MM-DD).")
@@ -124,6 +129,30 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=200,
         help="SMA window for regime-gate=sma200 (default: 200).",
+    )
+    parser.add_argument(
+        "--rp-lookback",
+        type=int,
+        default=63,
+        help="Lookback in trading days for risk parity ERC covariance (default: 63).",
+    )
+    parser.add_argument(
+        "--rp-rebalance",
+        choices=["M", "W"],
+        default="M",
+        help="Rebalance cadence for risk parity ERC: monthly (M) or weekly (W).",
+    )
+    parser.add_argument(
+        "--rp-max-iter",
+        type=int,
+        default=200,
+        help="Maximum iterations for ERC solver updates (default: 200).",
+    )
+    parser.add_argument(
+        "--rp-tol",
+        type=float,
+        default=1e-8,
+        help="Convergence tolerance for ERC solver updates (default: 1e-8).",
     )
     parser.add_argument(
         "--vol-target",
@@ -785,7 +814,7 @@ def maybe_write_trades(
     out_path = Path(trades_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if strategy_name in {"dual_mom", "sma200"}:
+    if strategy_name in {"dual_mom", "sma200", "risk_parity_erc"}:
         dual_actions.to_csv(out_path, index=False)
         return
 
@@ -1562,6 +1591,7 @@ def maybe_print_latest_sma200(
 def main() -> None:
     args = parse_args()
     store = LocalStore(base_dir=args.data_dir)
+    rebalance_cadence = args.rebalance
 
     if args.strategy == "tsmom":
         bars = store.read_bars(args.symbol, start=args.start, end=args.end)
@@ -1588,7 +1618,7 @@ def main() -> None:
             gate_sma_window=args.gate_sma_window,
         )
         plot_label = "dual_momentum"
-    else:
+    elif args.strategy == "sma200":
         defensive_symbol = _normalize_defensive_symbol(args.defensive)
         symbols_to_load = [args.risk_symbol] + ([defensive_symbol] if defensive_symbol else [])
         symbols_to_load = list(dict.fromkeys(symbols_to_load))
@@ -1600,6 +1630,20 @@ def main() -> None:
             rebalance=args.rebalance,
         )
         plot_label = "sma200_regime"
+    elif args.strategy == "risk_parity_erc":
+        symbols_to_load = list(dict.fromkeys(args.symbols))
+        bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
+        strategy = RiskParityERCStrategy(
+            symbols=symbols_to_load,
+            lookback=args.rp_lookback,
+            rebalance=args.rp_rebalance,
+            max_iter=args.rp_max_iter,
+            tol=args.rp_tol,
+        )
+        plot_label = "risk_parity_erc"
+        rebalance_cadence = args.rp_rebalance
+    else:
+        raise ValueError(f"Unsupported strategy: {args.strategy}")
 
     result = run_backtest(
         bars,
@@ -1611,7 +1655,7 @@ def main() -> None:
         vol_min=args.min_leverage,
         vol_max=args.max_leverage,
         vol_update=args.vol_update,
-        rebalance_cadence=args.rebalance,
+        rebalance_cadence=rebalance_cadence,
     )
 
     latest_realized_vol = None
@@ -1622,7 +1666,7 @@ def main() -> None:
         latest_dt = result.returns.index[-1]
         latest_realized_vol = float(result.realized_vol.loc[latest_dt])
         latest_leverage = float(result.leverage.loc[latest_dt])
-        update_mask = _vol_update_mask_for_print(result.returns.index, args.vol_update, args.rebalance)
+        update_mask = _vol_update_mask_for_print(result.returns.index, args.vol_update, rebalance_cadence)
         update_dates = update_mask.index[update_mask]
         if len(update_dates):
             last_update_dt = update_dates[-1]
@@ -1632,13 +1676,13 @@ def main() -> None:
     dual_actions = pd.DataFrame()
     actions_bars: pd.DataFrame | None = None
     actions_weights: pd.DataFrame | None = None
-    if args.strategy in {"dual_mom", "sma200"}:
+    if args.strategy in {"dual_mom", "sma200", "risk_parity_erc"}:
         dual_actions = build_dual_actions(  # type: ignore[arg-type]
             bars,
             result.weights,
             vol_target=args.vol_target,
             vol_update=args.vol_update,
-            rebalance=args.rebalance,
+            rebalance=rebalance_cadence,
         )
         actions_bars = bars
         actions_weights = result.weights  # type: ignore[assignment]
@@ -1653,7 +1697,7 @@ def main() -> None:
             tsmom_action_weights,
             vol_target=args.vol_target,
             vol_update=args.vol_update,
-            rebalance=args.rebalance,
+            rebalance=rebalance_cadence,
         )
         actions_bars = tsmom_action_bars
         actions_weights = tsmom_action_weights
@@ -1662,14 +1706,14 @@ def main() -> None:
         strategy_label = (
             "BASELINE" if args.strategy == "tsmom" and args.long_only else args.strategy
         )
-        next_rebalance = args.rebalance if args.strategy in {"dual_mom", "sma200"} else None
+        next_rebalance = rebalance_cadence if args.strategy in {"dual_mom", "sma200", "risk_parity_erc"} else None
 
         payload = build_next_action_payload(
             strategy_label=strategy_label,
             bars=actions_bars,
             weights=actions_weights,
             actions=dual_actions,
-            resize_rebalance=args.rebalance,
+            resize_rebalance=rebalance_cadence,
             next_rebalance=next_rebalance,
             vol_target=args.vol_target,
             vol_lookback=args.vol_lookback,
@@ -1687,7 +1731,7 @@ def main() -> None:
                     bars=actions_bars,
                     weights=actions_weights,
                     actions=dual_actions,
-                    resize_rebalance=args.rebalance,
+                    resize_rebalance=rebalance_cadence,
                     next_rebalance=next_rebalance,
                     vol_target=args.vol_target,
                     vol_lookback=args.vol_lookback,
@@ -1788,6 +1832,19 @@ def main() -> None:
             args.risk_symbol,
             args.sma_window,
             args.rebalance,
+            print_latest_enabled,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
+        )
+    elif args.strategy == "risk_parity_erc":
+        maybe_print_latest_dual(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            rebalance_cadence,
             print_latest_enabled,
             vol_target=args.vol_target,
             vol_update=args.vol_update,

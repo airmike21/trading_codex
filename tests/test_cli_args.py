@@ -63,3 +63,35 @@ def test_legacy_vol_min_max_flags_still_parse(monkeypatch):
     args = parse_args()
     assert args.min_leverage == 0.1
     assert args.max_leverage == 0.9
+
+
+def test_risk_parity_cli_args_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "risk_parity_erc",
+            "--symbols",
+            "SPY",
+            "TLT",
+            "GLD",
+            "--rp-lookback",
+            "80",
+            "--rp-rebalance",
+            "W",
+            "--rp-max-iter",
+            "300",
+            "--rp-tol",
+            "1e-7",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "risk_parity_erc"
+    assert args.symbols == ["SPY", "TLT", "GLD"]
+    assert args.rp_lookback == 80
+    assert args.rp_rebalance == "W"
+    assert args.rp_max_iter == 300
+    assert args.rp_tol == 1e-7
