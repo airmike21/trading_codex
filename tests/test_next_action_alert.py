@@ -84,3 +84,86 @@ def test_alert_emit_text(monkeypatch, tmp_path, capsys):
     out_lines = capsys.readouterr().out.splitlines()
     assert out_lines == [text_line]
     assert state.read_text().strip() == "E2"
+
+
+def test_explicit_state_file_ignores_key(tmp_path):
+    from scripts import next_action_alert
+
+    explicit = tmp_path / "legacy_state.txt"
+    resolved = next_action_alert.resolve_state_path(
+        state_file=str(explicit),
+        state_dir=tmp_path / "ignored",
+        state_key="my-key",
+        derived_key_inputs={"strategy": "dual_mom"},
+    )
+
+    assert resolved == explicit
+
+
+def test_state_key_changes_filename(tmp_path):
+    from scripts import next_action_alert
+
+    state_dir = tmp_path / "state"
+    derived_inputs = {
+        "strategy": "dual_mom",
+        "symbol": "TLT",
+        "symbols": ["SPY", "QQQ", "IWM", "EFA"],
+        "defensive": "TLT",
+        "args_fingerprint": "--strategy dual_mom --symbols SPY QQQ IWM EFA --defensive TLT",
+    }
+
+    path_a = next_action_alert.resolve_state_path(
+        state_file=None,
+        state_dir=state_dir,
+        state_key="monitor-a",
+        derived_key_inputs=derived_inputs,
+    )
+    path_b = next_action_alert.resolve_state_path(
+        state_file=None,
+        state_dir=state_dir,
+        state_key="monitor-b",
+        derived_key_inputs=derived_inputs,
+    )
+
+    assert path_a != path_b
+    assert path_a.parent == state_dir
+    assert path_b.parent == state_dir
+    assert path_a.name.startswith("next_action_alert.")
+    assert path_a.suffix == ".json"
+
+
+def test_auto_derived_key_differs_for_diff_monitor_inputs(tmp_path):
+    from scripts import next_action_alert
+
+    state_dir = tmp_path / "state"
+    inputs_a = {
+        "strategy": "dual_mom",
+        "symbol": "TLT",
+        "symbols": ["SPY", "QQQ", "IWM", "EFA"],
+        "defensive": "TLT",
+        "args_fingerprint": "--strategy dual_mom --symbols SPY QQQ IWM EFA --defensive TLT",
+    }
+    inputs_b = {
+        "strategy": "sma200",
+        "symbol": "SPY",
+        "symbols": ["SPY"],
+        "defensive": None,
+        "args_fingerprint": "--strategy sma200 --symbols SPY",
+    }
+
+    path_a = next_action_alert.resolve_state_path(
+        state_file=None,
+        state_dir=state_dir,
+        state_key=None,
+        derived_key_inputs=inputs_a,
+    )
+    path_b = next_action_alert.resolve_state_path(
+        state_file=None,
+        state_dir=state_dir,
+        state_key=None,
+        derived_key_inputs=inputs_b,
+    )
+
+    assert path_a != path_b
+    assert path_a.parent == state_dir
+    assert path_b.parent == state_dir

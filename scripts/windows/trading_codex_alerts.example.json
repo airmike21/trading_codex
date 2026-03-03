@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "monitors": [
+    {
+      "name": "dual_mom_core",
+      "interval_minutes": 30,
+      "emit": "json",
+      "wsl_distro": "Ubuntu",
+      "wsl_repo_path": "~/trading_codex",
+      "wsl_python": ".venv/bin/python",
+      "next_action_args": [
+        "--emit", "json",
+        "--state-key", "dual_mom_core",
+        "--",
+        "--strategy", "dual_mom",
+        "--symbols", "SPY", "QQQ", "IWM", "EFA",
+        "--defensive", "TLT",
+        "--start", "2005-01-01",
+        "--end", "2005-05-02",
+        "--no-plot",
+        "--vol-target", "0.10",
+        "--vol-update", "rebalance"
+      ]
+    },
+    {
+      "name": "sma200_spy",
+      "interval_minutes": 60,
+      "emit": "json",
+      "wsl_distro": "Ubuntu",
+      "wsl_repo_path": "~/trading_codex",
+      "wsl_python": ".venv/bin/python",
+      "next_action_args": [
+        "--emit", "json",
+        "--state-key", "sma200_spy",
+        "--",
+        "--strategy", "sma200",
+        "--symbols", "SPY",
+        "--start", "2005-01-01",
+        "--end", "2005-05-02",
+        "--no-plot"
+      ]
+    }
+  ]
+}
