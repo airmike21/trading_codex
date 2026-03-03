@@ -59,3 +59,7 @@ Keyed state files for the wrapper are stored under:
 Manual force-toast options:
 1. Use a fresh `--state-key` value in monitor `next_action_args` (for example `--state-key force_test_123`) and run the task.
 2. Or delete the matching keyed file under `~/.cache/trading_codex/next_action_alert/` and run again.
+
+### Assistant / Codex Handoff
+- Source of truth: docs/ASSISTANT_BRIEF.md
+- To start a new chat: paste docs/BOOTSTRAP_PROMPT.txt

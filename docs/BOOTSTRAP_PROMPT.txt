@@ -1,0 +1,21 @@
+You are helping me continue my Trading Codex project. Use the repo itself as the source of truth.
+
+IMPORTANT:
+- Repo root (WSL): ~/trading_codex
+- Default branch: master (not main)
+- Read docs/ASSISTANT_BRIEF.md first and follow its invariants and workflow contract.
+- I use Codex CLI in WSL with “do it all” permissions; I want large Codex-ready prompts that Codex can execute end-to-end.
+
+What I want from you:
+1) Read docs/ASSISTANT_BRIEF.md.
+2) Propose the best next implementation step (briefly).
+3) Provide ONE Codex-ready prompt to implement the current priority task end-to-end:
+   - create a branch
+   - implement code
+   - add tests
+   - run `.venv/bin/python -m pytest -q`
+   - commit, push
+   - print a final report (git status/log, pytest line, diffstat, example command)
+
+Current priority task:
+- Volatility Target Overlay v1 (details in docs/ASSISTANT_BRIEF.md under “Current Priorities”)
