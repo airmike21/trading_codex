@@ -153,3 +153,34 @@ def test_xsmom_v1_cli_args_parse(monkeypatch):
     assert args.xs_lookback == 200
     assert args.xs_top_n == 1
     assert args.xs_rebalance == "W"
+
+
+def test_dual_mom_v1_cli_args_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "dual_mom_v1",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "--dm-lookback",
+            "180",
+            "--dm-top-n",
+            "2",
+            "--dm-rebalance",
+            "15",
+            "--dm-defensive-symbol",
+            "SHY",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "dual_mom_v1"
+    assert args.symbols == ["SPY", "QQQ"]
+    assert args.dm_lookback == 180
+    assert args.dm_top_n == 2
+    assert args.dm_rebalance == 15
+    assert args.dm_defensive_symbol == "SHY"

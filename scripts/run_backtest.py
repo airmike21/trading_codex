@@ -13,6 +13,7 @@ import pandas as pd
 from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult, run_backtest
 from trading_codex.data import LocalStore
+from trading_codex.strategies.dual_mom_v1 import DualMomentumV1Strategy
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
 from trading_codex.strategies.risk_parity_erc import RiskParityERCStrategy
 from trading_codex.strategies.sma200 import Sma200RegimeStrategy
@@ -39,7 +40,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run strategy backtests on cached daily bars.")
     parser.add_argument(
         "--strategy",
-        choices=["tsmom", "dual_mom", "sma200", "risk_parity_erc", "tsmom_v1", "xsmom_v1"],
+        choices=[
+            "tsmom",
+            "dual_mom",
+            "sma200",
+            "risk_parity_erc",
+            "tsmom_v1",
+            "xsmom_v1",
+            "dual_mom_v1",
+        ],
         default="tsmom",
     )
     parser.add_argument("--symbol", default="SPY", help="Ticker symbol for single-asset strategy.")
@@ -185,6 +194,29 @@ def parse_args() -> argparse.Namespace:
         choices=["M", "W"],
         default="M",
         help="Rebalance cadence for xsmom_v1: monthly (M) or weekly (W).",
+    )
+    parser.add_argument(
+        "--dm-lookback",
+        type=int,
+        default=252,
+        help="Lookback in trading days for dual_mom_v1 momentum filter (default: 252).",
+    )
+    parser.add_argument(
+        "--dm-top-n",
+        type=int,
+        default=1,
+        help="Top N assets to hold for dual_mom_v1 (default: 1).",
+    )
+    parser.add_argument(
+        "--dm-rebalance",
+        type=int,
+        default=21,
+        help="Fixed trading-day rebalance interval for dual_mom_v1 (default: 21).",
+    )
+    parser.add_argument(
+        "--dm-defensive-symbol",
+        default="SHY",
+        help="Defensive symbol for dual_mom_v1 fallback (default: SHY).",
     )
     parser.add_argument(
         "--vol-target",
@@ -846,7 +878,14 @@ def maybe_write_trades(
     out_path = Path(trades_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if strategy_name in {"dual_mom", "sma200", "risk_parity_erc", "tsmom_v1", "xsmom_v1"}:
+    if strategy_name in {
+        "dual_mom",
+        "sma200",
+        "risk_parity_erc",
+        "tsmom_v1",
+        "xsmom_v1",
+        "dual_mom_v1",
+    }:
         dual_actions.to_csv(out_path, index=False)
         return
 
@@ -1701,6 +1740,21 @@ def main() -> None:
         )
         plot_label = "xsmom_v1"
         rebalance_cadence = args.xs_rebalance
+    elif args.strategy == "dual_mom_v1":
+        risk_symbols = list(dict.fromkeys(args.symbols))
+        defensive_symbol = args.dm_defensive_symbol.strip()
+        if not defensive_symbol:
+            raise ValueError("--dm-defensive-symbol must not be empty.")
+        symbols_to_load = list(dict.fromkeys(risk_symbols + [defensive_symbol]))
+        bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
+        strategy = DualMomentumV1Strategy(
+            symbols=risk_symbols,
+            lookback=args.dm_lookback,
+            top_n=args.dm_top_n,
+            rebalance=args.dm_rebalance,
+            defensive_symbol=defensive_symbol,
+        )
+        plot_label = "dual_mom_v1"
     else:
         raise ValueError(f"Unsupported strategy: {args.strategy}")
 
@@ -1735,7 +1789,14 @@ def main() -> None:
     dual_actions = pd.DataFrame()
     actions_bars: pd.DataFrame | None = None
     actions_weights: pd.DataFrame | None = None
-    if args.strategy in {"dual_mom", "sma200", "risk_parity_erc", "tsmom_v1", "xsmom_v1"}:
+    if args.strategy in {
+        "dual_mom",
+        "sma200",
+        "risk_parity_erc",
+        "tsmom_v1",
+        "xsmom_v1",
+        "dual_mom_v1",
+    }:
         dual_actions = build_dual_actions(  # type: ignore[arg-type]
             bars,
             result.weights,
@@ -1934,6 +1995,19 @@ def main() -> None:
             bars,
             result.weights,  # type: ignore[arg-type]
             rebalance_cadence,
+            print_latest_enabled,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
+        )
+    elif args.strategy == "dual_mom_v1":
+        maybe_print_latest_dual(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            "M",
             print_latest_enabled,
             vol_target=args.vol_target,
             vol_update=args.vol_update,
