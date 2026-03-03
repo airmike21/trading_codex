@@ -73,6 +73,7 @@ def test_next_action_json_is_single_line_and_parseable_and_has_resize_fields():
     )
     assert isinstance(result.weights, pd.DataFrame)
     assert result.leverage is not None
+    assert result.realized_vol is not None
 
     actions = build_dual_actions(
         bars,
@@ -102,7 +103,9 @@ def test_next_action_json_is_single_line_and_parseable_and_has_resize_fields():
         resize_rebalance="M",
         next_rebalance="M",
         vol_target=0.10,
+        vol_lookback=5,
         vol_update="rebalance",
+        latest_realized_vol=float(result.realized_vol.loc[resize_dt]),
         latest_leverage=float(result.leverage.loc[resize_dt]),
         leverage_last_update_date=resize_dt.date().isoformat(),
     )
@@ -120,6 +123,8 @@ def test_next_action_json_is_single_line_and_parseable_and_has_resize_fields():
     assert isinstance(obj["resize_new_shares"], int)
     assert obj["resize_prev_shares"] != obj["resize_new_shares"]
     assert obj["next_rebalance"] is not None
+    assert obj["vol_lookback"] == 5
+    assert obj["realized_vol"] is not None
     assert obj["leverage"] is not None
 
 
@@ -141,6 +146,7 @@ def test_next_action_json_no_stale_resize_on_next_day():
     )
     assert isinstance(result.weights, pd.DataFrame)
     assert result.leverage is not None
+    assert result.realized_vol is not None
 
     actions = build_dual_actions(
         bars,
@@ -175,7 +181,9 @@ def test_next_action_json_no_stale_resize_on_next_day():
         resize_rebalance="M",
         next_rebalance="M",
         vol_target=0.10,
+        vol_lookback=5,
         vol_update="rebalance",
+        latest_realized_vol=float(result.realized_vol.loc[next_dt]),
         latest_leverage=float(result.leverage.loc[next_dt]),
         leverage_last_update_date=resize_dt.date().isoformat(),
     )
@@ -189,3 +197,5 @@ def test_next_action_json_no_stale_resize_on_next_day():
     assert obj["action"] == "HOLD"
     assert obj["resize_prev_shares"] is None
     assert obj["resize_new_shares"] is None
+    assert obj["vol_lookback"] == 5
+    assert obj["realized_vol"] is not None

@@ -134,17 +134,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vol-lookback",
         type=int,
-        default=20,
-        help="Lookback window for realized vol estimate (default: 20).",
+        default=63,
+        help="Lookback window for realized vol estimate (default: 63).",
     )
     parser.add_argument(
+        "--max-leverage",
         "--vol-max",
+        dest="max_leverage",
         type=float,
         default=1.0,
         help="Maximum leverage for vol overlay (default: 1.0).",
     )
     parser.add_argument(
+        "--min-leverage",
         "--vol-min",
+        dest="min_leverage",
         type=float,
         default=0.0,
         help="Minimum leverage for vol overlay (default: 0.0).",
@@ -998,10 +1002,17 @@ def build_next_action_payload(
     resize_rebalance: str,
     next_rebalance: str | None,
     vol_target: float | None = None,
+    vol_lookback: int | None = None,
     vol_update: str = "rebalance",
+    latest_realized_vol: float | None = None,
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
 ) -> dict[str, object]:
+    realized_vol_value = (
+        float(latest_realized_vol)
+        if latest_realized_vol is not None and pd.notna(latest_realized_vol)
+        else None
+    )
     leverage_value = (
         float(latest_leverage)
         if latest_leverage is not None and pd.notna(latest_leverage)
@@ -1030,7 +1041,9 @@ def build_next_action_payload(
             "resize_new_shares": None,
             "next_rebalance": next_rebalance_value,
             "vol_target": float(vol_target) if vol_target is not None else None,
+            "vol_lookback": int(vol_lookback) if vol_target is not None and vol_lookback is not None else None,
             "vol_update": vol_update if vol_target is not None else None,
+            "realized_vol": realized_vol_value if vol_target is not None else None,
             "leverage": leverage_value if vol_target is not None else None,
             "leverage_update": leverage_update_value,
         }
@@ -1101,7 +1114,9 @@ def build_next_action_payload(
         else None,
         "next_rebalance": next_rebalance_value,
         "vol_target": float(vol_target) if vol_target is not None else None,
+        "vol_lookback": int(vol_lookback) if vol_target is not None and vol_lookback is not None else None,
         "vol_update": vol_update if vol_target is not None else None,
+        "realized_vol": realized_vol_value if vol_target is not None else None,
         "leverage": leverage_value if vol_target is not None else None,
         "leverage_update": leverage_update_value,
     }
@@ -1117,7 +1132,9 @@ def render_next_action_line(
     resize_rebalance: str,
     next_rebalance: str | None,
     vol_target: float | None = None,
+    vol_lookback: int | None = None,
     vol_update: str = "rebalance",
+    latest_realized_vol: float | None = None,
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
 ) -> str:
@@ -1129,7 +1146,9 @@ def render_next_action_line(
         resize_rebalance=resize_rebalance,
         next_rebalance=next_rebalance,
         vol_target=vol_target,
+        vol_lookback=vol_lookback,
         vol_update=vol_update,
+        latest_realized_vol=latest_realized_vol,
         latest_leverage=latest_leverage,
         leverage_last_update_date=leverage_last_update_date,
     )
@@ -1589,8 +1608,8 @@ def main() -> None:
         commission_bps=args.commission_bps,
         vol_target=args.vol_target,
         vol_lookback=args.vol_lookback,
-        vol_min=args.vol_min,
-        vol_max=args.vol_max,
+        vol_min=args.min_leverage,
+        vol_max=args.max_leverage,
         vol_update=args.vol_update,
         rebalance_cadence=args.rebalance,
     )
@@ -1653,7 +1672,9 @@ def main() -> None:
             resize_rebalance=args.rebalance,
             next_rebalance=next_rebalance,
             vol_target=args.vol_target,
+            vol_lookback=args.vol_lookback,
             vol_update=args.vol_update,
+            latest_realized_vol=latest_realized_vol,
             latest_leverage=latest_leverage,
             leverage_last_update_date=leverage_last_update_date,
         )
@@ -1669,7 +1690,9 @@ def main() -> None:
                     resize_rebalance=args.rebalance,
                     next_rebalance=next_rebalance,
                     vol_target=args.vol_target,
+                    vol_lookback=args.vol_lookback,
                     vol_update=args.vol_update,
+                    latest_realized_vol=latest_realized_vol,
                     latest_leverage=latest_leverage,
                     leverage_last_update_date=leverage_last_update_date,
                 )

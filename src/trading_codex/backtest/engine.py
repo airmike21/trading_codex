@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from trading_codex.backtest.costs import bps_cost
+from trading_codex.backtest.vol_overlay import apply_vol_target_overlay
 from trading_codex.data.contracts import BAR_COLUMNS, validate_bars, validate_signals
 from trading_codex.strategies.base import Strategy
 
@@ -59,42 +60,6 @@ def _as_weight_frame(
     return signal_df.clip(-1.0, 1.0).astype(float)
 
 
-def _apply_vol_target_overlay(
-    base_weights: pd.Series | pd.DataFrame,
-    asset_returns: pd.Series | pd.DataFrame,
-    target_vol: float,
-    lookback: int,
-    min_lev: float,
-    max_lev: float,
-    update_mask: pd.Series | None = None,
-) -> tuple[pd.Series | pd.DataFrame, pd.Series, pd.Series]:
-    if isinstance(base_weights, pd.DataFrame):
-        portfolio_returns = (base_weights * asset_returns).sum(axis=1)
-    else:
-        portfolio_returns = base_weights * asset_returns
-
-    realized_vol = portfolio_returns.rolling(lookback).std().shift(1) * (252.0**0.5)
-    leverage_daily = pd.Series(0.0, index=portfolio_returns.index, dtype=float)
-
-    valid = realized_vol.notna() & (realized_vol > 0.0)
-    leverage_daily.loc[valid] = (target_vol / realized_vol.loc[valid]).clip(
-        lower=min_lev, upper=max_lev
-    )
-
-    if update_mask is None:
-        leverage = leverage_daily
-    else:
-        aligned_mask = update_mask.reindex(leverage_daily.index).fillna(False).astype(bool)
-        leverage = leverage_daily.where(aligned_mask).ffill().fillna(0.0)
-
-    if isinstance(base_weights, pd.DataFrame):
-        scaled_weights = base_weights.mul(leverage, axis=0)
-    else:
-        scaled_weights = base_weights * leverage
-
-    return scaled_weights, leverage, realized_vol
-
-
 def _calendar_rebalance_update_mask(index: pd.DatetimeIndex, rebalance_cadence: str) -> pd.Series:
     cadence = rebalance_cadence.upper()
     if cadence == "M":
@@ -118,7 +83,7 @@ def run_backtest(
     slippage_bps: float = 1.0,
     commission_bps: float = 0.0,
     vol_target: float | None = None,
-    vol_lookback: int = 20,
+    vol_lookback: int = 63,
     vol_min: float = 0.0,
     vol_max: float = 1.0,
     vol_update: str = "rebalance",
@@ -158,13 +123,13 @@ def run_backtest(
                 if vol_update == "rebalance"
                 else None
             )
-            weights, leverage, realized_vol = _apply_vol_target_overlay(
+            weights, leverage, realized_vol = apply_vol_target_overlay(
                 base_weights,
                 rets,
                 target_vol=float(vol_target),
                 lookback=int(vol_lookback),
-                min_lev=float(vol_min),
-                max_lev=float(vol_max),
+                min_leverage=float(vol_min),
+                max_leverage=float(vol_max),
                 update_mask=update_mask,
             )
         else:
@@ -207,13 +172,13 @@ def run_backtest(
             if vol_update == "rebalance"
             else None
         )
-        weights, leverage, realized_vol = _apply_vol_target_overlay(
+        weights, leverage, realized_vol = apply_vol_target_overlay(
             base_weights,
             rets,
             target_vol=float(vol_target),
             lookback=int(vol_lookback),
-            min_lev=float(vol_min),
-            max_lev=float(vol_max),
+            min_leverage=float(vol_min),
+            max_leverage=float(vol_max),
             update_mask=update_mask,
         )
     else:

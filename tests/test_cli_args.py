@@ -24,3 +24,42 @@ def test_next_action_flags_are_mutually_exclusive(monkeypatch, capsys):
     )
     assert "--next-action" in msg
     assert "--next-action-json" in msg
+
+
+def test_vol_leverage_flags_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--min-leverage",
+            "0.2",
+            "--max-leverage",
+            "1.5",
+            "--vol-lookback",
+            "63",
+        ],
+    )
+
+    args = parse_args()
+    assert args.min_leverage == 0.2
+    assert args.max_leverage == 1.5
+    assert args.vol_lookback == 63
+
+
+def test_legacy_vol_min_max_flags_still_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--vol-min",
+            "0.1",
+            "--vol-max",
+            "0.9",
+        ],
+    )
+
+    args = parse_args()
+    assert args.min_leverage == 0.1
+    assert args.max_leverage == 0.9
