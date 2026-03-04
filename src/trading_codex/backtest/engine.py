@@ -122,6 +122,7 @@ def run_backtest(
         signals = strategy.generate_signals(bars)
         base_weights = _as_weight_frame(signals, bars.index, symbols)
         if ivol:
+            # Relative ivol sizing always runs before optional portfolio-level vol targeting.
             base_weights = apply_inverse_vol_overlay(
                 bars,
                 base_weights,
