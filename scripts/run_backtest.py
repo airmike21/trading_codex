@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -38,6 +39,43 @@ TRACKER_COLUMNS = [
 ]
 
 
+@dataclass(frozen=True)
+class RunBacktestConfig:
+    rebalance_anchor_date: str | None = None
+
+
+def _load_toml_dict(path: Path) -> dict[str, object]:
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore[import-not-found]
+
+    with path.open("rb") as fh:
+        payload = tomllib.load(fh)
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_run_backtest_config(config_path: str | os.PathLike[str] | None) -> RunBacktestConfig:
+    if not config_path:
+        return RunBacktestConfig()
+
+    path = Path(config_path)
+    if not path.exists():
+        return RunBacktestConfig()
+
+    raw_cfg = _load_toml_dict(path)
+    raw_anchor = raw_cfg.get("rebalance_anchor_date")
+    if raw_anchor is None:
+        return RunBacktestConfig()
+    if not isinstance(raw_anchor, str):
+        raise ValueError("config key 'rebalance_anchor_date' must be a string or null.")
+
+    anchor = raw_anchor.strip()
+    return RunBacktestConfig(
+        rebalance_anchor_date=anchor if anchor else None,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run strategy backtests on cached daily bars.")
     parser.add_argument(
@@ -61,6 +99,11 @@ def parse_args() -> argparse.Namespace:
         "--data-dir",
         default="data",
         help="Directory containing cached parquet bars (default: data).",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.toml",
+        help="Optional TOML config path (default: ./config.toml if present).",
     )
     parser.add_argument(
         "--plot-out",
@@ -1751,6 +1794,10 @@ def maybe_print_latest_sma200(
 
 def main() -> None:
     args = parse_args()
+    cfg = load_run_backtest_config(args.config)
+    if args.rebalance_anchor_date is None and cfg.rebalance_anchor_date is not None:
+        args.rebalance_anchor_date = cfg.rebalance_anchor_date
+
     store = LocalStore(base_dir=args.data_dir)
     rebalance_cadence = args.rebalance
 
