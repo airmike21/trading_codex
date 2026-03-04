@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,17 @@ import pytest
 
 def _mk_completed(stdout: str = "", stderr: str = "", returncode: int = 0):
     return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def test_mode_cli_defaults_and_parses():
+    from scripts import next_action_alert
+
+    parser = next_action_alert.build_parser()
+    args_default = parser.parse_args([])
+    args_due = parser.parse_args(["--mode", "change_or_rebalance_due"])
+
+    assert args_default.mode == "change_only"
+    assert args_due.mode == "change_or_rebalance_due"
 
 
 def test_alert_emits_once_then_suppresses(monkeypatch, tmp_path, capsys):
@@ -167,3 +179,182 @@ def test_auto_derived_key_differs_for_diff_monitor_inputs(tmp_path):
     assert path_a != path_b
     assert path_a.parent == state_dir
     assert path_b.parent == state_dir
+
+
+def test_due_mode_emits_once_for_same_event_id(monkeypatch, tmp_path, capsys):
+    from scripts import next_action_alert
+
+    state = tmp_path / "state.txt"
+    state.write_text("E1\n", encoding="utf-8")
+
+    payload = {
+        "event_id": "E1",
+        "strategy": "dual_mom",
+        "symbol": "TLT",
+        "next_rebalance": "2025-01-01",
+    }
+    json_line = json.dumps(payload, separators=(",", ":"))
+
+    def fake_run(argv, capture_output, text):
+        if "--next-action-json" in argv:
+            return _mk_completed(stdout=json_line + "\n")
+        if "--next-action" in argv:
+            return _mk_completed(stdout="UNUSED TEXT\n")
+        return _mk_completed(stderr="bad argv", returncode=1)
+
+    monkeypatch.setattr(next_action_alert.subprocess, "run", fake_run)
+    monkeypatch.setattr(next_action_alert, "_today_chicago", lambda: date(2025, 1, 2))
+
+    rc = next_action_alert.main(
+        [
+            "--mode",
+            "change_or_rebalance_due",
+            "--state-file",
+            str(state),
+            "--",
+            "--strategy",
+            "dual_mom",
+        ]
+    )
+    assert rc == 0
+    out_first = capsys.readouterr().out.splitlines()
+    assert len(out_first) == 1
+    assert json.loads(out_first[0])["event_id"] == "E1"
+
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["last_event_id"] == "E1"
+    assert saved["last_due_fingerprint"] == "dual_mom:TLT:2025-01-01"
+
+    rc = next_action_alert.main(
+        [
+            "--mode",
+            "change_or_rebalance_due",
+            "--state-file",
+            str(state),
+            "--",
+            "--strategy",
+            "dual_mom",
+        ]
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_due_mode_future_next_rebalance_suppresses_when_unchanged(monkeypatch, tmp_path, capsys):
+    from scripts import next_action_alert
+
+    state = tmp_path / "state.txt"
+    state.write_text("E1\n", encoding="utf-8")
+
+    payload = {
+        "event_id": "E1",
+        "strategy": "dual_mom",
+        "symbol": "TLT",
+        "next_rebalance": "2025-01-03",
+    }
+    json_line = json.dumps(payload, separators=(",", ":"))
+
+    def fake_run(argv, capture_output, text):
+        if "--next-action-json" in argv:
+            return _mk_completed(stdout=json_line + "\n")
+        if "--next-action" in argv:
+            return _mk_completed(stdout="UNUSED TEXT\n")
+        return _mk_completed(stderr="bad argv", returncode=1)
+
+    monkeypatch.setattr(next_action_alert.subprocess, "run", fake_run)
+    monkeypatch.setattr(next_action_alert, "_today_chicago", lambda: date(2025, 1, 2))
+
+    rc = next_action_alert.main(
+        [
+            "--mode",
+            "change_or_rebalance_due",
+            "--state-file",
+            str(state),
+            "--",
+            "--strategy",
+            "dual_mom",
+        ]
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+    assert state.read_text(encoding="utf-8").strip() == "E1"
+
+
+def test_due_mode_emit_text_single_line(monkeypatch, tmp_path, capsys):
+    from scripts import next_action_alert
+
+    state = tmp_path / "state.txt"
+    state.write_text("E3\n", encoding="utf-8")
+
+    payload = {
+        "event_id": "E3",
+        "strategy": "dual_mom",
+        "symbol": "TLT",
+        "next_rebalance": "2025-01-01",
+    }
+    json_line = json.dumps(payload, separators=(",", ":"))
+    text_line = "SINGLE LINE TEXT"
+
+    def fake_run(argv, capture_output, text):
+        if "--next-action-json" in argv:
+            return _mk_completed(stdout=json_line + "\n")
+        if "--next-action" in argv:
+            return _mk_completed(stdout=text_line + "\n")
+        return _mk_completed(stderr="bad argv", returncode=1)
+
+    monkeypatch.setattr(next_action_alert.subprocess, "run", fake_run)
+    monkeypatch.setattr(next_action_alert, "_today_chicago", lambda: date(2025, 1, 2))
+
+    rc = next_action_alert.main(
+        [
+            "--mode",
+            "change_or_rebalance_due",
+            "--emit",
+            "text",
+            "--state-file",
+            str(state),
+            "--",
+            "--strategy",
+            "dual_mom",
+        ]
+    )
+    assert rc == 0
+    assert capsys.readouterr().out.splitlines() == [text_line]
+
+
+def test_dict_state_preserves_unknown_fields_on_write(monkeypatch, tmp_path, capsys):
+    from scripts import next_action_alert
+
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "last_event_id": "E0",
+                "last_due_fingerprint": "old:fp",
+                "keep_me": {"a": 1},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = {"event_id": "E9", "strategy": "dual_mom", "symbol": "TLT", "next_rebalance": "2025-01-01"}
+    json_line = json.dumps(payload, separators=(",", ":"))
+
+    def fake_run(argv, capture_output, text):
+        if "--next-action-json" in argv:
+            return _mk_completed(stdout=json_line + "\n")
+        if "--next-action" in argv:
+            return _mk_completed(stdout="UNUSED TEXT\n")
+        return _mk_completed(stderr="bad argv", returncode=1)
+
+    monkeypatch.setattr(next_action_alert.subprocess, "run", fake_run)
+    monkeypatch.setattr(next_action_alert, "_today_chicago", lambda: date(2025, 1, 2))
+
+    rc = next_action_alert.main(["--state-file", str(state), "--", "--strategy", "dual_mom"])
+    assert rc == 0
+    assert len(capsys.readouterr().out.splitlines()) == 1
+
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["last_event_id"] == "E9"
+    assert saved["keep_me"] == {"a": 1}

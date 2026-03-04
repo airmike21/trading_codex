@@ -64,6 +64,7 @@ $PY scripts/next_action_alert.py --state-file /tmp/na_state.json --emit json -- 
 ```
 - First run prints one line.
 - Second run prints nothing if `event_id` is unchanged.
+- Add `--mode change_or_rebalance_due` to also emit once when `next_rebalance` is due, even if `event_id` is unchanged.
 
 ### Windows Alert Monitors
 - Multi-monitor config example: `scripts/windows/trading_codex_alerts.example.json`

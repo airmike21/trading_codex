@@ -7,8 +7,12 @@ import json
 import os
 import subprocess
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
+
+MODE_CHANGE_ONLY = "change_only"
+MODE_CHANGE_OR_REBALANCE_DUE = "change_or_rebalance_due"
 
 
 def _default_state_dir() -> Path:
@@ -38,11 +42,90 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 
-def _read_state(path: Path) -> Optional[str]:
+def _read_state_text(path: Path) -> Optional[str]:
     try:
         return path.read_text(encoding="utf-8").strip() or None
     except FileNotFoundError:
         return None
+
+
+def _load_state(path: Path) -> tuple[dict[str, object], str]:
+    raw = _read_state_text(path)
+    if raw is None:
+        return {}, "missing"
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"last_event_id": raw}, "legacy"
+
+    if isinstance(payload, str):
+        return {"last_event_id": payload}, "legacy"
+    if isinstance(payload, dict):
+        return dict(payload), "dict"
+    return {}, "missing"
+
+
+def _state_event_id(state: dict[str, object]) -> Optional[str]:
+    last_event_id = state.get("last_event_id")
+    if isinstance(last_event_id, str) and last_event_id:
+        return last_event_id
+
+    legacy_event_id = state.get("event_id")
+    if isinstance(legacy_event_id, str) and legacy_event_id:
+        return legacy_event_id
+    return None
+
+
+def _state_due_fingerprint(state: dict[str, object]) -> Optional[str]:
+    due_fingerprint = state.get("last_due_fingerprint")
+    if isinstance(due_fingerprint, str) and due_fingerprint:
+        return due_fingerprint
+    return None
+
+
+def _serialize_state(
+    state: dict[str, object],
+    *,
+    use_legacy_string: bool,
+) -> str:
+    if use_legacy_string:
+        event_id = _state_event_id(state)
+        if event_id is None:
+            raise RuntimeError("Cannot write legacy state without event_id.")
+        return event_id + "\n"
+    return json.dumps(
+        state,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ) + "\n"
+
+
+def _today_chicago() -> date:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("America/Chicago")).date()
+    except Exception:
+        return date.today()
+
+
+def _parse_next_rebalance_date(value: object) -> Optional[date]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(f"Payload next_rebalance must be string or null, got {type(value).__name__}.")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Payload next_rebalance is not a valid YYYY-MM-DD date: {value!r}") from exc
+
+
+def _due_fingerprint(payload: dict[str, object], next_rebalance: str) -> str:
+    strategy = "" if payload.get("strategy") is None else str(payload.get("strategy"))
+    symbol = "" if payload.get("symbol") is None else str(payload.get("symbol"))
+    return f"{strategy}:{symbol}:{next_rebalance}"
 
 
 def _extract_option_value(args: List[str], flag: str) -> Optional[str]:
@@ -100,7 +183,7 @@ def resolve_state_path(
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Emit a one-line alert ONLY when next_action event_id changes."
+        description="Emit a one-line alert when next_action changes (or when rebalance becomes due)."
     )
     p.add_argument(
         "--state-file",
@@ -118,6 +201,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["json", "text"],
         default="json",
         help="What to print when event_id changes (default: json).",
+    )
+    p.add_argument(
+        "--mode",
+        choices=[MODE_CHANGE_ONLY, MODE_CHANGE_OR_REBALANCE_DUE],
+        default=MODE_CHANGE_ONLY,
+        help=(
+            "Alert mode: change_only emits on event change; "
+            "change_or_rebalance_due also emits once when next_rebalance is due."
+        ),
     )
     p.add_argument(
         "--dry-run",
@@ -180,18 +272,59 @@ def main(argv: Optional[List[str]] = None) -> int:
         state_key=args.state_key,
         derived_key_inputs=derived_key_inputs,
     )
-    prev = _read_state(state_path)
+    state, state_kind = _load_state(state_path)
+    prev_event_id = _state_event_id(state)
+    prev_due_fingerprint = _state_due_fingerprint(state)
+
+    next_rebalance_raw = payload.get("next_rebalance")
+    next_rebalance_date = _parse_next_rebalance_date(next_rebalance_raw)
+    due_fingerprint = (
+        _due_fingerprint(payload, str(next_rebalance_raw))
+        if next_rebalance_date is not None
+        else None
+    )
+    due_now = (
+        args.mode == MODE_CHANGE_OR_REBALANCE_DUE
+        and next_rebalance_date is not None
+        and _today_chicago() >= next_rebalance_date
+    )
+    due_already_emitted = due_fingerprint is not None and prev_due_fingerprint == due_fingerprint
+    event_changed = prev_event_id != event_id
+    should_emit = event_changed or (
+        args.mode == MODE_CHANGE_OR_REBALANCE_DUE
+        and due_now
+        and not due_already_emitted
+    )
 
     if args.verbose:
-        print(f"[next_action_alert] prev={prev!r} new={event_id!r} state={state_path}", file=sys.stderr)
+        print(
+            (
+                f"[next_action_alert] prev={prev_event_id!r} new={event_id!r} state={state_path} "
+                f"mode={args.mode} due_now={due_now} due_fp={due_fingerprint!r} "
+                f"due_already_emitted={due_already_emitted}"
+            ),
+            file=sys.stderr,
+        )
 
-    # No change -> no output
-    if prev == event_id:
+    if not should_emit:
         return 0
 
-    # Change -> update state, then emit exactly one line
+    # Emit -> update state unless dry-run, then print exactly one line.
     if not args.dry_run:
-        _atomic_write(state_path, event_id + "\n")
+        next_state = dict(state)
+        next_state["last_event_id"] = event_id
+        if due_now and due_fingerprint is not None:
+            next_state["last_due_fingerprint"] = due_fingerprint
+
+        use_legacy_string = (
+            args.mode == MODE_CHANGE_ONLY
+            and state_kind in {"missing", "legacy"}
+            and next_state.keys() == {"last_event_id"}
+        )
+        _atomic_write(
+            state_path,
+            _serialize_state(next_state, use_legacy_string=use_legacy_string),
+        )
 
     if args.emit == "json":
         # print exactly one line (the JSON line from run_backtest)
