@@ -184,3 +184,43 @@ def test_dual_mom_v1_cli_args_parse(monkeypatch):
     assert args.dm_top_n == 2
     assert args.dm_rebalance == 15
     assert args.dm_defensive_symbol == "SHY"
+
+
+def test_valmom_v1_cli_args_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "valmom_v1",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "--vm-mom-lookback",
+            "180",
+            "--vm-val-lookback",
+            "900",
+            "--vm-top-n",
+            "2",
+            "--vm-rebalance",
+            "15",
+            "--vm-defensive-symbol",
+            "SHY",
+            "--vm-mom-weight",
+            "1.25",
+            "--vm-val-weight",
+            "0.75",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "valmom_v1"
+    assert args.symbols == ["SPY", "QQQ"]
+    assert args.vm_mom_lookback == 180
+    assert args.vm_val_lookback == 900
+    assert args.vm_top_n == 2
+    assert args.vm_rebalance == 15
+    assert args.vm_defensive_symbol == "SHY"
+    assert args.vm_mom_weight == 1.25
+    assert args.vm_val_weight == 0.75

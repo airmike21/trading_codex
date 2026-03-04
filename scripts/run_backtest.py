@@ -18,6 +18,7 @@ from trading_codex.strategies.dual_momentum import DualMomentumStrategy
 from trading_codex.strategies.risk_parity_erc import RiskParityERCStrategy
 from trading_codex.strategies.sma200 import Sma200RegimeStrategy
 from trading_codex.strategies.tsmom_v1 import TimeSeriesMomentumV1Strategy
+from trading_codex.strategies.valmom_v1 import ValueMomentumV1Strategy
 from trading_codex.strategies.xsmom_v1 import CrossSectionalMomentumV1Strategy
 from trading_codex.strategies.trend_tsmom import TrendTSMOM
 
@@ -48,6 +49,7 @@ def parse_args() -> argparse.Namespace:
             "tsmom_v1",
             "xsmom_v1",
             "dual_mom_v1",
+            "valmom_v1",
         ],
         default="tsmom",
     )
@@ -217,6 +219,47 @@ def parse_args() -> argparse.Namespace:
         "--dm-defensive-symbol",
         default="SHY",
         help="Defensive symbol for dual_mom_v1 fallback (default: SHY).",
+    )
+    parser.add_argument(
+        "--vm-mom-lookback",
+        type=int,
+        default=252,
+        help="Momentum lookback in trading days for valmom_v1 (default: 252).",
+    )
+    parser.add_argument(
+        "--vm-val-lookback",
+        type=int,
+        default=1260,
+        help="Value lookback in trading days for valmom_v1 long-term reversal proxy (default: 1260).",
+    )
+    parser.add_argument(
+        "--vm-top-n",
+        type=int,
+        default=1,
+        help="Top N assets to hold for valmom_v1 (default: 1).",
+    )
+    parser.add_argument(
+        "--vm-rebalance",
+        type=int,
+        default=21,
+        help="Fixed trading-day rebalance interval for valmom_v1 (default: 21).",
+    )
+    parser.add_argument(
+        "--vm-defensive-symbol",
+        default="SHY",
+        help="Defensive symbol for valmom_v1 fallback (default: SHY).",
+    )
+    parser.add_argument(
+        "--vm-mom-weight",
+        type=float,
+        default=1.0,
+        help="Momentum z-score weight for valmom_v1 composite score (default: 1.0).",
+    )
+    parser.add_argument(
+        "--vm-val-weight",
+        type=float,
+        default=1.0,
+        help="Value z-score weight for valmom_v1 composite score (default: 1.0).",
     )
     parser.add_argument(
         "--vol-target",
@@ -885,6 +928,7 @@ def maybe_write_trades(
         "tsmom_v1",
         "xsmom_v1",
         "dual_mom_v1",
+        "valmom_v1",
     }:
         dual_actions.to_csv(out_path, index=False)
         return
@@ -1755,6 +1799,24 @@ def main() -> None:
             defensive_symbol=defensive_symbol,
         )
         plot_label = "dual_mom_v1"
+    elif args.strategy == "valmom_v1":
+        risk_symbols = list(dict.fromkeys(args.symbols))
+        defensive_symbol = args.vm_defensive_symbol.strip()
+        if not defensive_symbol:
+            raise ValueError("--vm-defensive-symbol must not be empty.")
+        symbols_to_load = list(dict.fromkeys(risk_symbols + [defensive_symbol]))
+        bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
+        strategy = ValueMomentumV1Strategy(
+            symbols=risk_symbols,
+            mom_lookback=args.vm_mom_lookback,
+            val_lookback=args.vm_val_lookback,
+            top_n=args.vm_top_n,
+            rebalance=args.vm_rebalance,
+            defensive_symbol=defensive_symbol,
+            mom_weight=args.vm_mom_weight,
+            val_weight=args.vm_val_weight,
+        )
+        plot_label = "valmom_v1"
     else:
         raise ValueError(f"Unsupported strategy: {args.strategy}")
 
@@ -1796,6 +1858,7 @@ def main() -> None:
         "tsmom_v1",
         "xsmom_v1",
         "dual_mom_v1",
+        "valmom_v1",
     }:
         dual_actions = build_dual_actions(  # type: ignore[arg-type]
             bars,
@@ -2004,6 +2067,19 @@ def main() -> None:
             realized_vol_at_last_update=realized_vol_at_last_update,
         )
     elif args.strategy == "dual_mom_v1":
+        maybe_print_latest_dual(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            "M",
+            print_latest_enabled,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
+        )
+    elif args.strategy == "valmom_v1":
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]
