@@ -9,9 +9,28 @@ def _next_trading_day_rebalance(
     index: pd.DatetimeIndex,
     current: pd.Timestamp,
     trading_days: int,
+    anchor_date: str | pd.Timestamp | None = None,
 ) -> str:
     if trading_days <= 0:
         raise ValueError("trading_days must be > 0.")
+
+    if anchor_date is not None:
+        try:
+            anchor = pd.Timestamp(anchor_date).normalize()
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid rebalance anchor date: {anchor_date!r}. Expected YYYY-MM-DD."
+            ) from exc
+
+        current_norm = pd.Timestamp(current).normalize()
+        if current_norm <= anchor:
+            offset = 0
+        else:
+            offset = len(pd.date_range(anchor, current_norm, freq="B")) - 1
+
+        next_k = ((int(offset) // int(trading_days)) + 1) * int(trading_days)
+        return (anchor + pd.offsets.BDay(next_k)).date().isoformat()
+
     if index.empty:
         return (current + pd.offsets.BDay(trading_days)).date().isoformat()
 
@@ -47,6 +66,7 @@ def compute_next_rebalance_date(
     *,
     trading_days: int | None = None,
     cadence: str | None = None,
+    anchor_date: str | pd.Timestamp | None = None,
 ) -> str | None:
     """Compute next scheduled rebalance date as ISO string."""
     if (trading_days is None and cadence is None) or (trading_days is not None and cadence is not None):
@@ -54,5 +74,10 @@ def compute_next_rebalance_date(
 
     current_ts = pd.Timestamp(current)
     if trading_days is not None:
-        return _next_trading_day_rebalance(index, current_ts, int(trading_days))
+        return _next_trading_day_rebalance(
+            index,
+            current_ts,
+            int(trading_days),
+            anchor_date=anchor_date,
+        )
     return _next_calendar_rebalance(current_ts, str(cadence))

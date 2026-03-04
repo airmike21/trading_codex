@@ -263,6 +263,11 @@ def parse_args() -> argparse.Namespace:
         help="Value z-score weight for valmom_v1 composite score (default: 1.0).",
     )
     parser.add_argument(
+        "--rebalance-anchor-date",
+        default=None,
+        help="Optional YYYY-MM-DD anchor for trading-day next_rebalance schedules.",
+    )
+    parser.add_argument(
         "--ivol",
         action="store_true",
         help="Enable inverse-volatility weighting overlay for multi-asset strategies.",
@@ -1158,6 +1163,7 @@ def _next_rebalance_value_for_payload(
     index: pd.DatetimeIndex,
     current_date: pd.Timestamp,
     next_rebalance: str | int | None,
+    rebalance_anchor_date: str | None = None,
 ) -> str | None:
     if next_rebalance is None:
         return None
@@ -1166,6 +1172,7 @@ def _next_rebalance_value_for_payload(
             index,
             current_date,
             trading_days=int(next_rebalance),
+            anchor_date=rebalance_anchor_date,
         )
     return compute_next_rebalance_date(
         index,
@@ -1181,6 +1188,7 @@ def build_next_action_payload(
     actions: pd.DataFrame,
     resize_rebalance: str,
     next_rebalance: str | int | None,
+    rebalance_anchor_date: str | None = None,
     vol_target: float | None = None,
     vol_lookback: int | None = None,
     vol_update: str = "rebalance",
@@ -1205,6 +1213,7 @@ def build_next_action_payload(
             pd.DatetimeIndex([]),
             pd.Timestamp(today),
             next_rebalance,
+            rebalance_anchor_date=rebalance_anchor_date,
         )
         payload = {
             "schema_version": 1,
@@ -1272,6 +1281,7 @@ def build_next_action_payload(
         bars.index,
         last_date,
         next_rebalance,
+        rebalance_anchor_date=rebalance_anchor_date,
     )
 
     payload = {
@@ -1309,6 +1319,7 @@ def render_next_action_line(
     actions: pd.DataFrame,
     resize_rebalance: str,
     next_rebalance: str | int | None,
+    rebalance_anchor_date: str | None = None,
     vol_target: float | None = None,
     vol_lookback: int | None = None,
     vol_update: str = "rebalance",
@@ -1323,6 +1334,7 @@ def render_next_action_line(
         actions=actions,
         resize_rebalance=resize_rebalance,
         next_rebalance=next_rebalance,
+        rebalance_anchor_date=rebalance_anchor_date,
         vol_target=vol_target,
         vol_lookback=vol_lookback,
         vol_update=vol_update,
@@ -1954,6 +1966,7 @@ def main() -> None:
             actions=dual_actions,
             resize_rebalance=rebalance_cadence,
             next_rebalance=next_rebalance,
+            rebalance_anchor_date=args.rebalance_anchor_date,
             vol_target=args.vol_target,
             vol_lookback=args.vol_lookback,
             vol_update=args.vol_update,
@@ -1972,6 +1985,7 @@ def main() -> None:
                     actions=dual_actions,
                     resize_rebalance=rebalance_cadence,
                     next_rebalance=next_rebalance,
+                    rebalance_anchor_date=args.rebalance_anchor_date,
                     vol_target=args.vol_target,
                     vol_lookback=args.vol_lookback,
                     vol_update=args.vol_update,

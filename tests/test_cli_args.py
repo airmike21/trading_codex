@@ -250,3 +250,23 @@ def test_ivol_cli_args_parse(monkeypatch):
     assert args.ivol is True
     assert args.ivol_lookback == 84
     assert args.ivol_eps == 1e-6
+
+
+def test_rebalance_anchor_date_cli_arg_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "valmom_v1",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "--rebalance-anchor-date",
+            "2021-01-01",
+        ],
+    )
+
+    args = parse_args()
+    assert args.rebalance_anchor_date == "2021-01-01"
