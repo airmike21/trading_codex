@@ -263,3 +263,89 @@ def test_valmom_v1_cli_next_action_json_smoke_one_line(tmp_path):
     assert required_keys.issubset(obj.keys())
     assert obj["strategy"] == "valmom_v1"
     assert "valmom_v1" in str(obj["event_id"])
+
+
+def test_valmom_v1_cli_next_action_json_smoke_one_line_with_ivol(tmp_path):
+    idx = pd.date_range("2020-01-01", periods=420, freq="B")
+    close_a = pd.Series(np.linspace(100.0, 190.0, len(idx)), index=idx)
+    close_b = pd.Series(np.linspace(140.0, 95.0, len(idx)), index=idx)
+    close_c = pd.Series(np.linspace(90.0, 150.0, len(idx)), index=idx)
+    close_def = pd.Series(np.linspace(95.0, 100.0, len(idx)), index=idx)
+
+    def _bars(close: pd.Series) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1_000,
+            },
+            index=idx,
+        )
+
+    store = LocalStore(base_dir=tmp_path)
+    store.write_bars("AAA", _bars(close_a))
+    store.write_bars("BBB", _bars(close_b))
+    store.write_bars("CCC", _bars(close_c))
+    store.write_bars("SHY", _bars(close_def))
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "run_backtest.py"),
+        "--strategy",
+        "valmom_v1",
+        "--symbols",
+        "AAA",
+        "BBB",
+        "CCC",
+        "--vm-defensive-symbol",
+        "SHY",
+        "--vm-mom-lookback",
+        "63",
+        "--vm-val-lookback",
+        "126",
+        "--vm-top-n",
+        "2",
+        "--vm-rebalance",
+        "21",
+        "--ivol",
+        "--ivol-lookback",
+        "63",
+        "--start",
+        idx[0].date().isoformat(),
+        "--end",
+        idx[-1].date().isoformat(),
+        "--no-plot",
+        "--next-action-json",
+        "--data-dir",
+        str(tmp_path),
+    ]
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    env["PYTHONPATH"] = f"{src_path}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_path
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 1, f"Expected 1 line, got {len(lines)}: stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    obj = json.loads(lines[0])
+
+    required_keys = {
+        "schema_name",
+        "schema_version",
+        "schema_minor",
+        "date",
+        "strategy",
+        "action",
+        "symbol",
+        "target_shares",
+        "event_id",
+    }
+    assert required_keys.issubset(obj.keys())
+    assert obj["strategy"] == "valmom_v1"
+    event_id = str(obj["event_id"])
+    assert "valmom_v1" in event_id
+    assert len(event_id.split(":")) == 7

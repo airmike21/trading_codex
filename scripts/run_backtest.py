@@ -262,6 +262,23 @@ def parse_args() -> argparse.Namespace:
         help="Value z-score weight for valmom_v1 composite score (default: 1.0).",
     )
     parser.add_argument(
+        "--ivol",
+        action="store_true",
+        help="Enable inverse-volatility weighting overlay for multi-asset strategies.",
+    )
+    parser.add_argument(
+        "--ivol-lookback",
+        type=int,
+        default=63,
+        help="Lookback window for inverse-volatility overlay (default: 63).",
+    )
+    parser.add_argument(
+        "--ivol-eps",
+        type=float,
+        default=1e-8,
+        help="Epsilon floor for inverse-volatility overlay divide-by-zero guard (default: 1e-8).",
+    )
+    parser.add_argument(
         "--vol-target",
         type=float,
         default=None,
@@ -1820,6 +1837,11 @@ def main() -> None:
     else:
         raise ValueError(f"Unsupported strategy: {args.strategy}")
 
+    if args.ivol and (
+        not isinstance(bars.columns, pd.MultiIndex) or bars.columns.nlevels != 2
+    ):
+        raise ValueError("--ivol is only supported for multi-asset strategies.")
+
     result = run_backtest(
         bars,
         strategy,
@@ -1831,6 +1853,9 @@ def main() -> None:
         vol_max=args.max_leverage,
         vol_update=args.vol_update,
         rebalance_cadence=rebalance_cadence,
+        ivol=args.ivol,
+        ivol_lookback=args.ivol_lookback,
+        ivol_eps=args.ivol_eps,
     )
 
     latest_realized_vol = None

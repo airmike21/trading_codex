@@ -9,6 +9,7 @@ import pandas as pd
 from trading_codex.backtest.costs import bps_cost
 from trading_codex.backtest.vol_overlay import apply_vol_target_overlay
 from trading_codex.data.contracts import BAR_COLUMNS, validate_bars, validate_signals
+from trading_codex.overlays.ivol_overlay import apply_inverse_vol_overlay
 from trading_codex.strategies.base import Strategy
 
 
@@ -88,7 +89,16 @@ def run_backtest(
     vol_max: float = 1.0,
     vol_update: str = "rebalance",
     rebalance_cadence: str = "M",
+    ivol: bool = False,
+    ivol_lookback: int = 63,
+    ivol_eps: float = 1e-8,
 ) -> BacktestResult:
+    if ivol:
+        if ivol_lookback <= 0:
+            raise ValueError("ivol_lookback must be > 0 when --ivol is enabled.")
+        if ivol_eps <= 0:
+            raise ValueError("ivol_eps must be > 0 when --ivol is enabled.")
+
     if vol_target is not None:
         if vol_target < 0:
             raise ValueError("vol_target must be >= 0 when provided.")
@@ -111,6 +121,13 @@ def run_backtest(
         symbols = bars.columns.get_level_values(0).unique().tolist()
         signals = strategy.generate_signals(bars)
         base_weights = _as_weight_frame(signals, bars.index, symbols)
+        if ivol:
+            base_weights = apply_inverse_vol_overlay(
+                bars,
+                base_weights,
+                lookback=int(ivol_lookback),
+                eps=float(ivol_eps),
+            )
 
         close = bars.xs("close", axis=1, level=1).loc[:, symbols].astype(float)
         rets = close.pct_change().fillna(0.0)
@@ -154,6 +171,8 @@ def run_backtest(
         )
 
     validate_bars(bars)
+    if ivol:
+        raise ValueError("--ivol is only supported for multi-asset strategies.")
 
     signals = strategy.generate_signals(bars)
     validate_signals(signals)
