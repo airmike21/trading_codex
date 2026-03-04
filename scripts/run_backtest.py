@@ -12,6 +12,7 @@ import pandas as pd
 
 from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult, run_backtest
+from trading_codex.backtest.next_rebalance import compute_next_rebalance_date
 from trading_codex.data import LocalStore
 from trading_codex.strategies.dual_mom_v1 import DualMomentumV1Strategy
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
@@ -1119,16 +1120,14 @@ def maybe_print_latest_tsmom(
 
 
 def _next_rebalance_date(last_date: pd.Timestamp, rebalance: str) -> pd.Timestamp:
-    if rebalance == "W":
-        days_ahead = (4 - int(last_date.weekday())) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        return last_date + pd.Timedelta(days=days_ahead)
-
-    next_month_end = last_date + pd.offsets.BMonthEnd(0)
-    if next_month_end <= last_date:
-        next_month_end = last_date + pd.offsets.BMonthEnd(1)
-    return next_month_end
+    next_date = compute_next_rebalance_date(
+        pd.DatetimeIndex([]),
+        last_date,
+        cadence=rebalance,
+    )
+    if next_date is None:
+        raise ValueError(f"Unsupported rebalance cadence: {rebalance}")
+    return pd.Timestamp(next_date)
 
 
 def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
@@ -1155,13 +1154,33 @@ def _next_action_event_id(payload: dict[str, object]) -> str:
     return ":".join(parts)
 
 
+def _next_rebalance_value_for_payload(
+    index: pd.DatetimeIndex,
+    current_date: pd.Timestamp,
+    next_rebalance: str | int | None,
+) -> str | None:
+    if next_rebalance is None:
+        return None
+    if isinstance(next_rebalance, int):
+        return compute_next_rebalance_date(
+            index,
+            current_date,
+            trading_days=int(next_rebalance),
+        )
+    return compute_next_rebalance_date(
+        index,
+        current_date,
+        cadence=str(next_rebalance),
+    )
+
+
 def build_next_action_payload(
     strategy_label: str,
     bars: pd.DataFrame,
     weights: pd.DataFrame,
     actions: pd.DataFrame,
     resize_rebalance: str,
-    next_rebalance: str | None,
+    next_rebalance: str | int | None,
     vol_target: float | None = None,
     vol_lookback: int | None = None,
     vol_update: str = "rebalance",
@@ -1182,12 +1201,12 @@ def build_next_action_payload(
     leverage_update_value = leverage_last_update_date if vol_target is not None else None
     if weights.empty:
         today = pd.Timestamp.today().date().isoformat()
-        next_rebalance_value = None
-        if next_rebalance is not None:
-            next_rebalance_value = _next_rebalance_date(
-                pd.Timestamp.today(),
-                next_rebalance,
-            ).date().isoformat()
+        payload_index = bars.index if isinstance(bars.index, pd.DatetimeIndex) else pd.DatetimeIndex([])
+        next_rebalance_value = _next_rebalance_value_for_payload(
+            payload_index,
+            pd.Timestamp(today),
+            next_rebalance,
+        )
         payload = {
             "schema_version": 1,
             "schema_minor": 0,
@@ -1250,12 +1269,11 @@ def build_next_action_payload(
         latest_price = float(close_panel.loc[last_date, current])
         target_shares = _target_shares_for_weight(latest_weight, latest_price)
 
-    next_rebalance_value = None
-    if next_rebalance is not None:
-        next_rebalance_value = _next_rebalance_date(
-            last_date,
-            next_rebalance,
-        ).date().isoformat()
+    next_rebalance_value = _next_rebalance_value_for_payload(
+        bars.index,
+        last_date,
+        next_rebalance,
+    )
 
     payload = {
         "schema_version": 1,
@@ -1291,7 +1309,7 @@ def render_next_action_line(
     weights: pd.DataFrame,
     actions: pd.DataFrame,
     resize_rebalance: str,
-    next_rebalance: str | None,
+    next_rebalance: str | int | None,
     vol_target: float | None = None,
     vol_lookback: int | None = None,
     vol_update: str = "rebalance",
@@ -1914,11 +1932,21 @@ def main() -> None:
         strategy_label = (
             "BASELINE" if args.strategy == "tsmom" and args.long_only else args.strategy
         )
-        next_rebalance = (
-            rebalance_cadence
-            if args.strategy in {"dual_mom", "sma200", "risk_parity_erc", "tsmom_v1", "xsmom_v1"}
-            else None
-        )
+        next_rebalance: str | int | None
+        if args.strategy in {"dual_mom", "sma200"}:
+            next_rebalance = args.rebalance
+        elif args.strategy == "risk_parity_erc":
+            next_rebalance = args.rp_rebalance
+        elif args.strategy == "tsmom_v1":
+            next_rebalance = args.ts_rebalance
+        elif args.strategy == "xsmom_v1":
+            next_rebalance = args.xs_rebalance
+        elif args.strategy == "dual_mom_v1":
+            next_rebalance = args.dm_rebalance
+        elif args.strategy == "valmom_v1":
+            next_rebalance = args.vm_rebalance
+        else:
+            next_rebalance = None
 
         payload = build_next_action_payload(
             strategy_label=strategy_label,

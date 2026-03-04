@@ -262,7 +262,10 @@ def test_valmom_v1_cli_next_action_json_smoke_one_line(tmp_path):
     }
     assert required_keys.issubset(obj.keys())
     assert obj["strategy"] == "valmom_v1"
-    assert "valmom_v1" in str(obj["event_id"])
+    assert isinstance(obj["next_rebalance"], str) and obj["next_rebalance"]
+    event_id = str(obj["event_id"])
+    assert "valmom_v1" in event_id
+    assert event_id.endswith(f":{obj['next_rebalance']}")
 
 
 def test_valmom_v1_cli_next_action_json_smoke_one_line_with_ivol(tmp_path):
@@ -346,6 +349,8 @@ def test_valmom_v1_cli_next_action_json_smoke_one_line_with_ivol(tmp_path):
     }
     assert required_keys.issubset(obj.keys())
     assert obj["strategy"] == "valmom_v1"
+    assert isinstance(obj["next_rebalance"], str) and obj["next_rebalance"]
     event_id = str(obj["event_id"])
     assert "valmom_v1" in event_id
     assert len(event_id.split(":")) == 7
+    assert event_id.endswith(f":{obj['next_rebalance']}")
