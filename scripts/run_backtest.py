@@ -1201,9 +1201,8 @@ def build_next_action_payload(
     leverage_update_value = leverage_last_update_date if vol_target is not None else None
     if weights.empty:
         today = pd.Timestamp.today().date().isoformat()
-        payload_index = bars.index if isinstance(bars.index, pd.DatetimeIndex) else pd.DatetimeIndex([])
         next_rebalance_value = _next_rebalance_value_for_payload(
-            payload_index,
+            pd.DatetimeIndex([]),
             pd.Timestamp(today),
             next_rebalance,
         )

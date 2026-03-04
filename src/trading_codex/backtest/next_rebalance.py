@@ -56,4 +56,3 @@ def compute_next_rebalance_date(
     if trading_days is not None:
         return _next_trading_day_rebalance(index, current_ts, int(trading_days))
     return _next_calendar_rebalance(current_ts, str(cadence))
-
