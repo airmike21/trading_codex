@@ -107,3 +107,9 @@ python scripts/daily_signal.py --preset vm_core
 python scripts/daily_signal.py --preset vm_core --emit json --log-csv ~/.trading_codex/alerts.csv
 python scripts/daily_signal.py --preset vm_core --mode change_or_rebalance_due
 ```
+**Recommended invocation (ensures repo venv + deps):**
+
+```bash
+~/trading_codex/.venv/bin/python scripts/daily_signal.py --preset vm_core
+```
+
