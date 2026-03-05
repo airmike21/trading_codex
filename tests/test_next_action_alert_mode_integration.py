@@ -25,7 +25,15 @@ def _bars_for_index(idx: pd.DatetimeIndex, close: pd.Series) -> pd.DataFrame:
     )
 
 
-def test_change_or_rebalance_due_subprocess_smoke_emits_once(tmp_path):
+def _repo_root_and_env() -> tuple[Path, dict[str, str]]:
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    env["PYTHONPATH"] = f"{src_path}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_path
+    return repo_root, env
+
+
+def _make_vm_synthetic_store(tmp_path: Path) -> None:
     idx = pd.date_range("2019-01-01", periods=520, freq="B")
     ret_a = np.full(len(idx), 0.0012)
     ret_b = np.where(np.arange(len(idx)) % 2 == 0, 0.025, -0.02)
@@ -38,12 +46,9 @@ def test_change_or_rebalance_due_subprocess_smoke_emits_once(tmp_path):
     store.write_bars("CCC", _bars_for_index(idx, pd.Series(95.0 * np.cumprod(1.0 + ret_c), index=idx)))
     store.write_bars("SHY", _bars_for_index(idx, pd.Series(100.0 * np.cumprod(1.0 + ret_shy), index=idx)))
 
-    repo_root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    src_path = str(repo_root / "src")
-    env["PYTHONPATH"] = f"{src_path}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_path
 
-    rb_args = [
+def _valmom_rb_args(tmp_path: Path) -> list[str]:
+    return [
         "--strategy",
         "valmom_v1",
         "--symbols",
@@ -68,6 +73,12 @@ def test_change_or_rebalance_due_subprocess_smoke_emits_once(tmp_path):
         "--data-dir",
         str(tmp_path),
     ]
+
+
+def test_change_or_rebalance_due_subprocess_smoke_emits_once(tmp_path):
+    _make_vm_synthetic_store(tmp_path)
+    repo_root, env = _repo_root_and_env()
+    rb_args = _valmom_rb_args(tmp_path)
 
     payload_cmd = [
         sys.executable,
@@ -120,48 +131,9 @@ def test_change_or_rebalance_due_subprocess_smoke_emits_once(tmp_path):
 
 
 def test_change_only_no_emit_outputs_truly_empty_stdout_regression(tmp_path):
-    idx = pd.date_range("2019-01-01", periods=520, freq="B")
-    ret_a = np.full(len(idx), 0.0012)
-    ret_b = np.where(np.arange(len(idx)) % 2 == 0, 0.025, -0.02)
-    ret_c = np.where(np.arange(len(idx)) % 3 == 0, 0.015, -0.008)
-    ret_shy = np.full(len(idx), 0.0002)
-
-    store = LocalStore(base_dir=tmp_path)
-    store.write_bars("AAA", _bars_for_index(idx, pd.Series(100.0 * np.cumprod(1.0 + ret_a), index=idx)))
-    store.write_bars("BBB", _bars_for_index(idx, pd.Series(110.0 * np.cumprod(1.0 + ret_b), index=idx)))
-    store.write_bars("CCC", _bars_for_index(idx, pd.Series(95.0 * np.cumprod(1.0 + ret_c), index=idx)))
-    store.write_bars("SHY", _bars_for_index(idx, pd.Series(100.0 * np.cumprod(1.0 + ret_shy), index=idx)))
-
-    repo_root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    src_path = str(repo_root / "src")
-    env["PYTHONPATH"] = f"{src_path}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_path
-
-    rb_args = [
-        "--strategy",
-        "valmom_v1",
-        "--symbols",
-        "AAA",
-        "BBB",
-        "CCC",
-        "--vm-defensive-symbol",
-        "SHY",
-        "--vm-mom-lookback",
-        "63",
-        "--vm-val-lookback",
-        "126",
-        "--vm-top-n",
-        "2",
-        "--vm-rebalance",
-        "21",
-        "--start",
-        "2020-01-02",
-        "--end",
-        "2020-12-01",
-        "--no-plot",
-        "--data-dir",
-        str(tmp_path),
-    ]
+    _make_vm_synthetic_store(tmp_path)
+    repo_root, env = _repo_root_and_env()
+    rb_args = _valmom_rb_args(tmp_path)
 
     payload_cmd = [
         sys.executable,
