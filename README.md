@@ -66,6 +66,10 @@ $PY scripts/next_action_alert.py --state-file /tmp/na_state.json --emit json -- 
 - Second run prints nothing if `event_id` is unchanged.
 - Add `--mode change_or_rebalance_due` to also emit once when `next_rebalance` is due, even if `event_id` is unchanged.
 
+### Compatibility Note
+- Older branches may not include newer CLI flags (for example `next_action_alert.py --mode`) or newer strategy names.
+- If you hit argparse `unrecognized arguments` or `invalid choice` errors, update to `origin/master` (or merge it into your branch).
+
 ### Windows Alert Monitors
 - Multi-monitor config example: `scripts/windows/trading_codex_alerts.example.json`
 - Windows config location: `%USERPROFILE%\trading_codex_alerts.json`
