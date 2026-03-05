@@ -73,6 +73,9 @@ $PY scripts/next_action_alert.py --state-file /tmp/na_state.json --emit json -- 
 ### Windows Alert Monitors
 - Multi-monitor config example: `scripts/windows/trading_codex_alerts.example.json`
 - Windows config location: `%USERPROFILE%\trading_codex_alerts.json`
+- Launcher supports optional `-Mode change_only` (default) or `-Mode change_or_rebalance_due`.
+- Launcher also supports optional lock knobs (`-NoLock`, `-LockTimeoutSeconds`, `-LockStaleSeconds`) forwarded to `next_action_alert.py`.
+- `next_action_alert.py` uses best-effort lockfiles plus atomic state writes. If a lock is held and not stale, it exits silently with no output.
 
 On Windows PowerShell:
 ```powershell

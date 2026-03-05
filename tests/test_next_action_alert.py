@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,9 +19,19 @@ def test_mode_cli_defaults_and_parses():
     parser = next_action_alert.build_parser()
     args_default = parser.parse_args([])
     args_due = parser.parse_args(["--mode", "change_or_rebalance_due"])
+    args_lock = parser.parse_args([])
+    args_lock_custom = parser.parse_args(
+        ["--no-lock", "--lock-timeout-seconds", "1.5", "--lock-stale-seconds", "2.5"]
+    )
 
     assert args_default.mode == "change_only"
     assert args_due.mode == "change_or_rebalance_due"
+    assert args_lock.no_lock is False
+    assert args_lock.lock_timeout_seconds == 0.0
+    assert args_lock.lock_stale_seconds == 3600.0
+    assert args_lock_custom.no_lock is True
+    assert args_lock_custom.lock_timeout_seconds == 1.5
+    assert args_lock_custom.lock_stale_seconds == 2.5
 
 
 def test_alert_emits_once_then_suppresses(monkeypatch, tmp_path, capsys):
@@ -358,3 +369,32 @@ def test_dict_state_preserves_unknown_fields_on_write(monkeypatch, tmp_path, cap
     saved = json.loads(state.read_text(encoding="utf-8"))
     assert saved["last_event_id"] == "E9"
     assert saved["keep_me"] == {"a": 1}
+
+
+def test_lock_unavailable_exits_silently(monkeypatch, tmp_path, capsys):
+    from scripts import next_action_alert
+
+    state = tmp_path / "state.txt"
+
+    payload = {"event_id": "E10", "strategy": "dual_mom", "symbol": "TLT", "next_rebalance": "2025-01-01"}
+    json_line = json.dumps(payload, separators=(",", ":"))
+
+    def fake_run(argv, capture_output, text):
+        if "--next-action-json" in argv:
+            return _mk_completed(stdout=json_line + "\n")
+        if "--next-action" in argv:
+            return _mk_completed(stdout="SHOULD NOT PRINT\n")
+        return _mk_completed(stderr="bad argv", returncode=1)
+
+    @contextmanager
+    def fake_lock(_path, _timeout_seconds, _stale_seconds):
+        yield False
+
+    monkeypatch.setattr(next_action_alert.subprocess, "run", fake_run)
+    monkeypatch.setattr(next_action_alert, "_state_lock", fake_lock)
+
+    rc = next_action_alert.main(["--state-file", str(state), "--", "--strategy", "dual_mom"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out == ""
+    assert not state.exists()

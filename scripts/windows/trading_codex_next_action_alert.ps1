@@ -1,6 +1,11 @@
 param(
   [string]$ConfigPath,
-  [string]$MonitorName
+  [string]$MonitorName,
+  [ValidateSet("change_only", "change_or_rebalance_due")]
+  [string]$Mode,
+  [switch]$NoLock,
+  [Nullable[double]]$LockTimeoutSeconds,
+  [Nullable[double]]$LockStaleSeconds
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,6 +73,19 @@ function Test-HasEmitArg {
   )
   foreach ($arg in $Args) {
     if ($arg -eq "--emit" -or $arg.StartsWith("--emit=")) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Test-HasArgFlag {
+  param(
+    [string[]]$Args,
+    [string]$Flag
+  )
+  foreach ($arg in $Args) {
+    if ($arg -eq $Flag -or $arg.StartsWith("$Flag=")) {
       return $true
     }
   }
@@ -142,6 +160,19 @@ if ($PSBoundParameters.ContainsKey("ConfigPath") -or $PSBoundParameters.Contains
 }
 
 $settings.NextActionArgs = Ensure-EmitArg -Args $settings.NextActionArgs -EmitValue "json"
+
+if ($PSBoundParameters.ContainsKey("Mode") -and -not (Test-HasArgFlag -Args $settings.NextActionArgs -Flag "--mode")) {
+  $settings.NextActionArgs = @("--mode", [string]$Mode) + $settings.NextActionArgs
+}
+if ($NoLock -and -not (Test-HasArgFlag -Args $settings.NextActionArgs -Flag "--no-lock")) {
+  $settings.NextActionArgs += @("--no-lock")
+}
+if ($PSBoundParameters.ContainsKey("LockTimeoutSeconds") -and -not (Test-HasArgFlag -Args $settings.NextActionArgs -Flag "--lock-timeout-seconds")) {
+  $settings.NextActionArgs += @("--lock-timeout-seconds", [string]$LockTimeoutSeconds)
+}
+if ($PSBoundParameters.ContainsKey("LockStaleSeconds") -and -not (Test-HasArgFlag -Args $settings.NextActionArgs -Flag "--lock-stale-seconds")) {
+  $settings.NextActionArgs += @("--lock-stale-seconds", [string]$LockStaleSeconds)
+}
 
 $bash = Build-BashCommand -RepoPath $settings.WslRepoPath -PythonCmd $settings.WslPython -WrapperArgs $settings.NextActionArgs
 $out = & wsl.exe -d $settings.WslDistro -e bash -lc $bash 2>$null

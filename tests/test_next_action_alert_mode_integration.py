@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -169,3 +170,66 @@ def test_change_only_no_emit_outputs_truly_empty_stdout_regression(tmp_path):
     assert proc_no_emit.returncode == 0, f"stdout={proc_no_emit.stdout!r}\nstderr={proc_no_emit.stderr!r}"
     assert proc_no_emit.stdout == "", f"Expected no stdout at all, got: {proc_no_emit.stdout!r}"
     assert proc_no_emit.stdout.splitlines() == []
+
+
+def test_lockfile_held_exits_silently_no_emit(tmp_path):
+    _make_vm_synthetic_store(tmp_path)
+    repo_root, env = _repo_root_and_env()
+    rb_args = _valmom_rb_args(tmp_path)
+
+    state_file = tmp_path / "na_state_lock_held.json"
+    state_file.write_text("", encoding="utf-8")
+    lockfile = Path(str(state_file) + ".lock")
+    lockfile.write_text("pid=123 held\n", encoding="utf-8")
+
+    alert_cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "next_action_alert.py"),
+        "--mode",
+        "change_or_rebalance_due",
+        "--emit",
+        "text",
+        "--state-file",
+        str(state_file),
+        "--lock-timeout-seconds",
+        "0",
+        "--lock-stale-seconds",
+        "3600",
+        "--",
+        *rb_args,
+    ]
+    proc = subprocess.run(alert_cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    assert proc.stdout == ""
+    assert proc.stderr == ""
+
+
+def test_stale_lockfile_is_removed_and_run_proceeds(tmp_path):
+    _make_vm_synthetic_store(tmp_path)
+    repo_root, env = _repo_root_and_env()
+    rb_args = _valmom_rb_args(tmp_path)
+
+    state_file = tmp_path / "na_state_lock_stale.json"
+    state_file.write_text("", encoding="utf-8")
+    lockfile = Path(str(state_file) + ".lock")
+    lockfile.write_text("pid=123 stale\n", encoding="utf-8")
+    stale_epoch = time.time() - 10_000
+    os.utime(lockfile, (stale_epoch, stale_epoch))
+
+    alert_cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "next_action_alert.py"),
+        "--mode",
+        "change_or_rebalance_due",
+        "--emit",
+        "text",
+        "--state-file",
+        str(state_file),
+        "--lock-stale-seconds",
+        "1",
+        "--",
+        *rb_args,
+    ]
+    proc = subprocess.run(alert_cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    assert not lockfile.exists()
