@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -181,6 +182,57 @@ def _today_chicago() -> date:
         return date.today()
 
 
+def _now_chicago_iso() -> str:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("America/Chicago")).replace(microsecond=0).isoformat()
+    except Exception:
+        return datetime.now().replace(microsecond=0).isoformat()
+
+
+def _append_emit_csv_log(
+    *,
+    log_path: Path,
+    payload: dict[str, object],
+    emit_kind: str,
+    emit_line: str,
+    verbose: bool,
+) -> None:
+    row = {
+        "ts_chicago": _now_chicago_iso(),
+        "date": "" if payload.get("date") is None else str(payload.get("date")),
+        "strategy": "" if payload.get("strategy") is None else str(payload.get("strategy")),
+        "action": "" if payload.get("action") is None else str(payload.get("action")),
+        "symbol": "" if payload.get("symbol") is None else str(payload.get("symbol")),
+        "target_shares": "" if payload.get("target_shares") is None else str(payload.get("target_shares")),
+        "resize_new_shares": (
+            "" if payload.get("resize_new_shares") is None else str(payload.get("resize_new_shares"))
+        ),
+        "next_rebalance": "" if payload.get("next_rebalance") is None else str(payload.get("next_rebalance")),
+        "event_id": "" if payload.get("event_id") is None else str(payload.get("event_id")),
+        "emit_kind": emit_kind,
+        "emit_line": emit_line,
+    }
+    fieldnames = list(row.keys())
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        need_header = (not log_path.exists()) or (log_path.stat().st_size == 0)
+        with log_path.open("a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if need_header:
+                writer.writeheader()
+            writer.writerow(row)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as exc:
+        if verbose:
+            print(
+                f"[next_action_alert] WARN: failed to append --log-csv {log_path}: {exc}",
+                file=sys.stderr,
+            )
+
+
 def _parse_next_rebalance_date(value: object) -> Optional[date]:
     if value is None:
         return None
@@ -317,6 +369,14 @@ def _handle_alert_under_lock(
         )
 
     if args.emit == "json":
+        if args.log_csv is not None:
+            _append_emit_csv_log(
+                log_path=args.log_csv,
+                payload=payload,
+                emit_kind="json",
+                emit_line=json_line,
+                verbose=args.verbose,
+            )
         # print exactly one line (the JSON line from run_backtest)
         print(json_line)
         return 0
@@ -328,6 +388,15 @@ def _handle_alert_under_lock(
 
     text_out = _run_cmd(text_cmd)
     text_line = _expect_one_line(text_out, "run_backtest --next-action")
+
+    if args.log_csv is not None:
+        _append_emit_csv_log(
+            log_path=args.log_csv,
+            payload=payload,
+            emit_kind="text",
+            emit_line=text_line,
+            verbose=args.verbose,
+        )
 
     # Still must be one line on stdout
     print(text_line)
@@ -348,6 +417,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--state-key",
         default=None,
         help="Optional key for per-monitor state isolation when --state-file is not set.",
+    )
+    p.add_argument(
+        "--log-csv",
+        type=Path,
+        default=None,
+        help="Optional CSV path. Appends one row only when an alert emits.",
     )
     p.add_argument(
         "--no-lock",
