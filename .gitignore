@@ -23,3 +23,6 @@ dist/
 # Run artifacts
 # Backtest plots
 outputs/
+
+# Local presets (user-specific)
+configs/presets.json

@@ -1,0 +1,37 @@
+{
+  "presets": {
+    "vm_core": {
+      "description": "Value+momentum core example. Adjust symbols/date/data-dir for your environment.",
+      "mode": "change_only",
+      "emit": "text",
+      "state_file": "~/.trading_codex/next_action_alert_state.json",
+      "state_key": "vm_core",
+      "log_csv": "~/.trading_codex/alerts.csv",
+      "run_backtest_args": [
+        "--strategy",
+        "valmom_v1",
+        "--symbols",
+        "SPY",
+        "QQQ",
+        "IWM",
+        "--vm-defensive-symbol",
+        "SHY",
+        "--vm-mom-lookback",
+        "63",
+        "--vm-val-lookback",
+        "126",
+        "--vm-top-n",
+        "2",
+        "--vm-rebalance",
+        "21",
+        "--start",
+        "2015-01-02",
+        "--end",
+        "2026-01-01",
+        "--no-plot",
+        "--data-dir",
+        "~/trading_codex/data"
+      ]
+    }
+  }
+}

@@ -91,3 +91,19 @@ Keyed state files for the wrapper are stored under:
 Manual force-toast options:
 1. Use a fresh `--state-key` value in monitor `next_action_args` (for example `--state-key force_test_123`) and run the task.
 2. Or delete the matching keyed file under `~/.cache/trading_codex/next_action_alert/` and run again.
+
+## Daily runner and presets
+
+Use `scripts/daily_signal.py` to run `next_action_alert.py` through a named preset.
+
+- Prints exactly one line only when an alert emits.
+- Prints nothing when there is no emit (no blank line).
+- Presets load from `configs/presets.json` (local, gitignored) if present, else `configs/presets.example.json`.
+
+Examples:
+
+```bash
+python scripts/daily_signal.py --preset vm_core
+python scripts/daily_signal.py --preset vm_core --emit json --log-csv ~/.trading_codex/alerts.csv
+python scripts/daily_signal.py --preset vm_core --mode change_or_rebalance_due
+```
