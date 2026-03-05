@@ -113,3 +113,21 @@ python scripts/daily_signal.py --preset vm_core --mode change_or_rebalance_due
 ~/trading_codex/.venv/bin/python scripts/daily_signal.py --preset vm_core
 ```
 
+## Data Updates (EOD)
+
+If a required ticker is missing in your local store (for example `SHY`), `daily_signal` and `run_backtest` can fail.
+Use `scripts/update_data_eod.py` to refresh `LocalStore` parquet files.
+
+Tiingo is recommended (requires `TIINGO_API_KEY`):
+
+```bash
+TIINGO_API_KEY=... ~/trading_codex/.venv/bin/python scripts/update_data_eod.py --provider tiingo --symbols SPY QQQ IWM BIL
+```
+
+Stooq is the free fallback:
+
+```bash
+~/trading_codex/.venv/bin/python scripts/update_data_eod.py --provider stooq --symbols SPY QQQ IWM BIL
+```
+
+If `--symbols` is omitted, the script infers symbols from `configs/presets.json` (or `configs/presets.example.json`).
