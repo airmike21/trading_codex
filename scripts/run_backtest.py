@@ -707,7 +707,7 @@ def _resize_mask_and_target_shares(
     weights: pd.DataFrame,
     vol_target: float | None,
     vol_update: str,
-    rebalance: str,
+    rebalance: str | int,
     capital: float = 10_000.0,
 ) -> tuple[pd.Series, pd.Series]:
     if weights.empty:
@@ -739,7 +739,7 @@ def _latest_resize_details(
     weights: pd.DataFrame,
     vol_target: float | None,
     vol_update: str,
-    rebalance: str,
+    rebalance: str | int,
     up_to_date: pd.Timestamp | None = None,
 ) -> tuple[pd.Timestamp | None, int | None, int | None]:
     if weights.empty or vol_target is None:
@@ -770,7 +770,7 @@ def build_dual_actions(
     weights: pd.DataFrame,
     vol_target: float | None = None,
     vol_update: str = "rebalance",
-    rebalance: str = "M",
+    rebalance: str | int = "M",
 ) -> pd.DataFrame:
     columns = [
         "date",
@@ -849,7 +849,7 @@ def build_tsmom_actions(
     weights: pd.Series,
     vol_target: float | None = None,
     vol_update: str = "rebalance",
-    rebalance: str = "M",
+    rebalance: str | int = "M",
 ) -> pd.DataFrame:
     action_bars, action_weights = _tsmom_action_inputs(symbol, bars, weights)
     return build_dual_actions(
@@ -1167,19 +1167,28 @@ def maybe_print_latest_tsmom(
         print("New Shares:", resize_new_shares)
 
 
-def _next_rebalance_date(last_date: pd.Timestamp, rebalance: str) -> pd.Timestamp:
-    next_date = compute_next_rebalance_date(
-        pd.DatetimeIndex([]),
-        last_date,
-        cadence=rebalance,
-    )
+def _next_rebalance_date(last_date: pd.Timestamp, rebalance: str | int) -> pd.Timestamp:
+    if isinstance(rebalance, int):
+        next_date = compute_next_rebalance_date(
+            pd.DatetimeIndex([]),
+            last_date,
+            trading_days=rebalance,
+        )
+    else:
+        next_date = compute_next_rebalance_date(
+            pd.DatetimeIndex([]),
+            last_date,
+            cadence=rebalance,
+        )
     if next_date is None:
         raise ValueError(f"Unsupported rebalance cadence: {rebalance}")
     return pd.Timestamp(next_date)
 
 
-def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str) -> str:
+def _next_rebalance_hint(last_date: pd.Timestamp, rebalance: str | int) -> str:
     next_rebalance = _next_rebalance_date(last_date, rebalance)
+    if isinstance(rebalance, int):
+        return f"next {rebalance}-trading-day rebalance ({next_rebalance.date().isoformat()})"
     if rebalance == "W":
         return f"next Friday ({next_rebalance.date().isoformat()})"
     return f"next business month-end ({next_rebalance.date().isoformat()})"
@@ -1420,10 +1429,18 @@ def render_next_action_line(
 def _vol_update_mask_for_print(
     index: pd.DatetimeIndex,
     vol_update: str,
-    rebalance: str,
+    rebalance: str | int,
 ) -> pd.Series:
     if vol_update == "daily":
         return pd.Series(True, index=index, dtype=bool)
+
+    if isinstance(rebalance, int):
+        if rebalance <= 0:
+            raise ValueError("rebalance must be > 0 when provided as trading days.")
+        update_mask = pd.Series(False, index=index, dtype=bool)
+        for idx_pos in range(int(rebalance) - 1, len(index) - 1, int(rebalance)):
+            update_mask.iloc[idx_pos + 1] = True
+        return update_mask
 
     cadence = rebalance.upper()
     if cadence == "M":
@@ -1443,7 +1460,7 @@ def _vol_update_mask_for_print(
 
 def maybe_write_dual_checklist(
     out_path: str | None,
-    rebalance: str,
+    rebalance: str | int,
     risk_symbols: list[str],
     defensive: str | None,
     bars: pd.DataFrame,
@@ -1485,7 +1502,12 @@ def maybe_write_dual_checklist(
         target_shares = int(10_000 // latest_price)
         price_txt = f"{latest_price:.2f}"
 
-    check_day = "last trading day of each week after close" if rebalance == "W" else "last trading day of each month after close"
+    if isinstance(rebalance, int):
+        check_day = f"every {rebalance} trading days after close"
+    elif rebalance == "W":
+        check_day = "last trading day of each week after close"
+    else:
+        check_day = "last trading day of each month after close"
     defensive_txt = defensive if defensive else "CASH"
     next_rebalance = _next_rebalance_hint(last_date, rebalance)
     alert_symbols = ", ".join(risk_symbols + ([defensive] if defensive else []))
@@ -1513,7 +1535,7 @@ def maybe_write_dual_checklist(
 def maybe_print_latest_dual(
     bars: pd.DataFrame,
     weights: pd.DataFrame,
-    rebalance: str,
+    rebalance: str | int,
     print_latest: bool,
     vol_target: float | None = None,
     vol_update: str = "rebalance",
@@ -1892,6 +1914,7 @@ def main() -> None:
             defensive_symbol=defensive_symbol,
         )
         plot_label = "dual_mom_v1"
+        rebalance_cadence = args.dm_rebalance
     elif args.strategy == "valmom_v1":
         risk_symbols = list(dict.fromkeys(args.symbols))
         defensive_symbol = args.vm_defensive_symbol.strip()
@@ -1910,6 +1933,7 @@ def main() -> None:
             val_weight=args.vm_val_weight,
         )
         plot_label = "valmom_v1"
+        rebalance_cadence = args.vm_rebalance
     else:
         raise ValueError(f"Unsupported strategy: {args.strategy}")
 
@@ -2183,7 +2207,7 @@ def main() -> None:
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]
-            "M",
+            rebalance_cadence,
             print_latest_enabled,
             vol_target=args.vol_target,
             vol_update=args.vol_update,
@@ -2196,7 +2220,7 @@ def main() -> None:
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]
-            "M",
+            rebalance_cadence,
             print_latest_enabled,
             vol_target=args.vol_target,
             vol_update=args.vol_update,

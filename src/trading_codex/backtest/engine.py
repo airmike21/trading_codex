@@ -61,7 +61,15 @@ def _as_weight_frame(
     return signal_df.clip(-1.0, 1.0).astype(float)
 
 
-def _calendar_rebalance_update_mask(index: pd.DatetimeIndex, rebalance_cadence: str) -> pd.Series:
+def _rebalance_update_mask(index: pd.DatetimeIndex, rebalance_cadence: str | int) -> pd.Series:
+    if isinstance(rebalance_cadence, int):
+        if rebalance_cadence <= 0:
+            raise ValueError("rebalance_cadence must be > 0 when provided as trading days.")
+        update_mask = pd.Series(False, index=index, dtype=bool)
+        for idx_pos in range(int(rebalance_cadence) - 1, len(index) - 1, int(rebalance_cadence)):
+            update_mask.iloc[idx_pos + 1] = True
+        return update_mask
+
     cadence = rebalance_cadence.upper()
     if cadence == "M":
         periods = pd.Series(index.to_period("M"), index=index)
@@ -88,7 +96,7 @@ def run_backtest(
     vol_min: float = 0.0,
     vol_max: float = 1.0,
     vol_update: str = "rebalance",
-    rebalance_cadence: str = "M",
+    rebalance_cadence: str | int = "M",
     ivol: bool = False,
     ivol_lookback: int = 63,
     ivol_eps: float = 1e-8,
@@ -112,8 +120,11 @@ def run_backtest(
             raise ValueError("vol_min must be <= vol_max.")
         if vol_update not in {"rebalance", "daily"}:
             raise ValueError("vol_update must be one of {'rebalance', 'daily'}.")
-        if rebalance_cadence.upper() not in {"M", "W"}:
-            raise ValueError("rebalance_cadence must be one of {'M', 'W'}.")
+        if isinstance(rebalance_cadence, int):
+            if rebalance_cadence <= 0:
+                raise ValueError("rebalance_cadence must be > 0 when provided as trading days.")
+        elif rebalance_cadence.upper() not in {"M", "W"}:
+            raise ValueError("rebalance_cadence must be one of {'M', 'W'} or a positive trading-day interval.")
 
     if _is_multi_asset_bars(bars):
         _validate_multi_asset_bars(bars)
@@ -137,7 +148,7 @@ def run_backtest(
         realized_vol: pd.Series | None = None
         if vol_target is not None:
             update_mask = (
-                _calendar_rebalance_update_mask(rets.index, rebalance_cadence)
+                _rebalance_update_mask(rets.index, rebalance_cadence)
                 if vol_update == "rebalance"
                 else None
             )
@@ -188,7 +199,7 @@ def run_backtest(
     realized_vol = None
     if vol_target is not None:
         update_mask = (
-            _calendar_rebalance_update_mask(rets.index, rebalance_cadence)
+            _rebalance_update_mask(rets.index, rebalance_cadence)
             if vol_update == "rebalance"
             else None
         )
