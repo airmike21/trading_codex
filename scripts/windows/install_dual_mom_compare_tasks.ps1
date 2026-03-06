@@ -56,9 +56,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$DefaultWslDistro = "Ubuntu"
+$DefaultWslRepoPath = "~/trading_codex"
+$DefaultBaseDir = "~/.trading_codex/scheduled_runs"
+
 if ([string]::IsNullOrWhiteSpace($WslPython)) {
   $WslPython = "$($WslRepoPath.TrimEnd('/'))/.venv/bin/python"
 }
+$DefaultWslPython = "$($DefaultWslRepoPath.TrimEnd('/'))/.venv/bin/python"
 
 $wrapperPath = Join-Path $PSScriptRoot "trading_codex_scheduled_dual_compare.ps1"
 if (-not (Test-Path -LiteralPath $wrapperPath)) {
@@ -80,16 +85,20 @@ function New-TaskSpec {
     "-File",
     "`"$wrapperPath`"",
     "-Window",
-    $Window,
-    "-WslDistro",
-    "`"$WslDistro`"",
-    "-WslRepoPath",
-    "`"$WslRepoPath`"",
-    "-WslPython",
-    "`"$WslPython`"",
-    "-BaseDir",
-    "`"$BaseDir`""
+    $Window
   )
+  if ($WslDistro -ne $DefaultWslDistro) {
+    $taskRun += @("-WslDistro", "`"$WslDistro`"")
+  }
+  if ($WslRepoPath -ne $DefaultWslRepoPath) {
+    $taskRun += @("-WslRepoPath", "`"$WslRepoPath`"")
+  }
+  if ($WslPython -ne $DefaultWslPython) {
+    $taskRun += @("-WslPython", "`"$WslPython`"")
+  }
+  if ($BaseDir -ne $DefaultBaseDir) {
+    $taskRun += @("-BaseDir", "`"$BaseDir`"")
+  }
   if (-not [string]::IsNullOrWhiteSpace($PresetsFile)) {
     $taskRun += @("-PresetsFile", "`"$PresetsFile`"")
   }
