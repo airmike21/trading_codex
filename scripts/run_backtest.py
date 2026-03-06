@@ -330,8 +330,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vol-target",
         type=float,
+        nargs="?",
+        const=0.10,
         default=None,
-        help="Optional annualized vol target for overlay sizing (disabled by default).",
+        help="Optional annualized vol target for overlay sizing. Pass without a value to enable the default 0.10 target.",
     )
     parser.add_argument(
         "--vol-lookback",

@@ -47,7 +47,12 @@ def compute_leverage_series(
     leverage = pd.Series(1.0, index=realized_vol.index, dtype=float)
 
     zero_vol = realized_vol.notna() & (realized_vol <= zero_vol_epsilon)
-    leverage.loc[zero_vol] = float(min_leverage)
+    zero_vol_leverage = (
+        float(max_leverage)
+        if float(target_vol) > zero_vol_epsilon
+        else float(min_leverage)
+    )
+    leverage.loc[zero_vol] = zero_vol_leverage
 
     valid = realized_vol.notna() & (realized_vol > zero_vol_epsilon)
     leverage.loc[valid] = (float(target_vol) / realized_vol.loc[valid]).clip(

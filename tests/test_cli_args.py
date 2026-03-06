@@ -47,6 +47,23 @@ def test_vol_leverage_flags_parse(monkeypatch):
     assert args.vol_lookback == 63
 
 
+def test_vol_target_flag_defaults_to_10pct_when_enabled_without_value(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--vol-target",
+            "--vol-lookback",
+            "63",
+        ],
+    )
+
+    args = parse_args()
+    assert args.vol_target == 0.10
+    assert args.vol_lookback == 63
+
+
 def test_legacy_vol_min_max_flags_still_parse(monkeypatch):
     monkeypatch.setattr(
         sys,

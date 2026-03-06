@@ -1,9 +1,21 @@
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pandas.testing as pdt
 
 from scripts.run_backtest import build_dual_actions, build_next_action_payload
 from trading_codex.backtest.engine import run_backtest
+from trading_codex.backtest.vol_overlay import (
+    apply_vol_target_overlay,
+    compute_leverage_series,
+    compute_portfolio_returns_1x,
+)
+from trading_codex.data import LocalStore
 from trading_codex.strategies.base import Strategy
 
 
@@ -43,6 +55,90 @@ def make_panel(close_map: dict[str, pd.Series]) -> pd.DataFrame:
     for symbol, close in close_map.items():
         frames[symbol] = make_single_bars(close)
     return pd.concat(frames, axis=1)
+
+
+def _expected_event_id(obj: dict[str, object]) -> str:
+    def g(key: str) -> str:
+        value = obj.get(key, "")
+        return "" if value is None else str(value)
+
+    return ":".join(
+        [
+            g("date"),
+            g("strategy"),
+            g("action"),
+            g("symbol"),
+            g("target_shares"),
+            g("resize_new_shares"),
+            g("next_rebalance"),
+        ]
+    )
+
+
+def _repo_root_and_env() -> tuple[Path, dict[str, str]]:
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    env["PYTHONPATH"] = f"{src_path}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_path
+    return repo_root, env
+
+
+def _write_valmom_cli_store(base_dir: Path, idx: pd.DatetimeIndex) -> None:
+    store = LocalStore(base_dir=base_dir)
+    store.write_bars("AAA", make_single_bars(pd.Series(np.linspace(100.0, 190.0, len(idx)), index=idx)))
+    store.write_bars("BBB", make_single_bars(pd.Series(np.linspace(140.0, 95.0, len(idx)), index=idx)))
+    store.write_bars("CCC", make_single_bars(pd.Series(np.linspace(90.0, 150.0, len(idx)), index=idx)))
+    store.write_bars("SHY", make_single_bars(pd.Series(np.linspace(95.0, 100.0, len(idx)), index=idx)))
+
+
+def test_compute_portfolio_returns_1x_uses_lagged_weights_without_lookahead():
+    idx = pd.date_range("2020-01-01", periods=4, freq="B")
+    raw_weights = pd.DataFrame(
+        {
+            "A": [1.0, 0.5, 0.5, 0.0],
+            "B": [0.0, 0.5, 0.5, 1.0],
+        },
+        index=idx,
+    )
+    asset_returns = pd.DataFrame(
+        {
+            "A": [0.10, 0.01, 0.02, 0.03],
+            "B": [0.00, 0.04, -0.01, 0.05],
+        },
+        index=idx,
+    )
+
+    got = compute_portfolio_returns_1x(raw_weights, asset_returns)
+    expected = pd.Series([0.0, 0.01, 0.005, 0.04], index=idx, dtype=float)
+    pdt.assert_series_equal(got, expected)
+
+
+def test_compute_leverage_series_clamps_and_handles_zero_vol_deterministically():
+    realized_vol = pd.Series([0.20, 0.05, 0.0, np.nan], dtype=float)
+
+    got = compute_leverage_series(
+        realized_vol,
+        target_vol=0.10,
+        min_leverage=0.25,
+        max_leverage=1.5,
+    )
+
+    expected = pd.Series([0.5, 1.5, 1.5, 1.0], dtype=float)
+    pdt.assert_series_equal(got, expected)
+
+
+def test_compute_leverage_series_zero_target_zero_vol_uses_min_leverage():
+    realized_vol = pd.Series([0.0, 0.0], dtype=float)
+
+    got = compute_leverage_series(
+        realized_vol,
+        target_vol=0.0,
+        min_leverage=0.25,
+        max_leverage=1.5,
+    )
+
+    expected = pd.Series([0.25, 0.25], dtype=float)
+    pdt.assert_series_equal(got, expected)
 
 
 def test_vol_overlay_disabled_matches_baseline_exact():
@@ -159,7 +255,7 @@ def test_vol_overlay_capped_and_no_lookahead_leverage():
     assert np.isclose(base.leverage.iloc[probe_pos], altered.leverage.iloc[probe_pos], atol=1e-12)
 
 
-def test_vol_overlay_zero_vol_uses_min_leverage_without_crash():
+def test_vol_overlay_zero_vol_uses_max_leverage_without_crash():
     idx = pd.date_range("2020-01-01", periods=30, freq="B")
     close = pd.Series(100.0, index=idx, dtype=float)
     bars = make_single_bars(close)
@@ -182,7 +278,30 @@ def test_vol_overlay_zero_vol_uses_min_leverage_without_crash():
     mature = result.realized_vol.notna()
     assert bool(mature.any())
     assert bool((result.realized_vol.loc[mature] <= 1e-12).all())
-    assert bool(np.isclose(result.leverage.loc[mature], 0.25, atol=1e-12).all())
+    assert bool(np.isclose(result.leverage.loc[mature], 1.0, atol=1e-12).all())
+
+
+def test_apply_vol_target_overlay_rebalance_updates_only_change_on_mask():
+    idx = pd.date_range("2020-01-01", periods=10, freq="B")
+    raw_weights = pd.Series(1.0, index=idx, dtype=float)
+    asset_returns = pd.Series([0.0, 0.01, -0.01, 0.02, -0.02, 0.03, -0.03, 0.01, -0.01, 0.02], index=idx)
+    update_mask = pd.Series(False, index=idx, dtype=bool)
+    update_mask.iloc[[3, 6, 9]] = True
+
+    _, leverage, realized_vol = apply_vol_target_overlay(
+        raw_weights,
+        asset_returns,
+        target_vol=0.10,
+        lookback=3,
+        min_leverage=0.0,
+        max_leverage=1.0,
+        update_mask=update_mask,
+    )
+
+    assert realized_vol.notna().any()
+    leverage_changes = leverage.diff().abs().fillna(0.0) > 1e-12
+    unexpected_changes = leverage_changes & ~update_mask
+    assert not bool(unexpected_changes.any())
 
 
 def test_vol_overlay_rebalance_update_constant_weights_has_no_daily_turnover():
@@ -284,3 +403,54 @@ def test_vol_overlay_changes_target_shares_through_pipeline():
     assert overlay_payload["target_shares"] < plain_payload["target_shares"]
     assert overlay_payload["vol_lookback"] == 5
     assert overlay_payload["realized_vol"] is not None
+    assert overlay_payload["event_id"] == _expected_event_id(overlay_payload)
+
+
+def test_run_backtest_cli_vol_target_flag_enables_default_overlay_and_preserves_event_id(tmp_path: Path):
+    idx = pd.date_range("2020-01-01", periods=420, freq="B")
+    _write_valmom_cli_store(tmp_path, idx)
+    repo_root, env = _repo_root_and_env()
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "run_backtest.py"),
+        "--strategy",
+        "valmom_v1",
+        "--symbols",
+        "AAA",
+        "BBB",
+        "CCC",
+        "--vm-defensive-symbol",
+        "SHY",
+        "--vm-mom-lookback",
+        "63",
+        "--vm-val-lookback",
+        "126",
+        "--vm-top-n",
+        "2",
+        "--vm-rebalance",
+        "21",
+        "--vol-target",
+        "--vol-lookback",
+        "63",
+        "--start",
+        idx[0].date().isoformat(),
+        "--end",
+        idx[-1].date().isoformat(),
+        "--no-plot",
+        "--next-action-json",
+        "--data-dir",
+        str(tmp_path),
+    ]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 1
+    obj = json.loads(lines[0])
+    assert obj["vol_target"] == 0.10
+    assert obj["vol_lookback"] == 63
+    assert obj["leverage"] is not None
+    assert obj["realized_vol"] is not None
+    assert obj["event_id"] == _expected_event_id(obj)
