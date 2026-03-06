@@ -121,3 +121,57 @@ These were true during the 2026-03-06 preset audit and should be treated as exam
 - `vm_core` emitted `HOLD SPY` with `next_rebalance=2026-01-08`.
 - `vm_core_due` had the same payload as `vm_core`.
 - `dual_mom_core` emitted `HOLD EFA` with `next_rebalance=2026-03-31`.
+
+## Scheduled Dual Compare
+
+The Windows + WSL scheduled comparison layer runs two weekday tasks:
+
+- `TradingCodex\morning_0825_dual_compare`
+- `TradingCodex\afternoon_1535_dual_compare`
+
+Each task runs all of the following in sequence:
+
+- `dual_mom_core`
+- `dual_mom_core_vt`
+- `daily_summary.py --preset dual_mom_core --preset dual_mom_core_vt --emit json`
+
+The scheduler writes durable artifacts under `~/.trading_codex/scheduled_runs/`:
+
+- `logs/scheduled_runs.jsonl`: append-only machine log with timestamp, job name, preset, stdout line, stderr, exit code, and snapshot path.
+- `logs/dual_mom_core_alerts.csv`: emit-only CSV rows for the base preset.
+- `logs/dual_mom_core_vt_alerts.csv`: emit-only CSV rows for the vol-target preset.
+- `snapshots/YYYY-MM-DD/*.json`: timestamped combined snapshots for each morning or afternoon run.
+- `daily_reviews/YYYY-MM-DD_dual_compare.md`: same-day side-by-side review showing morning vs afternoon and both presets.
+- `state/*.json`: isolated scheduled-run alert state so the weekday tasks do not depend on your ad hoc manual run history.
+
+Create the tasks from Windows PowerShell:
+
+```powershell
+.\scripts\windows\install_dual_mom_compare_tasks.ps1
+```
+
+Print the exact `schtasks.exe` commands without creating anything:
+
+```powershell
+.\scripts\windows\install_dual_mom_compare_tasks.ps1 -PrintOnly
+```
+
+Manual reruns:
+
+```powershell
+.\scripts\windows\trading_codex_scheduled_dual_compare.ps1 -Window morning_0825
+.\scripts\windows\trading_codex_scheduled_dual_compare.ps1 -Window afternoon_1535
+```
+
+Disable the tasks:
+
+```powershell
+schtasks.exe /Delete /TN "TradingCodex\morning_0825_dual_compare" /F
+schtasks.exe /Delete /TN "TradingCodex\afternoon_1535_dual_compare" /F
+```
+
+Still not automated:
+
+- No broker connection.
+- No live order placement.
+- No trade confirmation loop back into the repo.
