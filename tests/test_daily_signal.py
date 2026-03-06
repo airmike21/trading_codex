@@ -129,6 +129,27 @@ def test_preset_parsing_and_command_build(tmp_path: Path) -> None:
     assert cmd[sep + 1 : sep + 5] == ["--strategy", "valmom_v1", "--data-dir", str(Path.home() / "data")]
 
 
+def test_presets_example_includes_opt_in_dual_mom_core_vt() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    presets = daily_signal._load_presets_json(repo_root / "configs" / "presets.example.json")
+
+    assert "dual_mom_core" in presets
+    assert "dual_mom_core_vt" in presets
+
+    base_args = presets["dual_mom_core"].run_backtest_args
+    vt_args = presets["dual_mom_core_vt"].run_backtest_args
+
+    assert "--vol-target" not in base_args
+    assert "--vol-lookback" not in base_args
+    assert "--min-leverage" not in base_args
+    assert "--max-leverage" not in base_args
+
+    assert vt_args[vt_args.index("--vol-target") + 1] == "0.12"
+    assert vt_args[vt_args.index("--vol-lookback") + 1] == "21"
+    assert vt_args[vt_args.index("--min-leverage") + 1] == "0.0"
+    assert vt_args[vt_args.index("--max-leverage") + 1] == "1.0"
+
+
 def test_daily_signal_emit_json_is_one_line_and_matches_run_backtest(tmp_path: Path) -> None:
     repo_root, env = _repo_root_and_env()
     data_dir = tmp_path / "synth"

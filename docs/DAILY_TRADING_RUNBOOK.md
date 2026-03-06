@@ -19,6 +19,7 @@ It is grounded in the audited runtime behavior from 2026-03-06 and the current l
    Use `vm_core` for change-only value+momentum checks.
    Use `vm_core_due` when you want the same signal plus one due-date reminder.
    Use `dual_mom_core` for the current dual momentum preset.
+   An opt-in `dual_mom_core_vt` variant is available in `configs/presets.example.json` if you want the evaluated `0.12 / 21` vol-target overlay without changing the existing preset.
 3. Run `daily_signal.py` for that preset once.
 4. If stdout is empty, stop.
    That means there is no new emit for the current state.
@@ -48,6 +49,12 @@ Run the verified presets with their configured default emit mode:
 ~/trading_codex/.venv/bin/python scripts/daily_signal.py --preset vm_core
 ~/trading_codex/.venv/bin/python scripts/daily_signal.py --preset vm_core_due
 ~/trading_codex/.venv/bin/python scripts/daily_signal.py --preset dual_mom_core
+```
+
+Run the opt-in dual momentum overlay variant from the tracked example preset file:
+
+```bash
+~/trading_codex/.venv/bin/python scripts/daily_signal.py --presets-file configs/presets.example.json --preset dual_mom_core_vt
 ```
 
 Run the same presets with JSON output for inspection:

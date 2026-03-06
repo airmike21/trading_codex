@@ -32,6 +32,58 @@
         "--data-dir",
         "~/trading_codex/data"
       ]
+    },
+    "dual_mom_core": {
+      "description": "Dual momentum core example. Adjust symbols/data-dir for your environment.",
+      "mode": "change_only",
+      "emit": "text",
+      "state_file": "~/.trading_codex/next_action_alert_state.json",
+      "state_key": "dual_mom_core",
+      "log_csv": "~/.trading_codex/alerts.csv",
+      "run_backtest_args": [
+        "--strategy",
+        "dual_mom",
+        "--symbols",
+        "SPY",
+        "QQQ",
+        "IWM",
+        "EFA",
+        "--defensive",
+        "BIL",
+        "--data-dir",
+        "~/trading_codex/data",
+        "--no-plot"
+      ]
+    },
+    "dual_mom_core_vt": {
+      "description": "Dual momentum core example with opt-in vol targeting (target_vol=0.12, vol_lookback=21).",
+      "mode": "change_only",
+      "emit": "text",
+      "state_file": "~/.trading_codex/next_action_alert_state.json",
+      "state_key": "dual_mom_core_vt",
+      "log_csv": "~/.trading_codex/alerts.csv",
+      "run_backtest_args": [
+        "--strategy",
+        "dual_mom",
+        "--symbols",
+        "SPY",
+        "QQQ",
+        "IWM",
+        "EFA",
+        "--defensive",
+        "BIL",
+        "--vol-target",
+        "0.12",
+        "--vol-lookback",
+        "21",
+        "--min-leverage",
+        "0.0",
+        "--max-leverage",
+        "1.0",
+        "--data-dir",
+        "~/trading_codex/data",
+        "--no-plot"
+      ]
     }
   }
 }
