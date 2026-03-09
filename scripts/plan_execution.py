@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 import subprocess
@@ -21,6 +22,8 @@ except ImportError:  # pragma: no cover - direct script execution path
 
 from trading_codex.execution import (
     FileBrokerPositionAdapter,
+    RequestsTastytradeHttpClient,
+    TastytradeBrokerPositionAdapter,
     build_artifact_paths,
     build_execution_plan,
     parse_signal_payload,
@@ -46,6 +49,22 @@ def _extract_flag_value(args: list[str], flag: str) -> str | None:
         if item == flag and index + 1 < len(args):
             return args[index + 1]
     return None
+
+
+def _extract_option_values(args: list[str], flag: str) -> list[str]:
+    values: list[str] = []
+    index = 0
+    while index < len(args):
+        if args[index] != flag:
+            index += 1
+            continue
+        index += 1
+        while index < len(args) and not args[index].startswith("--"):
+            value = args[index].strip()
+            if value:
+                values.append(value)
+            index += 1
+    return values
 
 
 def _data_dir_for_preset(*, repo_root: Path, preset: daily_signal.Preset) -> Path | None:
@@ -93,6 +112,71 @@ def _load_signal_from_file(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _parse_allowed_symbols_csv(value: str) -> set[str]:
+    symbols = {item.strip().upper() for item in value.split(",") if item.strip()}
+    if not symbols:
+        raise ValueError("--allowed-symbols must contain at least one symbol.")
+    return symbols
+
+
+def _derive_allowed_symbols_from_preset(preset: daily_signal.Preset) -> set[str]:
+    expanded = daily_signal._expand_known_path_args(preset.run_backtest_args)
+    symbols = {
+        item.strip().upper()
+        for item in (
+            _extract_option_values(expanded, "--symbols")
+            + _extract_option_values(expanded, "--defensive")
+            + _extract_option_values(expanded, "--vm-defensive-symbol")
+        )
+        if item.strip()
+    }
+    return symbols
+
+
+def _resolve_allowed_symbols(*, raw_value: str | None, preset: daily_signal.Preset | None) -> set[str]:
+    if raw_value:
+        return _parse_allowed_symbols_csv(raw_value)
+    if preset is None:
+        raise ValueError(
+            "--allowed-symbols is required with --broker tastytrade unless it can be derived from --preset."
+        )
+    derived = _derive_allowed_symbols_from_preset(preset)
+    if not derived:
+        raise ValueError(
+            f"Could not derive an allowed symbol universe from preset {preset.name!r}; pass --allowed-symbols explicitly."
+        )
+    return derived
+
+
+def _apply_unrelated_holdings_scope_block(plan: Any, *, allowed_symbols: set[str]) -> tuple[Any, list[str]]:
+    unrelated = sorted(
+        symbol
+        for symbol, position in plan.broker_snapshot.positions.items()
+        if position.shares != 0 and symbol not in allowed_symbols
+    )
+    if not unrelated:
+        return plan, []
+
+    blocked_items = []
+    for item in plan.items:
+        if item.symbol in unrelated:
+            blocked_items.append(replace(item, blockers=sorted(set(item.blockers + ["out_of_scope_symbol"]))))
+        else:
+            blocked_items.append(item)
+
+    blocked_plan = replace(
+        plan,
+        items=blocked_items,
+        blockers=sorted(
+            set(
+                plan.blockers
+                + ["unrelated_holdings_outside_scope", f"unrelated_symbols:{','.join(unrelated)}"]
+            )
+        ),
+    )
+    return blocked_plan, unrelated
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a dry-run execution plan only. No live orders, broker writes, or auto-trading."
@@ -106,7 +190,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional presets path when using --preset. Default: configs/presets.json then configs/presets.example.json.",
     )
-    parser.add_argument("--positions-file", type=Path, required=True, help="Mock/file broker positions JSON.")
+    parser.add_argument(
+        "--broker",
+        choices=["file", "tastytrade"],
+        default="file",
+        help="Broker snapshot source. 'tastytrade' is read-only and still dry-run only.",
+    )
+    parser.add_argument("--positions-file", type=Path, default=None, help="Mock/file broker positions JSON.")
+    parser.add_argument("--account-id", type=str, default=None, help="Broker account id. Required with --broker tastytrade.")
+    parser.add_argument(
+        "--allowed-symbols",
+        type=str,
+        default=None,
+        help="Comma-separated allowed symbol scope for real broker reads. Required for --broker tastytrade unless derivable from --preset.",
+    )
     parser.add_argument(
         "--base-dir",
         type=Path,
@@ -128,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         source_label: str
         source_ref: str | None
         data_dir: Path | None
+        preset: daily_signal.Preset | None = None
 
         if args.preset:
             signal_raw, preset, resolved_presets_path = _load_signal_from_preset(
@@ -147,7 +245,24 @@ def main(argv: list[str] | None = None) -> int:
             data_dir = None
 
         signal = parse_signal_payload(signal_raw)
-        broker_adapter = FileBrokerPositionAdapter(args.positions_file)
+        broker_source_ref: str | None
+        unrelated_holdings: list[str] = []
+        if args.broker == "file":
+            if args.positions_file is None:
+                raise ValueError("--positions-file is required when --broker file.")
+            broker_adapter = FileBrokerPositionAdapter(args.positions_file)
+            broker_source_ref = str(args.positions_file)
+        else:
+            if args.positions_file is not None:
+                raise ValueError("--positions-file cannot be used with --broker tastytrade.")
+            if not args.account_id or not args.account_id.strip():
+                raise ValueError("--account-id is required when --broker tastytrade.")
+            allowed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
+            broker_adapter = TastytradeBrokerPositionAdapter(
+                account_id=args.account_id.strip(),
+                client=RequestsTastytradeHttpClient(),
+            )
+            broker_source_ref = f"tastytrade:{args.account_id.strip()}"
         broker_snapshot = broker_adapter.load_snapshot()
         timestamp = resolve_timestamp(args.timestamp)
         plan = build_execution_plan(
@@ -156,10 +271,12 @@ def main(argv: list[str] | None = None) -> int:
             source_kind=source_kind,
             source_label=source_label,
             source_ref=source_ref,
-            broker_source_ref=str(args.positions_file),
+            broker_source_ref=broker_source_ref,
             data_dir=data_dir,
             generated_at=timestamp,
         )
+        if args.broker == "tastytrade":
+            plan, unrelated_holdings = _apply_unrelated_holdings_scope_block(plan, allowed_symbols=allowed_symbols)
 
         base_dir = Path(daily_signal._expand_user(str(args.base_dir)))
         artifact_paths = build_artifact_paths(base_dir, timestamp=timestamp, source_label=source_label)
@@ -169,6 +286,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(json_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         else:
             print(render_markdown(plan, artifacts=artifact_paths), end="")
+        if unrelated_holdings:
+            joined = ", ".join(unrelated_holdings)
+            print(
+                f"[plan_execution] BLOCKED: account {broker_snapshot.account_id or args.account_id} contains "
+                f"unrelated holdings outside allowed scope: {joined}",
+                file=sys.stderr,
+            )
+            return 2
         return 0
     except Exception as exc:
         print(f"[plan_execution] ERROR: {exc}", file=sys.stderr)

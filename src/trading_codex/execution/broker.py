@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Protocol
+
+import requests
 
 from trading_codex.execution.models import BrokerPosition, BrokerSnapshot
 
@@ -23,7 +26,13 @@ def _coerce_int_like(value: object, *, field_name: str) -> int:
         try:
             return int(stripped)
         except ValueError as exc:
-            raise ValueError(f"{field_name} must be an integer.") from exc
+            try:
+                numeric = float(stripped)
+            except ValueError:
+                raise ValueError(f"{field_name} must be an integer.") from exc
+            if not numeric.is_integer():
+                raise ValueError(f"{field_name} must be a whole number.") from exc
+            return int(numeric)
     raise ValueError(f"{field_name} must be an integer.")
 
 
@@ -50,6 +59,119 @@ def _position_price(raw: dict[str, Any]) -> float | None:
         if key in raw:
             return _coerce_optional_float(raw.get(key), field_name=key)
     return None
+
+
+def _coerce_non_empty_string(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    return value.strip()
+
+
+def _tastytrade_position_price(raw: dict[str, Any]) -> float | None:
+    for key in (
+        "close-price",
+        "price",
+        "mark-price",
+        "market-price",
+        "average-daily-market-close-price",
+        "average-open-price",
+    ):
+        if key in raw:
+            return _coerce_optional_float(raw.get(key), field_name=key)
+    return None
+
+
+def _extract_tastytrade_data_object(raw: Any, *, endpoint: str) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Tastytrade {endpoint} payload must be a JSON object.")
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        raise ValueError(f"Tastytrade {endpoint} payload must include a data object.")
+    return data
+
+
+def _extract_tastytrade_items(raw: Any, *, endpoint: str) -> list[dict[str, Any]]:
+    data = _extract_tastytrade_data_object(raw, endpoint=endpoint)
+    items = data.get("items")
+    if not isinstance(items, list):
+        raise ValueError(f"Tastytrade {endpoint} payload must include data.items as a list.")
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError(f"Tastytrade {endpoint} data.items entries must be objects.")
+        normalized.append(item)
+    return normalized
+
+
+def _signed_tastytrade_quantity(raw: dict[str, Any], *, symbol: str) -> int:
+    quantity = _coerce_int_like(raw.get("quantity"), field_name=f"{symbol}.quantity")
+    direction_raw = raw.get("quantity-direction", "Long")
+    direction = _coerce_non_empty_string(direction_raw, field_name=f"{symbol}.quantity-direction").lower()
+    if direction == "short":
+        return -abs(quantity)
+    if direction in {"long", "buy"}:
+        return abs(quantity)
+    raise ValueError(f"{symbol}.quantity-direction must be Long or Short.")
+
+
+def normalize_tastytrade_snapshot(
+    *,
+    account_id: str,
+    positions_payload: Any,
+    balances_payload: Any,
+) -> BrokerSnapshot:
+    normalized_account_id = _coerce_non_empty_string(account_id, field_name="account_id")
+    positions_raw = _extract_tastytrade_items(positions_payload, endpoint="/accounts/{account_id}/positions")
+    balances_raw = _extract_tastytrade_data_object(balances_payload, endpoint="/accounts/{account_id}/balances")
+
+    payload_account = balances_raw.get("account-number")
+    if payload_account is not None and str(payload_account).strip() != normalized_account_id:
+        raise ValueError("Tastytrade balances payload account-number does not match requested account_id.")
+
+    positions: dict[str, BrokerPosition] = {}
+    as_of_candidates: list[str] = []
+    for item in positions_raw:
+        symbol_value = item.get("symbol", item.get("underlying-symbol"))
+        symbol = _coerce_non_empty_string(symbol_value, field_name="position.symbol").upper()
+        if symbol in positions:
+            raise ValueError(f"Duplicate Tastytrade broker position for symbol {symbol!r}.")
+        shares = _signed_tastytrade_quantity(item, symbol=symbol)
+        price = _tastytrade_position_price(item)
+        updated_at = item.get("updated-at")
+        if isinstance(updated_at, str) and updated_at.strip():
+            as_of_candidates.append(updated_at.strip())
+        positions[symbol] = BrokerPosition(
+            symbol=symbol,
+            shares=shares,
+            price=price,
+            raw=dict(item),
+        )
+
+    cash = None
+    for key in ("cash-balance", "cash-balance-effective", "cash-available-to-withdraw"):
+        if key in balances_raw:
+            cash = _coerce_optional_float(balances_raw.get(key), field_name=key)
+            break
+
+    buying_power = None
+    for key in ("equity-buying-power", "buying-power-adjusted-for-futures", "available-trading-funds"):
+        if key in balances_raw:
+            buying_power = _coerce_optional_float(balances_raw.get(key), field_name=key)
+            break
+
+    as_of = max(as_of_candidates) if as_of_candidates else None
+    return BrokerSnapshot(
+        broker_name="tastytrade",
+        account_id=normalized_account_id,
+        as_of=as_of,
+        cash=cash,
+        buying_power=buying_power,
+        positions=positions,
+        raw={
+            "balances_payload": balances_payload,
+            "positions_payload": positions_payload,
+        },
+    )
 
 
 def parse_broker_snapshot(raw: Any) -> BrokerSnapshot:
@@ -101,6 +223,91 @@ class BrokerPositionAdapter(Protocol):
         ...
 
 
+class TastytradeHttpClient(Protocol):
+    def get_balances(self, *, account_id: str) -> Any:
+        ...
+
+    def get_positions(self, *, account_id: str) -> Any:
+        ...
+
+
+class RequestsTastytradeHttpClient:
+    def __init__(
+        self,
+        *,
+        session: requests.Session | None = None,
+        base_url: str | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        self.session = session or requests.Session()
+        self.base_url = (base_url or os.getenv("TASTYTRADE_API_BASE_URL") or "https://api.tastytrade.com").rstrip("/")
+        self.timeout = timeout if timeout is not None else float(os.getenv("TASTYTRADE_TIMEOUT_SECONDS", "30"))
+        self._auth_header: str | None = None
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: dict[str, Any] | None = None,
+        include_auth: bool = True,
+    ) -> dict[str, Any]:
+        headers: dict[str, str] = {}
+        if include_auth:
+            headers["Authorization"] = self._authorization_header()
+        response = self.session.request(
+            method=method,
+            url=f"{self.base_url}{path}",
+            json=json_payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError(f"Tastytrade {path} response must be a JSON object.")
+        return payload
+
+    def _authorization_header(self) -> str:
+        if self._auth_header:
+            return self._auth_header
+
+        access_token = os.getenv("TASTYTRADE_ACCESS_TOKEN") or os.getenv("TASTYTRADE_API_TOKEN")
+        if access_token:
+            self._auth_header = f"Bearer {access_token.strip()}"
+            return self._auth_header
+
+        session_token = os.getenv("TASTYTRADE_SESSION_TOKEN")
+        if session_token:
+            self._auth_header = session_token.strip()
+            return self._auth_header
+
+        username = os.getenv("TASTYTRADE_USERNAME")
+        password = os.getenv("TASTYTRADE_PASSWORD")
+        if not username or not password:
+            raise ValueError(
+                "Tastytrade credentials not configured. Set TASTYTRADE_SESSION_TOKEN, "
+                "TASTYTRADE_ACCESS_TOKEN, or TASTYTRADE_USERNAME/TASTYTRADE_PASSWORD."
+            )
+
+        payload = self._request_json(
+            "POST",
+            "/sessions",
+            json_payload={"login": username, "password": password, "remember-me": True},
+            include_auth=False,
+        )
+        data = _extract_tastytrade_data_object(payload, endpoint="/sessions")
+        session_token_value = data.get("session-token")
+        self._auth_header = _coerce_non_empty_string(session_token_value, field_name="data.session-token")
+        return self._auth_header
+
+    def get_balances(self, *, account_id: str) -> Any:
+        return self._request_json("GET", f"/accounts/{account_id}/balances")
+
+    def get_positions(self, *, account_id: str) -> Any:
+        return self._request_json("GET", f"/accounts/{account_id}/positions")
+
+
 class FileBrokerPositionAdapter:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -108,3 +315,18 @@ class FileBrokerPositionAdapter:
     def load_snapshot(self) -> BrokerSnapshot:
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         return parse_broker_snapshot(raw)
+
+
+class TastytradeBrokerPositionAdapter:
+    def __init__(self, *, account_id: str, client: TastytradeHttpClient | None = None) -> None:
+        self.account_id = _coerce_non_empty_string(account_id, field_name="account_id")
+        self.client = client or RequestsTastytradeHttpClient()
+
+    def load_snapshot(self) -> BrokerSnapshot:
+        positions_payload = self.client.get_positions(account_id=self.account_id)
+        balances_payload = self.client.get_balances(account_id=self.account_id)
+        return normalize_tastytrade_snapshot(
+            account_id=self.account_id,
+            positions_payload=positions_payload,
+            balances_payload=balances_payload,
+        )

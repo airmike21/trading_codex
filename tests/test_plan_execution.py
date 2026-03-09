@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib
 import json
 import os
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from trading_codex.data import LocalStore
 
@@ -133,6 +135,25 @@ def _signal_payload() -> dict[str, object]:
     return payload
 
 
+def _tastytrade_positions_payload(*items: dict[str, object]) -> dict[str, object]:
+    return {"data": {"items": list(items)}}
+
+
+def _tastytrade_balances_payload(
+    *,
+    account_id: str = "5WT00001",
+    cash: str = "1234.56",
+    buying_power: str = "9876.54",
+) -> dict[str, object]:
+    return {
+        "data": {
+            "account-number": account_id,
+            "cash-balance": cash,
+            "equity-buying-power": buying_power,
+        }
+    }
+
+
 def test_plan_execution_cli_from_signal_file_writes_artifacts_and_preserves_inputs(tmp_path: Path) -> None:
     repo_root, env = _repo_root_and_env()
     signal_path = tmp_path / "dual_mom_signal.json"
@@ -227,3 +248,127 @@ def test_plan_execution_cli_from_preset_supports_dual_mom_core(tmp_path: Path) -
     assert payload["items"]
     assert Path(payload["artifacts"]["json_path"]).exists()
     assert Path(payload["artifacts"]["markdown_path"]).exists()
+
+
+def test_plan_execution_cli_with_tastytrade_broker_reads_mocked_account(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    _write_synth_store(data_dir)
+
+    presets_path = tmp_path / "presets.json"
+    _write_dual_mom_presets(presets_path, data_dir)
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeReadOnlyClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def get_positions(self, *, account_id: str) -> object:
+            self.calls.append(("get_positions", account_id))
+            return _tastytrade_positions_payload()
+
+        def get_balances(self, *, account_id: str) -> object:
+            self.calls.append(("get_balances", account_id))
+            return _tastytrade_balances_payload(account_id=account_id)
+
+    client = FakeReadOnlyClient()
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda: client)
+
+    exit_code = plan_execution.main(
+        [
+            "--preset",
+            "dual_mom_core",
+            "--presets-file",
+            str(presets_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:10:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert client.calls == [("get_positions", "5WT00001"), ("get_balances", "5WT00001")]
+
+    json_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*.json"))
+    assert len(json_artifacts) == 1
+    payload = json.loads(json_artifacts[0].read_text(encoding="utf-8"))
+    assert payload["broker_snapshot"]["broker_name"] == "tastytrade"
+    assert payload["broker_snapshot"]["account_id"] == "5WT00001"
+    assert payload["blockers"] == []
+
+
+def test_plan_execution_cli_with_tastytrade_blocks_unrelated_holdings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeReadOnlyClient:
+        def get_positions(self, *, account_id: str) -> object:
+            assert account_id == "5WT00001"
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "XYZ",
+                    "quantity": "7",
+                    "quantity-direction": "Long",
+                    "close-price": "77.00",
+                }
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+        def submit_order(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Dry-run planner must not submit orders.")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda: FakeReadOnlyClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "AAA,BBB,CCC,BIL",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:15:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "unrelated holdings outside allowed scope: XYZ" in captured.err
+
+    payload = json.loads(captured.out)
+    assert "unrelated_holdings_outside_scope" in payload["blockers"]
+    assert "unrelated_symbols:XYZ" in payload["blockers"]
+
+    json_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*.json"))
+    assert len(json_artifacts) == 1
+    artifact_payload = json.loads(json_artifacts[0].read_text(encoding="utf-8"))
+    assert "unrelated_symbols:XYZ" in artifact_payload["blockers"]
