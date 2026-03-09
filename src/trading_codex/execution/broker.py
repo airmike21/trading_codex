@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import getpass
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any, Protocol
 
 import requests
@@ -401,6 +403,18 @@ class RequestsTastytradeHttpClient:
             headers[header_name] = token
         return headers
 
+    def _resolve_challenge_code(self) -> str | None:
+        challenge_code = None if self.challenge_code is None else self.challenge_code.strip()
+        if challenge_code:
+            return challenge_code
+        if not sys.stdin.isatty():
+            return None
+        prompted = getpass.getpass("Tastytrade challenge code: ").strip()
+        if prompted == "":
+            return None
+        self.challenge_code = prompted
+        return prompted
+
     def _complete_device_challenge(self, auth_error: TastytradeApiError) -> None:
         redirect = auth_error.redirect
         if redirect is None:
@@ -417,7 +431,7 @@ class RequestsTastytradeHttpClient:
         if not isinstance(path, str) or not path.strip():
             raise ValueError(f"{auth_error} (redirect.url is required)")
 
-        challenge_code = None if self.challenge_code is None else self.challenge_code.strip()
+        challenge_code = self._resolve_challenge_code()
         if not challenge_code:
             raise ValueError(
                 "Tastytrade device challenge requires a challenge code. "
