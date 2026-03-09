@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import csv
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from trading_codex.execution.models import ExecutionPlan
+from trading_codex.execution.planner import execution_plan_to_dict
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
+
+
+@dataclass(frozen=True)
+class ArtifactPaths:
+    base_dir: Path
+    logs_dir: Path
+    plans_dir: Path
+    reviews_dir: Path
+    csv_log_path: Path
+    json_path: Path
+    markdown_path: Path
+
+
+def resolve_timestamp(value: str | None) -> datetime:
+    chicago = ZoneInfo("America/Chicago") if ZoneInfo is not None else None
+    if value:
+        dt = datetime.fromisoformat(value)
+        if chicago is not None:
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=chicago)
+            return dt.astimezone(chicago)
+        return dt
+    if chicago is not None:
+        return datetime.now(chicago).replace(microsecond=0)
+    return datetime.now().replace(microsecond=0)
+
+
+def _timestamp_slug(dt: datetime) -> str:
+    return dt.strftime("%Y%m%dT%H%M%S%z")
+
+
+def _safe_label(value: str) -> str:
+    collapsed = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    return collapsed.strip("_") or "execution_plan"
+
+
+def build_artifact_paths(base_dir: Path, *, timestamp: datetime, source_label: str) -> ArtifactPaths:
+    day_slug = timestamp.date().isoformat()
+    stamp = _timestamp_slug(timestamp)
+    logs_dir = base_dir / "logs"
+    plans_dir = base_dir / "plans" / day_slug
+    reviews_dir = base_dir / "reviews" / day_slug
+    for path in (logs_dir, plans_dir, reviews_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    safe_label = _safe_label(source_label)
+    return ArtifactPaths(
+        base_dir=base_dir,
+        logs_dir=logs_dir,
+        plans_dir=plans_dir,
+        reviews_dir=reviews_dir,
+        csv_log_path=logs_dir / "execution_plans.csv",
+        json_path=plans_dir / f"{stamp}_{safe_label}_execution_plan.json",
+        markdown_path=reviews_dir / f"{stamp}_{safe_label}_execution_plan.md",
+    )
+
+
+def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
+    lines = [
+        f"# Dry-Run Execution Plan {plan.source_label}",
+        "",
+        f"- Generated: `{plan.generated_at_chicago}`",
+        f"- Dry run only: `{str(plan.dry_run).lower()}`",
+        f"- Signal source: `{plan.source_kind}`",
+        f"- Signal ref: `{plan.source_ref or '-'}`",
+        f"- Broker source: `{plan.broker_source_ref or '-'}`",
+        f"- Broker account: `{plan.broker_snapshot.account_id or '-'}`",
+        f"- Strategy signal: `{plan.signal.action} {plan.signal.symbol} target={plan.signal.desired_target_shares}`",
+        f"- Event ID: `{plan.signal.event_id}`",
+        f"- Next rebalance: `{plan.signal.next_rebalance or '-'}`",
+        f"- JSON artifact: `{artifacts.json_path}`",
+        f"- CSV log: `{artifacts.csv_log_path}`",
+        "",
+        "## Totals",
+        "",
+        f"- Buy notional: `{plan.total_buy_notional:.2f}`",
+        f"- Sell notional: `{plan.total_sell_notional:.2f}`",
+        f"- Net notional: `{plan.net_notional:.2f}`",
+        f"- Cash: `{plan.broker_snapshot.cash if plan.broker_snapshot.cash is not None else '-'}`",
+        f"- Buying power: `{plan.broker_snapshot.buying_power if plan.broker_snapshot.buying_power is not None else '-'}`",
+        "",
+    ]
+
+    if plan.warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in plan.warnings:
+            lines.append(f"- `{warning}`")
+        lines.append("")
+
+    if plan.blockers:
+        lines.extend(["## Blockers", ""])
+        for blocker in plan.blockers:
+            lines.append(f"- `{blocker}`")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Symbols",
+            "",
+            "| Symbol | Desired | Current | Delta | Classification | Ref Price | Est Notional | Warnings | Blockers |",
+            "| --- | ---: | ---: | ---: | --- | ---: | ---: | --- | --- |",
+        ]
+    )
+    for item in plan.items:
+        ref_price = "-" if item.reference_price is None else f"{item.reference_price:.2f}"
+        est_notional = "-" if item.estimated_notional is None else f"{item.estimated_notional:.2f}"
+        warnings = ", ".join(item.warnings) if item.warnings else "-"
+        blockers = ", ".join(item.blockers) if item.blockers else "-"
+        lines.append(
+            f"| {item.symbol} | {item.desired_target_shares} | {item.current_broker_shares} | {item.delta_shares} | "
+            f"{item.classification} | {ref_price} | {est_notional} | {warnings} | {blockers} |"
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def _append_csv_log(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> None:
+    fieldnames = [
+        "generated_at_chicago",
+        "source_kind",
+        "source_label",
+        "signal_event_id",
+        "broker_name",
+        "account_id",
+        "buy_notional",
+        "sell_notional",
+        "warnings_count",
+        "blockers_count",
+        "json_path",
+        "markdown_path",
+    ]
+    row = {
+        "generated_at_chicago": plan.generated_at_chicago,
+        "source_kind": plan.source_kind,
+        "source_label": plan.source_label,
+        "signal_event_id": plan.signal.event_id,
+        "broker_name": plan.broker_snapshot.broker_name,
+        "account_id": plan.broker_snapshot.account_id or "",
+        "buy_notional": f"{plan.total_buy_notional:.2f}",
+        "sell_notional": f"{plan.total_sell_notional:.2f}",
+        "warnings_count": str(len(plan.warnings)),
+        "blockers_count": str(len(plan.blockers)),
+        "json_path": str(artifacts.json_path),
+        "markdown_path": str(artifacts.markdown_path),
+    }
+
+    write_header = not artifacts.csv_log_path.exists()
+    with artifacts.csv_log_path.open("a", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def write_artifacts(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> dict[str, Any]:
+    artifact_dict = {
+        "csv_log_path": str(artifacts.csv_log_path),
+        "json_path": str(artifacts.json_path),
+        "markdown_path": str(artifacts.markdown_path),
+    }
+    payload = execution_plan_to_dict(plan, artifacts=artifact_dict)
+    artifacts.json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    artifacts.markdown_path.write_text(render_markdown(plan, artifacts=artifacts), encoding="utf-8")
+    _append_csv_log(plan, artifacts=artifacts)
+    return payload
