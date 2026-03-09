@@ -453,6 +453,15 @@ def test_plan_execution_cli_loads_tastytrade_secrets_file_and_respects_shell_env
     )
     base_dir = tmp_path / "execution_plans"
 
+    for key in (
+        "TASTYTRADE_ACCOUNT",
+        "TASTYTRADE_USERNAME",
+        "TASTYTRADE_PASSWORD",
+        "TASTYTRADE_SESSION_TOKEN",
+        "TASTYTRADE_ACCESS_TOKEN",
+        "TASTYTRADE_API_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TASTYTRADE_USERNAME", "shell-user@example.com")
     captured_env: dict[str, str] = {}
 

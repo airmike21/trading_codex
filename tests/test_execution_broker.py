@@ -193,7 +193,20 @@ def test_tastytrade_http_client_completes_device_challenge_and_retries_session(
                     },
                     headers={"X-Tastyworks-Challenge-Token": "challenge-token-from-header"},
                 ),
-                FakeResponse(ok=True, status_code=200, payload={"data": {"status": "ok"}}),
+                FakeResponse(
+                    ok=True,
+                    status_code=200,
+                    payload={
+                        "data": {
+                            "step": "otp_verification",
+                            "redirect": {
+                                "method": "POST",
+                                "url": "/sessions",
+                                "required-headers": ["X-Tastyworks-Challenge-Token", "X-Tastyworks-OTP"],
+                            },
+                        }
+                    },
+                ),
                 FakeResponse(ok=True, status_code=201, payload={"data": {"session-token": "session-123"}}),
                 FakeResponse(ok=True, status_code=200, payload=_tastytrade_positions_payload()),
             ]
@@ -221,20 +234,23 @@ def test_tastytrade_http_client_completes_device_challenge_and_retries_session(
         (
             "POST",
             "https://api.tastytrade.com/sessions",
-            {"login": "user@example.com", "password": "secret", "remember-me": True},
+            {"login": "user@example.com", "password": "secret", "rememberMe": True},
             {},
         ),
         (
             "POST",
             "https://api.tastytrade.com/device-challenge",
-            {"code": "123456"},
+            {},
             {"X-Tastyworks-Challenge-Token": "challenge-token-from-header"},
         ),
         (
             "POST",
             "https://api.tastytrade.com/sessions",
-            {"login": "user@example.com", "password": "secret", "remember-me": True},
-            {},
+            {"login": "user@example.com", "password": "secret", "rememberMe": True},
+            {
+                "X-Tastyworks-Challenge-Token": "challenge-token-from-header",
+                "X-Tastyworks-OTP": "123456",
+            },
         ),
         (
             "GET",
@@ -299,7 +315,20 @@ def test_tastytrade_http_client_prompts_for_challenge_code_on_interactive_tty(
                     },
                     headers={"X-Tastyworks-Challenge-Token": "challenge-token-from-header"},
                 ),
-                FakeResponse(ok=True, status_code=200, payload={"data": {"status": "ok"}}),
+                FakeResponse(
+                    ok=True,
+                    status_code=200,
+                    payload={
+                        "data": {
+                            "step": "otp_verification",
+                            "redirect": {
+                                "method": "POST",
+                                "url": "/sessions",
+                                "required-headers": ["X-Tastyworks-Challenge-Token", "X-Tastyworks-OTP"],
+                            },
+                        }
+                    },
+                ),
                 FakeResponse(ok=True, status_code=201, payload={"data": {"session-token": "session-123"}}),
                 FakeResponse(ok=True, status_code=200, payload=_tastytrade_positions_payload()),
             ]
@@ -326,7 +355,103 @@ def test_tastytrade_http_client_prompts_for_challenge_code_on_interactive_tty(
     assert session.calls[1] == (
         "POST",
         "https://api.tastytrade.com/device-challenge",
-        {"code": "654321"},
+        {},
         {"X-Tastyworks-Challenge-Token": "challenge-token-from-header"},
     )
+    assert session.calls[2] == (
+        "POST",
+        "https://api.tastytrade.com/sessions",
+        {"login": "user@example.com", "password": "secret", "rememberMe": True},
+        {
+            "X-Tastyworks-Challenge-Token": "challenge-token-from-header",
+            "X-Tastyworks-OTP": "654321",
+        },
+    )
     assert all("/orders" not in url for _, url, _, _ in session.calls)
+
+
+def test_tastytrade_http_client_normalizes_whitespace_in_challenge_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TASTYTRADE_USERNAME", "user@example.com")
+    monkeypatch.setenv("TASTYTRADE_PASSWORD", "secret")
+    monkeypatch.setenv("TASTYTRADE_CHALLENGE_CODE", "229 416")
+
+    class FakeResponse:
+        def __init__(
+            self,
+            *,
+            ok: bool,
+            status_code: int,
+            payload: object,
+            headers: dict[str, str] | None = None,
+        ) -> None:
+            self.ok = ok
+            self.status_code = status_code
+            self._payload = payload
+            self.headers = headers or {}
+
+        def json(self) -> object:
+            return self._payload
+
+        def raise_for_status(self) -> None:
+            raise AssertionError("Expected adapter to handle mocked auth flow without raise_for_status().")
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, object, dict[str, str]]] = []
+            self.responses = [
+                FakeResponse(
+                    ok=False,
+                    status_code=403,
+                    payload={
+                        "error": {
+                            "code": "device_challenge_required",
+                            "message": "Device authentication challenge required",
+                            "redirect": {
+                                "method": "POST",
+                                "url": "/device-challenge",
+                                "required_headers": ["X-Tastyworks-Challenge-Token"],
+                            },
+                        }
+                    },
+                    headers={"X-Tastyworks-Challenge-Token": "challenge-token-from-header"},
+                ),
+                FakeResponse(
+                    ok=True,
+                    status_code=200,
+                    payload={
+                        "data": {
+                            "step": "otp_verification",
+                            "redirect": {
+                                "method": "POST",
+                                "url": "/sessions",
+                                "required-headers": ["X-Tastyworks-Challenge-Token", "X-Tastyworks-OTP"],
+                            },
+                        }
+                    },
+                ),
+                FakeResponse(ok=True, status_code=201, payload={"data": {"session-token": "session-123"}}),
+                FakeResponse(ok=True, status_code=200, payload=_tastytrade_positions_payload()),
+            ]
+
+        def request(
+            self,
+            *,
+            method: str,
+            url: str,
+            json: object = None,
+            headers: dict[str, str] | None = None,
+            timeout: object = None,
+        ) -> FakeResponse:
+            del timeout
+            self.calls.append((method, url, json, dict(headers or {})))
+            return self.responses.pop(0)
+
+    session = FakeSession()
+    client = RequestsTastytradeHttpClient(session=session, base_url="https://api.tastytrade.com")
+
+    payload = client.get_positions(account_id="5WT00001")
+
+    assert payload == {"data": {"items": []}}
+    assert session.calls[2][3]["X-Tastyworks-OTP"] == "229416"

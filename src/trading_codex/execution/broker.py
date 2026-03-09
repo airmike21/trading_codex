@@ -152,6 +152,29 @@ def _extract_tastytrade_error(payload: object) -> dict[str, Any] | None:
     return error
 
 
+def _extract_redirect_metadata(raw: object) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    redirect = raw.get("redirect")
+    return redirect if isinstance(redirect, dict) else None
+
+
+def _extract_required_headers(redirect: dict[str, Any] | None) -> list[str]:
+    if redirect is None:
+        return []
+    raw_headers = redirect.get("required_headers", redirect.get("required-headers"))
+    if raw_headers is None:
+        return []
+    if not isinstance(raw_headers, list):
+        raise ValueError("Challenge redirect required headers must be a list.")
+    rendered: list[str] = []
+    for value in raw_headers:
+        header = str(value).strip()
+        if header:
+            rendered.append(header)
+    return rendered
+
+
 class TastytradeApiError(ValueError):
     def __init__(
         self,
@@ -377,45 +400,63 @@ class RequestsTastytradeHttpClient:
         return payload
 
     def _session_request_payload(self, *, username: str, password: str) -> dict[str, Any]:
-        return {"login": username, "password": password, "remember-me": True}
+        return {"login": username, "password": password, "rememberMe": True}
+
+    def _challenge_token_header(self, *, auth_error: TastytradeApiError, header_name: str) -> str:
+        token = self.challenge_token or auth_error.header_value(header_name)
+        if not token:
+            raise ValueError(
+                "Tastytrade device challenge requires X-Tastyworks-Challenge-Token. "
+                "Set TASTYTRADE_CHALLENGE_TOKEN or pass --tastytrade-challenge-token."
+            )
+        return token
 
     def _device_challenge_headers(self, auth_error: TastytradeApiError) -> dict[str, str]:
-        redirect = auth_error.redirect
-        required_headers = [] if redirect is None else redirect.get("required_headers")
-        if required_headers is None:
-            required_headers = []
-        if not isinstance(required_headers, list):
-            raise ValueError(f"{auth_error} (redirect.required_headers must be a list)")
-
         headers: dict[str, str] = {}
-        for header_name_raw in required_headers:
-            header_name = str(header_name_raw).strip()
-            if not header_name:
-                continue
+        for header_name in _extract_required_headers(auth_error.redirect):
             if header_name.lower() != "x-tastyworks-challenge-token":
                 raise ValueError(f"{auth_error} (unsupported challenge header requirement: {header_name})")
-            token = self.challenge_token or auth_error.header_value(header_name)
-            if not token:
-                raise ValueError(
-                    "Tastytrade device challenge requires X-Tastyworks-Challenge-Token. "
-                    "Set TASTYTRADE_CHALLENGE_TOKEN or pass --tastytrade-challenge-token."
-                )
-            headers[header_name] = token
+            headers[header_name] = self._challenge_token_header(auth_error=auth_error, header_name=header_name)
         return headers
 
     def _resolve_challenge_code(self) -> str | None:
-        challenge_code = None if self.challenge_code is None else self.challenge_code.strip()
+        challenge_code = None if self.challenge_code is None else "".join(self.challenge_code.split())
         if challenge_code:
+            self.challenge_code = challenge_code
             return challenge_code
         if not sys.stdin.isatty():
             return None
-        prompted = getpass.getpass("Tastytrade challenge code: ").strip()
+        prompted = "".join(getpass.getpass("Tastytrade challenge code: ").split())
         if prompted == "":
             return None
         self.challenge_code = prompted
         return prompted
 
-    def _complete_device_challenge(self, auth_error: TastytradeApiError) -> None:
+    def _device_challenge_retry_headers(
+        self,
+        *,
+        auth_error: TastytradeApiError,
+        challenge_payload: dict[str, Any],
+        challenge_code: str,
+    ) -> dict[str, str]:
+        data = _extract_tastytrade_data_object(challenge_payload, endpoint="/device-challenge")
+        redirect = _extract_redirect_metadata(data)
+        required_headers = _extract_required_headers(redirect)
+        if not required_headers:
+            raise ValueError("Tastytrade device challenge response did not include retry headers.")
+
+        headers: dict[str, str] = {}
+        for header_name in required_headers:
+            lowered = header_name.lower()
+            if lowered == "x-tastyworks-challenge-token":
+                headers[header_name] = self._challenge_token_header(auth_error=auth_error, header_name=header_name)
+            elif lowered == "x-tastyworks-otp":
+                headers[header_name] = challenge_code
+            else:
+                raise ValueError(f"Tastytrade device challenge requires unsupported retry header: {header_name}")
+        return headers
+
+    def _complete_device_challenge(self, auth_error: TastytradeApiError) -> dict[str, str]:
         redirect = auth_error.redirect
         if redirect is None:
             raise ValueError(f"{auth_error} (missing redirect metadata)")
@@ -440,15 +481,20 @@ class RequestsTastytradeHttpClient:
 
         headers = self._device_challenge_headers(auth_error)
         try:
-            self._request_json(
+            challenge_payload = self._request_json(
                 normalized_method,
                 path.strip(),
-                json_payload={"code": challenge_code},
+                json_payload={},
                 include_auth=False,
                 extra_headers=headers,
             )
         except TastytradeApiError as exc:
             raise ValueError(f"Tastytrade device challenge failed: {exc}") from exc
+        return self._device_challenge_retry_headers(
+            auth_error=auth_error,
+            challenge_payload=challenge_payload,
+            challenge_code=challenge_code,
+        )
 
     def _authorization_header(self) -> str:
         if self._auth_header:
@@ -483,13 +529,14 @@ class RequestsTastytradeHttpClient:
         except TastytradeApiError as exc:
             if exc.error_code != "device_challenge_required":
                 raise
-            self._complete_device_challenge(exc)
+            retry_headers = self._complete_device_challenge(exc)
             try:
                 payload = self._request_json(
                     "POST",
                     "/sessions",
                     json_payload=session_payload,
                     include_auth=False,
+                    extra_headers=retry_headers,
                 )
             except TastytradeApiError as retry_exc:
                 raise ValueError(f"Tastytrade session retry failed: {retry_exc}") from retry_exc
