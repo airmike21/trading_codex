@@ -276,7 +276,7 @@ def test_plan_execution_cli_with_tastytrade_broker_reads_mocked_account(tmp_path
             return _tastytrade_balances_payload(account_id=account_id)
 
     client = FakeReadOnlyClient()
-    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda: client)
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: client)
 
     exit_code = plan_execution.main(
         [
@@ -339,7 +339,7 @@ def test_plan_execution_cli_with_tastytrade_blocks_unrelated_holdings(
         def submit_order(self, *_args: object, **_kwargs: object) -> None:
             raise AssertionError("Dry-run planner must not submit orders.")
 
-    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda: FakeReadOnlyClient())
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
 
     exit_code = plan_execution.main(
         [
@@ -372,3 +372,58 @@ def test_plan_execution_cli_with_tastytrade_blocks_unrelated_holdings(
     assert len(json_artifacts) == 1
     artifact_payload = json.loads(json_artifacts[0].read_text(encoding="utf-8"))
     assert "unrelated_symbols:XYZ" in artifact_payload["blockers"]
+
+
+def test_plan_execution_cli_passes_tastytrade_challenge_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeReadOnlyClient:
+        def get_positions(self, *, account_id: str) -> object:
+            assert account_id == "5WT00001"
+            return _tastytrade_positions_payload()
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+    def _build_client(**kwargs: object) -> FakeReadOnlyClient:
+        captured_kwargs.update(kwargs)
+        return FakeReadOnlyClient()
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", _build_client)
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "AAA,BBB,CCC,BIL",
+            "--tastytrade-challenge-code",
+            "123456",
+            "--tastytrade-challenge-token",
+            "challenge-token",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:20:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured_kwargs == {"challenge_code": "123456", "challenge_token": "challenge-token"}

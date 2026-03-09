@@ -141,6 +141,55 @@ def _format_tastytrade_error(payload: object) -> str | None:
     return rendered
 
 
+def _extract_tastytrade_error(payload: object) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    return error
+
+
+class TastytradeApiError(ValueError):
+    def __init__(
+        self,
+        *,
+        path: str,
+        status_code: int,
+        payload: object,
+        headers: dict[str, str],
+    ) -> None:
+        self.path = path
+        self.status_code = status_code
+        self.payload = payload
+        self.headers = dict(headers)
+        detail = _format_tastytrade_error(payload)
+        if detail:
+            message = f"Tastytrade {path} request failed: {detail}"
+        else:
+            message = f"Tastytrade {path} request failed with status {status_code}"
+        super().__init__(message)
+
+    @property
+    def error_code(self) -> str | None:
+        error = _extract_tastytrade_error(self.payload)
+        code = None if error is None else error.get("code")
+        return code.strip() if isinstance(code, str) and code.strip() else None
+
+    @property
+    def redirect(self) -> dict[str, Any] | None:
+        error = _extract_tastytrade_error(self.payload)
+        redirect = None if error is None else error.get("redirect")
+        return redirect if isinstance(redirect, dict) else None
+
+    def header_value(self, name: str) -> str | None:
+        target = name.lower()
+        for key, value in self.headers.items():
+            if key.lower() == target:
+                return value
+        return None
+
+
 def _signed_tastytrade_quantity(raw: dict[str, Any], *, symbol: str) -> int:
     quantity = _coerce_int_like(raw.get("quantity"), field_name=f"{symbol}.quantity")
     direction_raw = raw.get("quantity-direction", "Long")
@@ -276,10 +325,14 @@ class RequestsTastytradeHttpClient:
         session: requests.Session | None = None,
         base_url: str | None = None,
         timeout: float | None = None,
+        challenge_code: str | None = None,
+        challenge_token: str | None = None,
     ) -> None:
         self.session = session or requests.Session()
         self.base_url = (base_url or os.getenv("TASTYTRADE_API_BASE_URL") or "https://api.tastytrade.com").rstrip("/")
         self.timeout = timeout if timeout is not None else float(os.getenv("TASTYTRADE_TIMEOUT_SECONDS", "30"))
+        self.challenge_code = challenge_code or os.getenv("TASTYTRADE_CHALLENGE_CODE")
+        self.challenge_token = challenge_token or os.getenv("TASTYTRADE_CHALLENGE_TOKEN")
         self._auth_header: str | None = None
 
     def _request_json(
@@ -289,8 +342,9 @@ class RequestsTastytradeHttpClient:
         *,
         json_payload: dict[str, Any] | None = None,
         include_auth: bool = True,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = dict(extra_headers or {})
         if include_auth:
             headers["Authorization"] = self._authorization_header()
         response = self.session.request(
@@ -309,11 +363,78 @@ class RequestsTastytradeHttpClient:
         if not response.ok:
             detail = _format_tastytrade_error(payload)
             if detail:
-                raise ValueError(f"Tastytrade {path} request failed: {detail}")
+                raise TastytradeApiError(
+                    path=path,
+                    status_code=response.status_code,
+                    payload=payload,
+                    headers=dict(response.headers),
+                )
             response.raise_for_status()
         if not isinstance(payload, dict):
             raise ValueError(f"Tastytrade {path} response must be a JSON object.")
         return payload
+
+    def _session_request_payload(self, *, username: str, password: str) -> dict[str, Any]:
+        return {"login": username, "password": password, "remember-me": True}
+
+    def _device_challenge_headers(self, auth_error: TastytradeApiError) -> dict[str, str]:
+        redirect = auth_error.redirect
+        required_headers = [] if redirect is None else redirect.get("required_headers")
+        if required_headers is None:
+            required_headers = []
+        if not isinstance(required_headers, list):
+            raise ValueError(f"{auth_error} (redirect.required_headers must be a list)")
+
+        headers: dict[str, str] = {}
+        for header_name_raw in required_headers:
+            header_name = str(header_name_raw).strip()
+            if not header_name:
+                continue
+            if header_name.lower() != "x-tastyworks-challenge-token":
+                raise ValueError(f"{auth_error} (unsupported challenge header requirement: {header_name})")
+            token = self.challenge_token or auth_error.header_value(header_name)
+            if not token:
+                raise ValueError(
+                    "Tastytrade device challenge requires X-Tastyworks-Challenge-Token. "
+                    "Set TASTYTRADE_CHALLENGE_TOKEN or pass --tastytrade-challenge-token."
+                )
+            headers[header_name] = token
+        return headers
+
+    def _complete_device_challenge(self, auth_error: TastytradeApiError) -> None:
+        redirect = auth_error.redirect
+        if redirect is None:
+            raise ValueError(f"{auth_error} (missing redirect metadata)")
+
+        method = redirect.get("method")
+        if not isinstance(method, str) or not method.strip():
+            raise ValueError(f"{auth_error} (redirect.method is required)")
+        normalized_method = method.strip().upper()
+        if normalized_method != "POST":
+            raise ValueError(f"{auth_error} (unsupported challenge method: {normalized_method})")
+
+        path = redirect.get("url")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(f"{auth_error} (redirect.url is required)")
+
+        challenge_code = None if self.challenge_code is None else self.challenge_code.strip()
+        if not challenge_code:
+            raise ValueError(
+                "Tastytrade device challenge requires a challenge code. "
+                "Set TASTYTRADE_CHALLENGE_CODE or pass --tastytrade-challenge-code."
+            )
+
+        headers = self._device_challenge_headers(auth_error)
+        try:
+            self._request_json(
+                normalized_method,
+                path.strip(),
+                json_payload={"code": challenge_code},
+                include_auth=False,
+                extra_headers=headers,
+            )
+        except TastytradeApiError as exc:
+            raise ValueError(f"Tastytrade device challenge failed: {exc}") from exc
 
     def _authorization_header(self) -> str:
         if self._auth_header:
@@ -337,12 +458,27 @@ class RequestsTastytradeHttpClient:
                 "TASTYTRADE_ACCESS_TOKEN, or TASTYTRADE_USERNAME/TASTYTRADE_PASSWORD."
             )
 
-        payload = self._request_json(
-            "POST",
-            "/sessions",
-            json_payload={"login": username, "password": password, "remember-me": True},
-            include_auth=False,
-        )
+        session_payload = self._session_request_payload(username=username, password=password)
+        try:
+            payload = self._request_json(
+                "POST",
+                "/sessions",
+                json_payload=session_payload,
+                include_auth=False,
+            )
+        except TastytradeApiError as exc:
+            if exc.error_code != "device_challenge_required":
+                raise
+            self._complete_device_challenge(exc)
+            try:
+                payload = self._request_json(
+                    "POST",
+                    "/sessions",
+                    json_payload=session_payload,
+                    include_auth=False,
+                )
+            except TastytradeApiError as retry_exc:
+                raise ValueError(f"Tastytrade session retry failed: {retry_exc}") from retry_exc
         data = _extract_tastytrade_data_object(payload, endpoint="/sessions")
         session_token_value = data.get("session-token")
         self._auth_header = _coerce_non_empty_string(session_token_value, field_name="data.session-token")

@@ -205,6 +205,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated allowed symbol scope for real broker reads. Required for --broker tastytrade unless derivable from --preset.",
     )
     parser.add_argument(
+        "--tastytrade-challenge-code",
+        type=str,
+        default=None,
+        help="Optional device-challenge code for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_CODE.",
+    )
+    parser.add_argument(
+        "--tastytrade-challenge-token",
+        type=str,
+        default=None,
+        help="Optional device-challenge token override for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_TOKEN.",
+    )
+    parser.add_argument(
         "--base-dir",
         type=Path,
         default=Path.home() / ".trading_codex" / "execution_plans",
@@ -260,7 +272,10 @@ def main(argv: list[str] | None = None) -> int:
             allowed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
             broker_adapter = TastytradeBrokerPositionAdapter(
                 account_id=args.account_id.strip(),
-                client=RequestsTastytradeHttpClient(),
+                client=RequestsTastytradeHttpClient(
+                    challenge_code=args.tastytrade_challenge_code,
+                    challenge_token=args.tastytrade_challenge_token,
+                ),
             )
             broker_source_ref = f"tastytrade:{args.account_id.strip()}"
         broker_snapshot = broker_adapter.load_snapshot()
