@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from trading_codex.execution import TastytradeBrokerPositionAdapter, normalize_tastytrade_snapshot
+from trading_codex.execution import (
+    RequestsTastytradeHttpClient,
+    TastytradeBrokerPositionAdapter,
+    normalize_tastytrade_snapshot,
+)
 
 
 def _tastytrade_positions_payload(*items: dict[str, object]) -> dict[str, object]:
@@ -106,3 +110,35 @@ def test_tastytrade_adapter_only_uses_read_methods() -> None:
 
     assert client.calls == [("get_positions", "5WT00001"), ("get_balances", "5WT00001")]
     assert snapshot.positions["AAA"].shares == 3
+
+
+def test_tastytrade_http_client_surfaces_device_challenge_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TASTYTRADE_USERNAME", "user@example.com")
+    monkeypatch.setenv("TASTYTRADE_PASSWORD", "secret")
+
+    class FakeResponse:
+        ok = False
+
+        def json(self) -> object:
+            return {
+                "error": {
+                    "code": "device_challenge_required",
+                    "message": "Device authentication challenge required",
+                    "redirect": {
+                        "method": "POST",
+                        "url": "/device-challenge",
+                        "required_headers": ["X-Tastyworks-Challenge-Token"],
+                    },
+                }
+            }
+
+        def raise_for_status(self) -> None:
+            raise AssertionError("Expected adapter to raise from parsed API payload before raise_for_status().")
+
+    class FakeSession:
+        def request(self, **_kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    client = RequestsTastytradeHttpClient(session=FakeSession(), base_url="https://api.tastytrade.com")
+    with pytest.raises(ValueError, match="device_challenge_required"):
+        client.get_positions(account_id="5WT00001")

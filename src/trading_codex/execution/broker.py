@@ -103,6 +103,44 @@ def _extract_tastytrade_items(raw: Any, *, endpoint: str) -> list[dict[str, Any]
     return normalized
 
 
+def _format_tastytrade_error(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+
+    parts: list[str] = []
+    code = error.get("code")
+    if isinstance(code, str) and code.strip():
+        parts.append(code.strip())
+    message = error.get("message")
+    if isinstance(message, str) and message.strip():
+        parts.append(message.strip())
+
+    redirect = error.get("redirect")
+    if isinstance(redirect, dict):
+        redirect_bits: list[str] = []
+        method = redirect.get("method")
+        if isinstance(method, str) and method.strip():
+            redirect_bits.append(f"method={method.strip()}")
+        url = redirect.get("url")
+        if isinstance(url, str) and url.strip():
+            redirect_bits.append(f"url={url.strip()}")
+        headers = redirect.get("required_headers")
+        if isinstance(headers, list) and headers:
+            rendered_headers = ",".join(str(header).strip() for header in headers if str(header).strip())
+            if rendered_headers:
+                redirect_bits.append(f"required_headers={rendered_headers}")
+        if redirect_bits:
+            parts.append(f"redirect[{'; '.join(redirect_bits)}]")
+
+    rendered = ": ".join(parts[:2]) if parts else None
+    if rendered and len(parts) > 2:
+        rendered = f"{rendered} ({'; '.join(parts[2:])})"
+    return rendered
+
+
 def _signed_tastytrade_quantity(raw: dict[str, Any], *, symbol: str) -> int:
     quantity = _coerce_int_like(raw.get("quantity"), field_name=f"{symbol}.quantity")
     direction_raw = raw.get("quantity-direction", "Long")
@@ -262,8 +300,17 @@ class RequestsTastytradeHttpClient:
             headers=headers,
             timeout=self.timeout,
         )
-        response.raise_for_status()
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            payload = None
+            if response.ok:
+                raise ValueError(f"Tastytrade {path} response must be valid JSON.") from exc
+        if not response.ok:
+            detail = _format_tastytrade_error(payload)
+            if detail:
+                raise ValueError(f"Tastytrade {path} request failed: {detail}")
+            response.raise_for_status()
         if not isinstance(payload, dict):
             raise ValueError(f"Tastytrade {path} response must be a JSON object.")
         return payload
