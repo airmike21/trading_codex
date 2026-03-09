@@ -427,3 +427,72 @@ def test_plan_execution_cli_passes_tastytrade_challenge_args(
 
     assert exit_code == 0
     assert captured_kwargs == {"challenge_code": "123456", "challenge_token": "challenge-token"}
+
+
+def test_plan_execution_cli_loads_tastytrade_secrets_file_and_respects_shell_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    secrets_path = tmp_path / "tastytrade.env"
+    secrets_path.write_text(
+        "\n".join(
+            [
+                "export TASTYTRADE_ACCOUNT='5WT00001'",
+                "export TASTYTRADE_USERNAME='file-user@example.com'",
+                "export TASTYTRADE_PASSWORD='file-password'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    monkeypatch.setenv("TASTYTRADE_USERNAME", "shell-user@example.com")
+    captured_env: dict[str, str] = {}
+
+    class FakeReadOnlyClient:
+        def __init__(self) -> None:
+            captured_env["account"] = os.environ.get("TASTYTRADE_ACCOUNT", "")
+            captured_env["username"] = os.environ.get("TASTYTRADE_USERNAME", "")
+            captured_env["password"] = os.environ.get("TASTYTRADE_PASSWORD", "")
+
+        def get_positions(self, *, account_id: str) -> object:
+            assert account_id == "5WT00001"
+            return _tastytrade_positions_payload()
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--allowed-symbols",
+            "AAA,BBB,CCC,BIL",
+            "--secrets-file",
+            str(secrets_path),
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:25:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured_env == {
+        "account": "5WT00001",
+        "username": "shell-user@example.com",
+        "password": "file-password",
+    }

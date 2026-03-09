@@ -26,3 +26,7 @@ outputs/
 
 # Local presets (user-specific)
 configs/presets.json
+
+# Local tastytrade secrets
+tastytrade.env
+**/tastytrade.env

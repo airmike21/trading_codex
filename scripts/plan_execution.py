@@ -31,6 +31,7 @@ from trading_codex.execution import (
     resolve_timestamp,
     write_artifacts,
 )
+from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
 
 
 def _repo_root() -> Path:
@@ -177,6 +178,10 @@ def _apply_unrelated_holdings_scope_block(plan: Any, *, allowed_symbols: set[str
     return blocked_plan, unrelated
 
 
+def _load_local_tastytrade_secrets(secrets_file: Path | None) -> Path | None:
+    return load_tastytrade_secrets(secrets_file=secrets_file)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a dry-run execution plan only. No live orders, broker writes, or auto-trading."
@@ -197,7 +202,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Broker snapshot source. 'tastytrade' is read-only and still dry-run only.",
     )
     parser.add_argument("--positions-file", type=Path, default=None, help="Mock/file broker positions JSON.")
-    parser.add_argument("--account-id", type=str, default=None, help="Broker account id. Required with --broker tastytrade.")
+    parser.add_argument(
+        "--account-id",
+        type=str,
+        default=None,
+        help="Broker account id. Required with --broker tastytrade unless TASTYTRADE_ACCOUNT is available via env or secrets file.",
+    )
     parser.add_argument(
         "--allowed-symbols",
         type=str,
@@ -215,6 +225,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Optional device-challenge token override for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_TOKEN.",
+    )
+    parser.add_argument(
+        "--secrets-file",
+        type=Path,
+        default=None,
+        help=f"Optional tastytrade secrets env file. If omitted, auto-loads {DEFAULT_TASTYTRADE_SECRETS_PATH} when present.",
     )
     parser.add_argument(
         "--base-dir",
@@ -265,19 +281,23 @@ def main(argv: list[str] | None = None) -> int:
             broker_adapter = FileBrokerPositionAdapter(args.positions_file)
             broker_source_ref = str(args.positions_file)
         else:
+            _load_local_tastytrade_secrets(args.secrets_file)
             if args.positions_file is not None:
                 raise ValueError("--positions-file cannot be used with --broker tastytrade.")
-            if not args.account_id or not args.account_id.strip():
-                raise ValueError("--account-id is required when --broker tastytrade.")
+            resolved_account_id = args.account_id.strip() if args.account_id and args.account_id.strip() else os.getenv("TASTYTRADE_ACCOUNT")
+            if not resolved_account_id:
+                raise ValueError(
+                    "--account-id is required when --broker tastytrade unless TASTYTRADE_ACCOUNT is available via env or secrets file."
+                )
             allowed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
             broker_adapter = TastytradeBrokerPositionAdapter(
-                account_id=args.account_id.strip(),
+                account_id=resolved_account_id,
                 client=RequestsTastytradeHttpClient(
                     challenge_code=args.tastytrade_challenge_code,
                     challenge_token=args.tastytrade_challenge_token,
                 ),
             )
-            broker_source_ref = f"tastytrade:{args.account_id.strip()}"
+            broker_source_ref = f"tastytrade:{resolved_account_id}"
         broker_snapshot = broker_adapter.load_snapshot()
         timestamp = resolve_timestamp(args.timestamp)
         plan = build_execution_plan(
