@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
-from trading_codex.execution import build_execution_plan, parse_broker_snapshot, parse_signal_payload
+from trading_codex.execution import (
+    build_artifact_paths,
+    build_execution_plan,
+    execution_plan_to_dict,
+    parse_broker_snapshot,
+    parse_signal_payload,
+    render_markdown,
+)
 
 
 def _signal_payload(
@@ -188,3 +197,190 @@ def test_execution_plan_marks_buying_power_blocker() -> None:
     )
 
     assert "buy_notional_exceeds_buying_power" in plan.blockers
+
+
+def test_execution_plan_full_account_blocks_unmanaged_derivative_positions() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"},
+            {
+                "symbol": "XYZ  260417P00050000",
+                "underlying_symbol": "XYZ",
+                "instrument_type": "Equity Option",
+                "shares": -1,
+                "price": 1.25,
+            },
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="full_account",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        source_kind="signal_json_file",
+        source_label="full_account_blocked",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    assert "unmanaged_positions_present" in plan.blockers
+    assert "full_account_scope_blocked_by_unmanaged_positions" in plan.blockers
+    assert plan.unmanaged_positions[0].classification_reason == "derivative_position"
+    assert [item.symbol for item in plan.items] == ["EFA"]
+
+
+def test_execution_plan_managed_sleeve_requires_ack_for_unmanaged_positions() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"},
+            {"symbol": "XYZ", "shares": 7, "price": 77.0, "instrument_type": "Equity"},
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        source_kind="signal_json_file",
+        source_label="managed_sleeve_needs_ack",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    assert "ack_unmanaged_holdings_required" in plan.blockers
+    assert [item.symbol for item in plan.items] == ["EFA"]
+    assert plan.unmanaged_positions[0].classification_reason == "outside_managed_universe"
+
+
+def test_execution_plan_managed_sleeve_with_ack_computes_math_and_reports_unmanaged() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"},
+            {"symbol": "XYZ", "shares": 7, "price": 77.0, "instrument_type": "Equity"},
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        ack_unmanaged_holdings=True,
+        source_kind="signal_json_file",
+        source_label="managed_sleeve_ack",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    assert plan.blockers == []
+    assert "unmanaged_positions_acknowledged_for_managed_sleeve" in plan.warnings
+    assert [item.symbol for item in plan.items] == ["EFA"]
+    assert plan.items[0].classification == "RESIZE_BUY"
+    assert plan.items[0].delta_shares == 18
+    assert plan.unmanaged_positions[0].symbol == "XYZ"
+
+
+def test_execution_plan_managed_sleeve_blocks_managed_unsupported_derivative() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {
+                "symbol": "EFA  260417C00100000",
+                "underlying_symbol": "EFA",
+                "instrument_type": "Equity Option",
+                "shares": 1,
+                "price": 2.75,
+            }
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        ack_unmanaged_holdings=True,
+        source_kind="signal_json_file",
+        source_label="managed_sleeve_unsupported",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    assert "managed_unsupported_positions_present" in plan.blockers
+    assert plan.managed_unsupported_positions[0].classification_reason == "derivative_position"
+    assert [item.symbol for item in plan.items] == ["EFA"]
+
+
+def test_execution_plan_managed_sleeve_buying_power_blocker_still_applies() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+            buying_power=500.0,
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        ack_unmanaged_holdings=True,
+        source_kind="signal_json_file",
+        source_label="managed_sleeve_bp",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    assert "buy_notional_exceeds_buying_power" in plan.blockers
+
+
+def test_execution_plan_scope_metadata_renders_in_json_and_markdown(tmp_path) -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"},
+            {"symbol": "XYZ", "shares": 7, "price": 77.0, "instrument_type": "Equity"},
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        ack_unmanaged_holdings=True,
+        source_kind="signal_json_file",
+        source_label="scope_metadata",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+    artifacts = build_artifact_paths(
+        tmp_path / "execution_plans",
+        timestamp=datetime.fromisoformat("2026-03-09T12:45:00-05:00"),
+        source_label="scope_metadata",
+    )
+
+    payload = execution_plan_to_dict(plan)
+    markdown = render_markdown(plan, artifacts=artifacts)
+
+    assert payload["account_scope"] == "managed_sleeve"
+    assert payload["plan_math_scope"] == "managed_sleeve_only"
+    assert payload["managed_symbols_universe"] == ["AAA", "BBB", "BIL", "CCC", "EFA"]
+    assert payload["unmanaged_holdings_acknowledged"] is True
+    assert payload["managed_supported_positions"][0]["symbol"] == "EFA"
+    assert payload["unmanaged_positions"][0]["symbol"] == "XYZ"
+    assert "Account scope" in markdown
+    assert "Managed Supported Positions" in markdown
+    assert "Unmanaged Positions" in markdown

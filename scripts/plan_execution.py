@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
 import os
 import subprocess
@@ -149,33 +148,32 @@ def _resolve_allowed_symbols(*, raw_value: str | None, preset: daily_signal.Pres
     return derived
 
 
-def _apply_unrelated_holdings_scope_block(plan: Any, *, allowed_symbols: set[str]) -> tuple[Any, list[str]]:
-    unrelated = sorted(
-        symbol
-        for symbol, position in plan.broker_snapshot.positions.items()
-        if position.shares != 0 and symbol not in allowed_symbols
-    )
-    if not unrelated:
-        return plan, []
+def _should_resolve_managed_symbols(*, args: argparse.Namespace, preset: daily_signal.Preset | None) -> bool:
+    if args.allowed_symbols:
+        return True
+    if args.broker == "tastytrade":
+        return True
+    if args.account_scope != "full_account" or args.ack_unmanaged_holdings:
+        return True
+    return preset is not None
 
-    blocked_items = []
-    for item in plan.items:
-        if item.symbol in unrelated:
-            blocked_items.append(replace(item, blockers=sorted(set(item.blockers + ["out_of_scope_symbol"]))))
+
+def _blocked_summary(plan: Any) -> str:
+    parts: list[str] = []
+    if plan.managed_unsupported_positions:
+        joined = ", ".join(position.symbol for position in plan.managed_unsupported_positions)
+        parts.append(f"managed unsupported positions: {joined}")
+    if plan.unmanaged_positions:
+        joined = ", ".join(position.symbol for position in plan.unmanaged_positions)
+        if plan.account_scope == "managed_sleeve" and not plan.unmanaged_holdings_acknowledged:
+            parts.append(f"unmanaged positions require --ack-unmanaged-holdings: {joined}")
         else:
-            blocked_items.append(item)
-
-    blocked_plan = replace(
-        plan,
-        items=blocked_items,
-        blockers=sorted(
-            set(
-                plan.blockers
-                + ["unrelated_holdings_outside_scope", f"unrelated_symbols:{','.join(unrelated)}"]
-            )
-        ),
-    )
-    return blocked_plan, unrelated
+            parts.append(f"unmanaged positions: {joined}")
+    if "buy_notional_exceeds_buying_power" in plan.blockers:
+        parts.append("buy notional exceeds buying power")
+    if not parts:
+        parts = list(plan.blockers)
+    return "; ".join(parts)
 
 
 def _load_local_tastytrade_secrets(secrets_file: Path | None) -> Path | None:
@@ -212,7 +210,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--allowed-symbols",
         type=str,
         default=None,
-        help="Comma-separated allowed symbol scope for real broker reads. Required for --broker tastytrade unless derivable from --preset.",
+        help="Comma-separated managed symbol universe. Required for scoped real broker reads unless derivable from --preset.",
+    )
+    parser.add_argument(
+        "--account-scope",
+        choices=["full_account", "managed_sleeve"],
+        default="full_account",
+        help="Planning scope. full_account remains fail-closed; managed_sleeve computes math on managed holdings only.",
+    )
+    parser.add_argument(
+        "--ack-unmanaged-holdings",
+        action="store_true",
+        help="Required to proceed in managed_sleeve mode when unmanaged holdings are present. Dry-run only.",
     )
     parser.add_argument(
         "--tastytrade-challenge-code",
@@ -254,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
         source_ref: str | None
         data_dir: Path | None
         preset: daily_signal.Preset | None = None
+        if args.account_scope == "full_account" and args.ack_unmanaged_holdings:
+            raise ValueError("--ack-unmanaged-holdings can only be used with --account-scope managed_sleeve.")
 
         if args.preset:
             signal_raw, preset, resolved_presets_path = _load_signal_from_preset(
@@ -273,8 +284,14 @@ def main(argv: list[str] | None = None) -> int:
             data_dir = None
 
         signal = parse_signal_payload(signal_raw)
+        managed_symbols: set[str] | None = None
+        if _should_resolve_managed_symbols(args=args, preset=preset):
+            managed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
+        if args.account_scope == "managed_sleeve" and not managed_symbols:
+            raise ValueError(
+                "--account-scope managed_sleeve requires --allowed-symbols or a --preset that derives the managed symbol universe."
+            )
         broker_source_ref: str | None
-        unrelated_holdings: list[str] = []
         if args.broker == "file":
             if args.positions_file is None:
                 raise ValueError("--positions-file is required when --broker file.")
@@ -289,7 +306,6 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     "--account-id is required when --broker tastytrade unless TASTYTRADE_ACCOUNT is available via env or secrets file."
                 )
-            allowed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
             broker_adapter = TastytradeBrokerPositionAdapter(
                 account_id=resolved_account_id,
                 client=RequestsTastytradeHttpClient(
@@ -303,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
         plan = build_execution_plan(
             signal=signal,
             broker_snapshot=broker_snapshot,
+            account_scope=args.account_scope,
+            managed_symbols=managed_symbols,
+            ack_unmanaged_holdings=args.ack_unmanaged_holdings,
             source_kind=source_kind,
             source_label=source_label,
             source_ref=source_ref,
@@ -310,8 +329,6 @@ def main(argv: list[str] | None = None) -> int:
             data_dir=data_dir,
             generated_at=timestamp,
         )
-        if args.broker == "tastytrade":
-            plan, unrelated_holdings = _apply_unrelated_holdings_scope_block(plan, allowed_symbols=allowed_symbols)
 
         base_dir = Path(daily_signal._expand_user(str(args.base_dir)))
         artifact_paths = build_artifact_paths(base_dir, timestamp=timestamp, source_label=source_label)
@@ -321,13 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(json_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         else:
             print(render_markdown(plan, artifacts=artifact_paths), end="")
-        if unrelated_holdings:
-            joined = ", ".join(unrelated_holdings)
-            print(
-                f"[plan_execution] BLOCKED: account {broker_snapshot.account_id or args.account_id} contains "
-                f"unrelated holdings outside allowed scope: {joined}",
-                file=sys.stderr,
-            )
+        if plan.blockers:
+            print(f"[plan_execution] BLOCKED: {_blocked_summary(plan)}", file=sys.stderr)
             return 2
         return 0
     except Exception as exc:

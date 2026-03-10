@@ -5,6 +5,7 @@ from typing import Any
 
 
 PLAN_CLASSIFICATIONS = ("BUY", "SELL", "RESIZE_BUY", "RESIZE_SELL", "HOLD", "EXIT")
+ACCOUNT_SCOPES = ("full_account", "managed_sleeve")
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,8 @@ class BrokerPosition:
     symbol: str
     shares: int
     price: float | None
+    instrument_type: str | None
+    underlying_symbol: str | None
     raw: dict[str, Any]
 
 
@@ -61,15 +64,33 @@ class PlanItem:
 
 
 @dataclass(frozen=True)
+class ScopedBrokerPosition:
+    symbol: str
+    scope_symbol: str
+    shares: int
+    price: float | None
+    instrument_type: str | None
+    underlying_symbol: str | None
+    classification_reason: str
+
+
+@dataclass(frozen=True)
 class ExecutionPlan:
     generated_at_chicago: str
     dry_run: bool
+    account_scope: str
+    plan_math_scope: str
+    managed_symbols_universe: list[str]
+    unmanaged_holdings_acknowledged: bool
     source_kind: str
     source_label: str
     source_ref: str | None
     broker_source_ref: str | None
     signal: SignalPayload
     broker_snapshot: BrokerSnapshot
+    managed_supported_positions: list[ScopedBrokerPosition]
+    managed_unsupported_positions: list[ScopedBrokerPosition]
+    unmanaged_positions: list[ScopedBrokerPosition]
     items: list[PlanItem]
     total_buy_notional: float
     total_sell_notional: float

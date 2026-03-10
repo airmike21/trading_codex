@@ -72,11 +72,17 @@ def build_artifact_paths(base_dir: Path, *, timestamp: datetime, source_label: s
 
 
 def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
+    plan_status = "BLOCKED" if plan.blockers else "READY"
     lines = [
         f"# Dry-Run Execution Plan {plan.source_label}",
         "",
+        f"- Plan status: `{plan_status}`",
         f"- Generated: `{plan.generated_at_chicago}`",
         f"- Dry run only: `{str(plan.dry_run).lower()}`",
+        f"- Account scope: `{plan.account_scope}`",
+        f"- Plan math scope: `{plan.plan_math_scope}`",
+        f"- Unmanaged holdings acknowledged: `{str(plan.unmanaged_holdings_acknowledged).lower()}`",
+        f"- Managed symbols universe: `{', '.join(plan.managed_symbols_universe) if plan.managed_symbols_universe else '-'}`",
         f"- Signal source: `{plan.source_kind}`",
         f"- Signal ref: `{plan.source_ref or '-'}`",
         f"- Broker source: `{plan.broker_source_ref or '-'}`",
@@ -109,6 +115,31 @@ def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
             lines.append(f"- `{blocker}`")
         lines.append("")
 
+    def _append_scope_section(title: str, positions: list[object]) -> None:
+        lines.extend([f"## {title}", ""])
+        if not positions:
+            lines.append("- None")
+            lines.append("")
+            return
+        lines.extend(
+            [
+                "| Symbol | Scope Symbol | Shares | Instrument Type | Price | Reason |",
+                "| --- | --- | ---: | --- | ---: | --- |",
+            ]
+        )
+        for position in positions:
+            price = "-" if position.price is None else f"{position.price:.2f}"
+            instrument_type = position.instrument_type or "-"
+            lines.append(
+                f"| {position.symbol} | {position.scope_symbol} | {position.shares} | {instrument_type} | "
+                f"{price} | {position.classification_reason} |"
+            )
+        lines.append("")
+
+    _append_scope_section("Managed Supported Positions", plan.managed_supported_positions)
+    _append_scope_section("Managed Unsupported Positions", plan.managed_unsupported_positions)
+    _append_scope_section("Unmanaged Positions", plan.unmanaged_positions)
+
     lines.extend(
         [
             "## Symbols",
@@ -133,6 +164,7 @@ def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
 def _append_csv_log(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> None:
     fieldnames = [
         "generated_at_chicago",
+        "account_scope",
         "source_kind",
         "source_label",
         "signal_event_id",
@@ -147,6 +179,7 @@ def _append_csv_log(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> None:
     ]
     row = {
         "generated_at_chicago": plan.generated_at_chicago,
+        "account_scope": plan.account_scope,
         "source_kind": plan.source_kind,
         "source_label": plan.source_label,
         "signal_event_id": plan.signal.event_id,

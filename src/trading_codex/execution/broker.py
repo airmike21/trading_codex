@@ -69,6 +69,15 @@ def _coerce_non_empty_string(value: object, *, field_name: str) -> str:
     return value.strip()
 
 
+def _coerce_optional_string(value: object, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string.")
+    stripped = value.strip()
+    return stripped or None
+
+
 def _tastytrade_position_price(raw: dict[str, Any]) -> float | None:
     for key in (
         "close-price",
@@ -256,6 +265,12 @@ def normalize_tastytrade_snapshot(
             symbol=symbol,
             shares=shares,
             price=price,
+            instrument_type=_coerce_optional_string(item.get("instrument-type"), field_name=f"{symbol}.instrument-type"),
+            underlying_symbol=(
+                None
+                if item.get("underlying-symbol") is None
+                else _coerce_non_empty_string(item.get("underlying-symbol"), field_name=f"{symbol}.underlying-symbol").upper()
+            ),
             raw=dict(item),
         )
 
@@ -311,6 +326,18 @@ def parse_broker_snapshot(raw: Any) -> BrokerSnapshot:
             symbol=normalized_symbol,
             shares=shares,
             price=_position_price(item),
+            instrument_type=_coerce_optional_string(
+                item.get("instrument_type", item.get("instrument-type")),
+                field_name=f"{normalized_symbol}.instrument_type",
+            ),
+            underlying_symbol=(
+                None
+                if item.get("underlying_symbol", item.get("underlying-symbol")) is None
+                else _coerce_non_empty_string(
+                    item.get("underlying_symbol", item.get("underlying-symbol")),
+                    field_name=f"{normalized_symbol}.underlying_symbol",
+                ).upper()
+            ),
             raw=dict(item),
         )
 

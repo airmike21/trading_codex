@@ -36,14 +36,17 @@ def test_normalize_tastytrade_snapshot_reads_signed_positions_and_balances() -> 
                 "symbol": "AAA",
                 "quantity": "10",
                 "quantity-direction": "Long",
+                "instrument-type": "Equity",
                 "close-price": "101.25",
                 "updated-at": "2026-03-09T12:00:00Z",
             },
             {
-                "symbol": "BBB",
+                "symbol": "BBB  260417C00100000",
+                "underlying-symbol": "BBB",
+                "instrument-type": "Equity Option",
                 "quantity": "4.0",
                 "quantity-direction": "Short",
-                "close-price": "55.50",
+                "close-price": "5.50",
                 "updated-at": "2026-03-09T12:05:00Z",
             },
         ),
@@ -57,8 +60,11 @@ def test_normalize_tastytrade_snapshot_reads_signed_positions_and_balances() -> 
     assert snapshot.as_of == "2026-03-09T12:05:00Z"
     assert snapshot.positions["AAA"].shares == 10
     assert snapshot.positions["AAA"].price == 101.25
-    assert snapshot.positions["BBB"].shares == -4
-    assert snapshot.positions["BBB"].price == 55.5
+    assert snapshot.positions["AAA"].instrument_type == "Equity"
+    assert snapshot.positions["BBB  260417C00100000"].shares == -4
+    assert snapshot.positions["BBB  260417C00100000"].price == 5.5
+    assert snapshot.positions["BBB  260417C00100000"].instrument_type == "Equity Option"
+    assert snapshot.positions["BBB  260417C00100000"].underlying_symbol == "BBB"
 
 
 @pytest.mark.parametrize(

@@ -142,8 +142,8 @@ def _tastytrade_positions_payload(*items: dict[str, object]) -> dict[str, object
 def _tastytrade_balances_payload(
     *,
     account_id: str = "5WT00001",
-    cash: str = "1234.56",
-    buying_power: str = "9876.54",
+    cash: str = "20000.00",
+    buying_power: str = "20000.00",
 ) -> dict[str, object]:
     return {
         "data": {
@@ -326,10 +326,12 @@ def test_plan_execution_cli_with_tastytrade_blocks_unrelated_holdings(
             assert account_id == "5WT00001"
             return _tastytrade_positions_payload(
                 {
-                    "symbol": "XYZ",
-                    "quantity": "7",
-                    "quantity-direction": "Long",
-                    "close-price": "77.00",
+                    "symbol": "XYZ  260417P00050000",
+                    "underlying-symbol": "XYZ",
+                    "instrument-type": "Equity Option",
+                    "quantity": "-1",
+                    "quantity-direction": "Short",
+                    "close-price": "1.25",
                 }
             )
 
@@ -362,16 +364,102 @@ def test_plan_execution_cli_with_tastytrade_blocks_unrelated_holdings(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "unrelated holdings outside allowed scope: XYZ" in captured.err
+    assert "unmanaged positions: XYZ  260417P00050000" in captured.err
 
     payload = json.loads(captured.out)
-    assert "unrelated_holdings_outside_scope" in payload["blockers"]
-    assert "unrelated_symbols:XYZ" in payload["blockers"]
+    assert payload["account_scope"] == "full_account"
+    assert "unmanaged_positions_present" in payload["blockers"]
+    assert "full_account_scope_blocked_by_unmanaged_positions" in payload["blockers"]
+    assert payload["unmanaged_positions"][0]["classification_reason"] == "derivative_position"
 
     json_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*.json"))
     assert len(json_artifacts) == 1
     artifact_payload = json.loads(json_artifacts[0].read_text(encoding="utf-8"))
-    assert "unrelated_symbols:XYZ" in artifact_payload["blockers"]
+    assert artifact_payload["unmanaged_positions"][0]["symbol"] == "XYZ  260417P00050000"
+
+
+def test_plan_execution_cli_managed_sleeve_ack_computes_sleeve_math_and_reports_unmanaged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeReadOnlyClient:
+        def get_positions(self, *, account_id: str) -> object:
+            assert account_id == "5WT00001"
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "82",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                },
+                {
+                    "symbol": "XYZ",
+                    "quantity": "7",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "77.00",
+                },
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+        def submit_order(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Dry-run planner must not submit orders.")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "AAA,BBB,CCC,BIL,EFA",
+            "--account-scope",
+            "managed_sleeve",
+            "--ack-unmanaged-holdings",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:17:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+
+    payload = json.loads(captured.out)
+    assert payload["account_scope"] == "managed_sleeve"
+    assert payload["plan_math_scope"] == "managed_sleeve_only"
+    assert payload["unmanaged_holdings_acknowledged"] is True
+    assert payload["blockers"] == []
+    assert payload["warnings"] == ["unmanaged_positions_acknowledged_for_managed_sleeve"]
+    assert [item["symbol"] for item in payload["items"]] == ["EFA"]
+    assert payload["unmanaged_positions"][0]["symbol"] == "XYZ"
+
+    markdown_artifacts = list((base_dir / "reviews" / "2026-03-09").glob("*.md"))
+    assert len(markdown_artifacts) == 1
+    review_text = markdown_artifacts[0].read_text(encoding="utf-8")
+    assert "Account scope" in review_text
+    assert "managed_sleeve" in review_text
+    assert "Unmanaged Positions" in review_text
 
 
 def test_plan_execution_cli_passes_tastytrade_challenge_args(
