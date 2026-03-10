@@ -243,6 +243,42 @@ def test_valmom_v1_cli_args_parse(monkeypatch):
     assert args.vm_val_weight == 0.75
 
 
+def test_dual_mom_vol10_cash_cli_args_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "dual_mom_vol10_cash",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "IWM",
+            "EFA",
+            "--dmv-mom-lookback",
+            "84",
+            "--dmv-rebalance",
+            "15",
+            "--dmv-defensive-symbol",
+            "BIL",
+            "--dmv-vol-lookback",
+            "10",
+            "--dmv-target-vol",
+            "0.12",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "dual_mom_vol10_cash"
+    assert args.symbols == ["SPY", "QQQ", "IWM", "EFA"]
+    assert args.dmv_mom_lookback == 84
+    assert args.dmv_rebalance == 15
+    assert args.dmv_defensive_symbol == "BIL"
+    assert args.dmv_vol_lookback == 10
+    assert args.dmv_target_vol == 0.12
+
+
 def test_ivol_cli_args_parse(monkeypatch):
     monkeypatch.setattr(
         sys,

@@ -55,6 +55,13 @@ $PY scripts/run_backtest.py --strategy dual_mom_v1 --symbols SPY QQQ IWM EFA --d
   --dm-lookback 252 --dm-top-n 1 --dm-rebalance 21 --data-dir ~/trading_codex/data
 ```
 
+Volatility-managed dual momentum sleeve with defensive `BIL` fallback:
+```bash
+$PY scripts/run_backtest.py --strategy dual_mom_vol10_cash --symbols SPY QQQ IWM EFA --dmv-defensive-symbol BIL \
+  --dmv-mom-lookback 63 --dmv-rebalance 21 --dmv-vol-lookback 20 --dmv-target-vol 0.10 \
+  --start 2005-01-01 --end 2005-05-02 --no-plot --next-action-json --data-dir ~/trading_codex/data
+```
+
 Canonical wrapper invocation (pass `run_backtest.py` args after `--`; no `--input` flag):
 ```bash
 $PY scripts/next_action_alert.py --state-file /tmp/na_state.json --emit json -- \

@@ -44,6 +44,23 @@ def _write_synth_store(base_dir: Path) -> None:
     store.write_bars("BIL", _bars_for_index(idx, pd.Series(100.0 * np.cumprod(1.0 + ret_bil), index=idx)))
 
 
+def _write_dual_mom_vol10_store(base_dir: Path) -> None:
+    idx = pd.date_range("2019-01-01", periods=520, freq="B")
+    step = np.arange(len(idx))
+    ret_spy = np.full(len(idx), 0.0005)
+    ret_qqq = np.where(step % 2 == 0, 0.0015, -0.0010)
+    ret_iwm = np.full(len(idx), -0.0001)
+    ret_efa = np.where(step % 2 == 0, 0.03, -0.01)
+    ret_bil = np.full(len(idx), 0.0001)
+
+    store = LocalStore(base_dir=base_dir)
+    store.write_bars("SPY", _bars_for_index(idx, pd.Series(100.0 * np.cumprod(1.0 + ret_spy), index=idx)))
+    store.write_bars("QQQ", _bars_for_index(idx, pd.Series(105.0 * np.cumprod(1.0 + ret_qqq), index=idx)))
+    store.write_bars("IWM", _bars_for_index(idx, pd.Series(95.0 * np.cumprod(1.0 + ret_iwm), index=idx)))
+    store.write_bars("EFA", _bars_for_index(idx, pd.Series(98.0 * np.cumprod(1.0 + ret_efa), index=idx)))
+    store.write_bars("BIL", _bars_for_index(idx, pd.Series(100.0 * np.cumprod(1.0 + ret_bil), index=idx)))
+
+
 def _write_dual_mom_presets(path: Path, data_dir: Path) -> None:
     payload = {
         "presets": {
@@ -248,6 +265,124 @@ def test_plan_execution_cli_from_preset_supports_dual_mom_core(tmp_path: Path) -
     assert payload["items"]
     assert Path(payload["artifacts"]["json_path"]).exists()
     assert Path(payload["artifacts"]["markdown_path"]).exists()
+
+
+def test_plan_execution_derives_allowed_symbols_from_dual_mom_vol10_preset(tmp_path: Path) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+    daily_signal = importlib.import_module("scripts.daily_signal")
+
+    presets_path = tmp_path / "presets.json"
+    presets_path.write_text(
+        json.dumps(
+            {
+                "presets": {
+                    "dual_mom_vol10_cash": {
+                        "description": "test",
+                        "run_backtest_args": [
+                            "--strategy",
+                            "dual_mom_vol10_cash",
+                            "--symbols",
+                            "SPY",
+                            "QQQ",
+                            "IWM",
+                            "EFA",
+                            "--dmv-defensive-symbol",
+                            "BIL",
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    preset = daily_signal._load_presets_json(presets_path)["dual_mom_vol10_cash"]
+    allowed = plan_execution._derive_allowed_symbols_from_preset(preset)
+    assert allowed == {"SPY", "QQQ", "IWM", "EFA", "BIL"}
+
+
+def test_plan_execution_cli_from_dual_mom_vol10_cash_signal_supports_exports(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    _write_dual_mom_vol10_store(data_dir)
+
+    signal_path = tmp_path / "signal.json"
+    run_backtest_cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "run_backtest.py"),
+        "--strategy",
+        "dual_mom_vol10_cash",
+        "--symbols",
+        "SPY",
+        "QQQ",
+        "IWM",
+        "EFA",
+        "--dmv-defensive-symbol",
+        "BIL",
+        "--dmv-mom-lookback",
+        "63",
+        "--dmv-rebalance",
+        "21",
+        "--dmv-vol-lookback",
+        "20",
+        "--dmv-target-vol",
+        "0.10",
+        "--start",
+        "2020-01-02",
+        "--end",
+        "2020-12-01",
+        "--data-dir",
+        str(data_dir),
+        "--no-plot",
+        "--next-action-json",
+    ]
+    rb = subprocess.run(run_backtest_cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+    assert rb.returncode == 0, f"stdout={rb.stdout!r}\nstderr={rb.stderr!r}"
+    signal_path.write_text(rb.stdout, encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 20_000.0,
+                "positions": [{"symbol": "EFA", "shares": 0, "price": 98.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    base_dir = tmp_path / "execution_plans"
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-10T09:30:00-05:00",
+        "--emit",
+        "json",
+        "--export-order-intents",
+        "--export-manual-ticket-csv",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+
+    payload = json.loads(proc.stdout)
+    assert payload["signal"]["strategy"] == "dual_mom_vol10_cash"
+    assert Path(payload["artifacts"]["json_path"]).exists()
+    assert Path(payload["artifacts"]["markdown_path"]).exists()
+    assert Path(payload["artifacts"]["order_intents_json_path"]).exists()
+    assert Path(payload["artifacts"]["manual_order_checklist_path"]).exists()
+    assert Path(payload["artifacts"]["manual_ticket_csv_path"]).exists()
 
 
 def test_plan_execution_cli_with_tastytrade_broker_reads_mocked_account(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -134,6 +134,8 @@ def _derive_allowed_symbols_from_preset(preset: daily_signal.Preset) -> set[str]
             _extract_option_values(expanded, "--symbols")
             + _extract_option_values(expanded, "--defensive")
             + _extract_option_values(expanded, "--vm-defensive-symbol")
+            + _extract_option_values(expanded, "--dm-defensive-symbol")
+            + _extract_option_values(expanded, "--dmv-defensive-symbol")
         )
         if item.strip()
     }

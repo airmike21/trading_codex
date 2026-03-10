@@ -64,7 +64,12 @@ def _extract_symbols_from_args(rb_args: list[str]) -> list[str]:
                 j += 1
             i = j
             continue
-        if token in ("--vm-defensive-symbol", "--defensive", "--dm-defensive-symbol"):
+        if token in (
+            "--vm-defensive-symbol",
+            "--defensive",
+            "--dm-defensive-symbol",
+            "--dmv-defensive-symbol",
+        ):
             if i + 1 < len(rb_args) and not rb_args[i + 1].startswith("--"):
                 out.append(rb_args[i + 1])
             i += 2

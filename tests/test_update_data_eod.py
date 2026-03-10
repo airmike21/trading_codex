@@ -38,6 +38,21 @@ def test_extract_symbols_from_args() -> None:
     assert update_data_eod._extract_symbols_from_args(args) == ["SPY", "QQQ", "IWM", "BIL"]
 
 
+def test_extract_symbols_from_args_supports_dual_mom_vol10_cash_defensive() -> None:
+    args = [
+        "--strategy",
+        "dual_mom_vol10_cash",
+        "--symbols",
+        "SPY",
+        "QQQ",
+        "IWM",
+        "EFA",
+        "--dmv-defensive-symbol",
+        "BIL",
+    ]
+    assert update_data_eod._extract_symbols_from_args(args) == ["SPY", "QQQ", "IWM", "EFA", "BIL"]
+
+
 def test_load_presets_symbols(tmp_path: Path) -> None:
     p = tmp_path / "presets.json"
     p.write_text(
@@ -45,13 +60,14 @@ def test_load_presets_symbols(tmp_path: Path) -> None:
 {
   "presets": {
     "a": {"run_backtest_args": ["--symbols", "spy", "qqq", "--vm-defensive-symbol", "shy"]},
-    "b": {"run_backtest_args": ["--symbols", "QQQ", "IWM", "--defensive", "tlt"]}
+    "b": {"run_backtest_args": ["--symbols", "QQQ", "IWM", "--defensive", "tlt"]},
+    "c": {"run_backtest_args": ["--symbols", "SPY", "EFA", "--dmv-defensive-symbol", "bil"]}
   }
 }
 """.strip(),
         encoding="utf-8",
     )
-    assert update_data_eod._load_presets_symbols(p) == ["SPY", "QQQ", "SHY", "IWM", "TLT"]
+    assert update_data_eod._load_presets_symbols(p) == ["SPY", "QQQ", "SHY", "IWM", "TLT", "EFA", "BIL"]
 
 
 def test_merge_existing_dedup_last_wins() -> None:
