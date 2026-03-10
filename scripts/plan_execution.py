@@ -160,16 +160,17 @@ def _should_resolve_managed_symbols(*, args: argparse.Namespace, preset: daily_s
 
 def _blocked_summary(plan: Any) -> str:
     parts: list[str] = []
-    if plan.managed_unsupported_positions:
+    blocker_set = set(plan.blockers)
+    if "managed_unsupported_positions_present" in blocker_set and plan.managed_unsupported_positions:
         joined = ", ".join(position.symbol for position in plan.managed_unsupported_positions)
         parts.append(f"managed unsupported positions: {joined}")
-    if plan.unmanaged_positions:
+    if "unmanaged_positions_present" in blocker_set and plan.unmanaged_positions:
         joined = ", ".join(position.symbol for position in plan.unmanaged_positions)
-        if plan.account_scope == "managed_sleeve" and not plan.unmanaged_holdings_acknowledged:
+        if "ack_unmanaged_holdings_required" in blocker_set:
             parts.append(f"unmanaged positions require --ack-unmanaged-holdings: {joined}")
         else:
             parts.append(f"unmanaged positions: {joined}")
-    if "buy_notional_exceeds_buying_power" in plan.blockers:
+    if "buy_notional_exceeds_buying_power" in blocker_set:
         parts.append("buy notional exceeds buying power")
     if not parts:
         parts = list(plan.blockers)

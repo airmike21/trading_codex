@@ -232,6 +232,34 @@ def test_execution_plan_full_account_blocks_unmanaged_derivative_positions() -> 
     assert [item.symbol for item in plan.items] == ["EFA"]
 
 
+def test_execution_plan_full_account_blocks_unmanaged_long_equity_without_trade_item() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"},
+            {"symbol": "XYZ", "shares": 7, "price": 77.0, "instrument_type": "Equity"},
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="full_account",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        source_kind="signal_json_file",
+        source_label="full_account_unmanaged_equity",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    assert "unmanaged_positions_present" in plan.blockers
+    assert "full_account_scope_blocked_by_unmanaged_positions" in plan.blockers
+    assert plan.plan_math_scope == "managed_supported_positions_with_full_account_blockers"
+    assert plan.unmanaged_positions[0].classification_reason == "outside_managed_universe"
+    assert [item.symbol for item in plan.items] == ["EFA"]
+
+
 def test_execution_plan_managed_sleeve_requires_ack_for_unmanaged_positions() -> None:
     signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
     broker = parse_broker_snapshot(

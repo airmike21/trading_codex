@@ -181,20 +181,19 @@ def build_execution_plan(
             managed_supported_positions,
             managed_unsupported_positions,
             unmanaged_positions,
-            full_account_supported_positions,
+            _full_account_supported_positions,
         ) = _classify_broker_positions(
             broker_snapshot=broker_snapshot,
             managed_symbols=managed_symbol_set,
         )
+        planning_positions = {
+            position.symbol: broker_snapshot.positions[position.symbol]
+            for position in managed_supported_positions
+        }
         if account_scope == "managed_sleeve":
-            planning_positions = {
-                position.symbol: broker_snapshot.positions[position.symbol]
-                for position in managed_supported_positions
-            }
             plan_math_scope = "managed_sleeve_only"
         else:
-            planning_positions = dict(full_account_supported_positions)
-            plan_math_scope = "full_account_supported_positions"
+            plan_math_scope = "managed_supported_positions_with_full_account_blockers"
     else:
         planning_positions = dict(broker_snapshot.positions)
         plan_math_scope = "full_account_positions"

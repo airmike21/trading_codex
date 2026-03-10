@@ -462,6 +462,80 @@ def test_plan_execution_cli_managed_sleeve_ack_computes_sleeve_math_and_reports_
     assert "Unmanaged Positions" in review_text
 
 
+def test_plan_execution_cli_managed_sleeve_ack_blocks_only_on_buying_power_not_unmanaged_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeReadOnlyClient:
+        def get_positions(self, *, account_id: str) -> object:
+            assert account_id == "5WT00001"
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "0",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                },
+                {
+                    "symbol": "XYZ",
+                    "quantity": "7",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "77.00",
+                },
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id, cash="500.00", buying_power="500.00")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "AAA,BBB,CCC,BIL,EFA",
+            "--account-scope",
+            "managed_sleeve",
+            "--ack-unmanaged-holdings",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:18:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "buy notional exceeds buying power" in captured.err
+    assert "unmanaged positions" not in captured.err
+
+    payload = json.loads(captured.out)
+    assert payload["blockers"] == ["buy_notional_exceeds_buying_power"]
+    assert payload["warnings"] == [
+        "unmanaged_positions_acknowledged_for_managed_sleeve",
+    ]
+    assert payload["unmanaged_positions"][0]["symbol"] == "XYZ"
+    assert [item["symbol"] for item in payload["items"]] == ["EFA"]
+
+
 def test_plan_execution_cli_passes_tastytrade_challenge_args(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
