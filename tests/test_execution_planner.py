@@ -9,12 +9,14 @@ from trading_codex.execution import (
     build_artifact_paths,
     build_execution_plan,
     build_order_intent_export,
+    build_simulated_submission_export,
     execution_plan_to_dict,
     order_intent_export_to_dict,
     parse_broker_snapshot,
     parse_signal_payload,
     render_manual_order_checklist,
     render_markdown,
+    simulated_submission_export_to_dict,
     write_manual_ticket_csv,
 )
 
@@ -201,6 +203,71 @@ def test_execution_plan_marks_buying_power_blocker() -> None:
         data_dir=None,
     )
 
+    assert "buy_notional_exceeds_buying_power" in plan.blockers
+
+
+def test_execution_plan_sleeve_capital_scales_target_shares_from_capital() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(_broker_snapshot())
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="sleeve_capital",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+        sizing_mode="sleeve_capital",
+        capital_input=5_000.0,
+    )
+
+    assert plan.sizing.mode == "sleeve_capital"
+    assert plan.sizing.usable_capital == 5_000.0
+    assert plan.items[0].desired_target_shares == 50
+    assert plan.items[0].delta_shares == 50
+    assert plan.blockers == []
+
+
+def test_execution_plan_capital_sizing_blocks_when_target_is_too_small() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(_broker_snapshot())
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="too_small_capital",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+        sizing_mode="sleeve_capital",
+        capital_input=50.0,
+    )
+
+    assert plan.items == []
+    assert plan.blockers == ["capital_sizing_yields_zero_shares"]
+
+
+def test_execution_plan_capital_sizing_buying_power_blocker_still_applies() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(
+        _broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}, buying_power=1_000.0)
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="capital_bp_blocker",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+        sizing_mode="sleeve_capital",
+        capital_input=5_000.0,
+    )
+
+    assert plan.items[0].desired_target_shares == 50
     assert "buy_notional_exceeds_buying_power" in plan.blockers
 
 
@@ -410,11 +477,13 @@ def test_execution_plan_scope_metadata_renders_in_json_and_markdown(tmp_path) ->
 
     assert payload["account_scope"] == "managed_sleeve"
     assert payload["plan_math_scope"] == "managed_sleeve_only"
+    assert payload["sizing"]["mode"] == "signal_target_shares"
     assert payload["managed_symbols_universe"] == ["AAA", "BBB", "BIL", "CCC", "EFA"]
     assert payload["unmanaged_holdings_acknowledged"] is True
     assert payload["managed_supported_positions"][0]["symbol"] == "EFA"
     assert payload["unmanaged_positions"][0]["symbol"] == "XYZ"
     assert "Account scope" in markdown
+    assert "Sizing mode" in markdown
     assert "Managed Supported Positions" in markdown
     assert "Unmanaged Positions" in markdown
 
@@ -504,12 +573,41 @@ def test_order_intent_export_includes_managed_sleeve_metadata_and_unmanaged_summ
     payload = order_intent_export_to_dict(build_order_intent_export(plan))
 
     assert payload["account_scope"] == "managed_sleeve"
+    assert payload["sizing"]["mode"] == "signal_target_shares"
     assert payload["plan_math_scope"] == "managed_sleeve_only"
     assert payload["managed_symbols_universe"] == ["AAA", "BBB", "BIL", "CCC", "EFA"]
     assert payload["unmanaged_holdings_acknowledged"] is True
     assert payload["unmanaged_positions_count"] == 1
     assert payload["unmanaged_positions_summary"][0]["symbol"] == "XYZ"
     assert [intent["symbol"] for intent in payload["intents"]] == ["EFA"]
+
+
+def test_simulated_submission_export_builds_broker_shaped_payloads() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(_broker_snapshot({"symbol": "EFA", "shares": 82, "price": 99.16}))
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="simulated_submit",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    simulated = build_simulated_submission_export(build_order_intent_export(plan))
+    payload = simulated_submission_export_to_dict(simulated)
+
+    assert payload["schema_name"] == "simulated_submission_export"
+    assert payload["broker_name"] == "mock"
+    assert payload["account_id"] == "paper-1"
+    assert len(payload["orders"]) == 1
+    assert payload["orders"][0]["symbol"] == "EFA"
+    assert payload["orders"][0]["side"] == "BUY"
+    assert payload["orders"][0]["quantity"] == 18
+    assert payload["orders"][0]["order_type"] == "MARKET"
+    assert payload["orders"][0]["time_in_force"] == "DAY"
 
 
 def test_manual_order_checklist_renders_from_order_intent_export() -> None:

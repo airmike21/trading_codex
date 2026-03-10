@@ -25,10 +25,12 @@ from trading_codex.execution import (
     TastytradeBrokerPositionAdapter,
     build_artifact_paths,
     build_manual_order_checklist_path,
+    build_simulated_submission_artifact_path,
     build_manual_ticket_csv_path,
     build_execution_plan,
     build_order_intent_artifact_path,
     build_order_intent_export,
+    build_simulated_submission_export,
     parse_signal_payload,
     render_markdown,
     resolve_timestamp,
@@ -36,6 +38,7 @@ from trading_codex.execution import (
     write_manual_order_checklist,
     write_manual_ticket_csv,
     write_order_intent_artifact,
+    write_simulated_submission_artifact,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
 
@@ -168,6 +171,10 @@ def _should_resolve_managed_symbols(*, args: argparse.Namespace, preset: daily_s
 def _blocked_summary(plan: Any) -> str:
     parts: list[str] = []
     blocker_set = set(plan.blockers)
+    if "capital_sizing_yields_zero_shares" in blocker_set:
+        parts.append("capital sizing yields zero affordable shares")
+    if "capital_sizing_missing_reference_price" in blocker_set:
+        parts.append("capital sizing missing reference price")
     if "managed_unsupported_positions_present" in blocker_set and plan.managed_unsupported_positions:
         joined = ", ".join(position.symbol for position in plan.managed_unsupported_positions)
         parts.append(f"managed unsupported positions: {joined}")
@@ -189,11 +196,24 @@ def _load_local_tastytrade_secrets(secrets_file: Path | None) -> Path | None:
 
 
 def _export_refusal_prefix(args: argparse.Namespace) -> str:
-    if args.export_manual_ticket_csv and args.export_order_intents:
-        return "REFUSED ORDER INTENT / MANUAL TICKET CSV EXPORT"
+    requested: list[str] = []
+    if args.export_order_intents or args.export_manual_ticket_csv or args.export_simulated_orders:
+        requested.append("ORDER INTENT")
     if args.export_manual_ticket_csv:
-        return "REFUSED MANUAL TICKET CSV EXPORT"
-    return "REFUSED ORDER INTENT EXPORT"
+        requested.append("MANUAL TICKET CSV")
+    if args.export_simulated_orders:
+        requested.append("SIMULATED ORDER")
+    if not requested:
+        return "REFUSED ORDER INTENT EXPORT"
+    return "REFUSED " + " / ".join(requested) + " EXPORT"
+
+
+def _resolve_sizing_args(args: argparse.Namespace) -> tuple[str, float | None]:
+    if args.sleeve_capital is not None:
+        return "sleeve_capital", float(args.sleeve_capital)
+    if args.account_capital is not None:
+        return "account_capital", float(args.account_capital)
+    return "signal_target_shares", None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -263,6 +283,31 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path.home() / ".trading_codex" / "execution_plans",
         help="Durable dry-run execution plan artifact directory.",
     )
+    capital_group = parser.add_mutually_exclusive_group()
+    capital_group.add_argument(
+        "--sleeve-capital",
+        type=float,
+        default=None,
+        help="Optional sleeve capital for account-sized target sizing. Uses whole shares and rounds down conservatively.",
+    )
+    capital_group.add_argument(
+        "--account-capital",
+        type=float,
+        default=None,
+        help="Optional account capital for account-sized target sizing. Uses whole shares and rounds down conservatively.",
+    )
+    parser.add_argument(
+        "--reserve-cash-pct",
+        type=float,
+        default=0.0,
+        help="Optional reserve cash percent applied before capital sizing (default: 0.0).",
+    )
+    parser.add_argument(
+        "--max-allocation-pct",
+        type=float,
+        default=1.0,
+        help="Optional cap on allocation percent when capital sizing is enabled (default: 1.0).",
+    )
     parser.add_argument(
         "--export-order-intents",
         action="store_true",
@@ -272,6 +317,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--export-manual-ticket-csv",
         action="store_true",
         help="Write a manual-entry CSV artifact derived from the clean order-intent export. Implies --export-order-intents.",
+    )
+    parser.add_argument(
+        "--export-simulated-orders",
+        action="store_true",
+        help="Write a dry-run simulated broker-order request artifact derived from the clean order-intent export. No orders are submitted.",
     )
     parser.add_argument("--timestamp", type=str, default=None, help="Optional ISO timestamp override for deterministic tests.")
     parser.add_argument("--emit", choices=["text", "json"], default="text", help="Stdout format after writing artifacts.")
@@ -342,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
             broker_source_ref = f"tastytrade:{resolved_account_id}"
         broker_snapshot = broker_adapter.load_snapshot()
         timestamp = resolve_timestamp(args.timestamp)
+        sizing_mode, capital_input = _resolve_sizing_args(args)
         plan = build_execution_plan(
             signal=signal,
             broker_snapshot=broker_snapshot,
@@ -354,16 +405,25 @@ def main(argv: list[str] | None = None) -> int:
             broker_source_ref=broker_source_ref,
             data_dir=data_dir,
             generated_at=timestamp,
+            sizing_mode=sizing_mode,
+            capital_input=capital_input,
+            reserve_cash_pct=float(args.reserve_cash_pct),
+            max_allocation_pct=float(args.max_allocation_pct),
         )
 
         base_dir = Path(daily_signal._expand_user(str(args.base_dir)))
         artifact_paths = build_artifact_paths(base_dir, timestamp=timestamp, source_label=source_label)
-        export_order_intents_requested = args.export_order_intents or args.export_manual_ticket_csv
+        export_order_intents_requested = (
+            args.export_order_intents
+            or args.export_manual_ticket_csv
+            or args.export_simulated_orders
+        )
         extra_artifacts: dict[str, str] | None = None
         if export_order_intents_requested and not plan.blockers:
             order_intent_artifact_path = build_order_intent_artifact_path(artifact_paths)
             manual_order_checklist_path = build_manual_order_checklist_path(artifact_paths)
             manual_ticket_csv_path = build_manual_ticket_csv_path(artifact_paths)
+            simulated_submission_path = build_simulated_submission_artifact_path(artifact_paths)
             order_intent_export = build_order_intent_export(plan)
             export_artifacts = {
                 "json_path": str(order_intent_artifact_path),
@@ -371,6 +431,8 @@ def main(argv: list[str] | None = None) -> int:
             }
             if args.export_manual_ticket_csv:
                 export_artifacts["manual_ticket_csv_path"] = str(manual_ticket_csv_path)
+            if args.export_simulated_orders:
+                export_artifacts["simulated_order_requests_path"] = str(simulated_submission_path)
             write_order_intent_artifact(
                 order_intent_export,
                 path=order_intent_artifact_path,
@@ -384,6 +446,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.export_manual_ticket_csv:
                 write_manual_ticket_csv(order_intent_export, path=manual_ticket_csv_path)
                 extra_artifacts["manual_ticket_csv_path"] = str(manual_ticket_csv_path)
+            if args.export_simulated_orders:
+                simulated_export = build_simulated_submission_export(order_intent_export)
+                write_simulated_submission_artifact(
+                    simulated_export,
+                    path=simulated_submission_path,
+                    artifacts={"json_path": str(simulated_submission_path)},
+                )
+                extra_artifacts["simulated_order_requests_path"] = str(simulated_submission_path)
         json_payload = write_artifacts(plan, artifacts=artifact_paths, extra_artifacts=extra_artifacts)
 
         if args.emit == "json":

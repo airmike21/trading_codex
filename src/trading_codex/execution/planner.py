@@ -7,6 +7,7 @@ from typing import Any
 from trading_codex.data import LocalStore
 from trading_codex.execution.models import (
     ACCOUNT_SCOPES,
+    SIZING_MODES,
     BrokerPosition,
     BrokerSnapshot,
     ExecutionPlan,
@@ -15,6 +16,9 @@ from trading_codex.execution.models import (
     PlanItem,
     ScopedBrokerPosition,
     SignalPayload,
+    SimulatedOrderRequest,
+    SimulatedSubmissionExport,
+    SizingContext,
 )
 from trading_codex.execution.signals import desired_positions_from_signal
 
@@ -32,6 +36,7 @@ def _chicago_now() -> datetime:
 
 SUPPORTED_INSTRUMENT_TYPES = {"equity"}
 DERIVATIVE_INSTRUMENT_MARKERS = ("option", "future", "derivative")
+DEFAULT_SIGNAL_CAPITAL_BASE = 10_000.0
 ORDER_INTENT_SIDE_BY_CLASSIFICATION = {
     "BUY": "BUY",
     "RESIZE_BUY": "BUY",
@@ -39,6 +44,8 @@ ORDER_INTENT_SIDE_BY_CLASSIFICATION = {
     "RESIZE_SELL": "SELL",
     "EXIT": "SELL",
 }
+SIMULATED_ORDER_TYPE = "MARKET"
+SIMULATED_TIME_IN_FORCE = "DAY"
 
 
 def _classify_item(*, signal: SignalPayload, symbol: str, desired: int, current: int) -> str:
@@ -161,6 +168,113 @@ def resolve_reference_price(
     return _resolve_price_from_store(symbol, data_dir=data_dir)
 
 
+def _resolve_desired_positions(
+    *,
+    signal: SignalPayload,
+    broker_snapshot: BrokerSnapshot,
+    data_dir: Path | None,
+    sizing_mode: str,
+    capital_input: float | None,
+    reserve_cash_pct: float,
+    max_allocation_pct: float,
+    baseline_signal_capital: float,
+) -> tuple[dict[str, int], SizingContext, list[str], list[str]]:
+    if sizing_mode not in SIZING_MODES:
+        raise ValueError(f"Unsupported sizing_mode {sizing_mode!r}. Expected one of: {', '.join(SIZING_MODES)}")
+    if sizing_mode == "signal_target_shares":
+        if capital_input is not None:
+            raise ValueError("capital_input must be omitted when sizing_mode='signal_target_shares'.")
+        return (
+            desired_positions_from_signal(signal),
+            SizingContext(
+                mode=sizing_mode,
+                baseline_signal_capital=None,
+                capital_input=None,
+                reserve_cash_pct=float(reserve_cash_pct),
+                max_allocation_pct=float(max_allocation_pct),
+                usable_capital=None,
+                inferred_signal_allocation_pct=None,
+                applied_allocation_pct=None,
+            ),
+            [],
+            [],
+        )
+
+    if capital_input is None or capital_input <= 0:
+        raise ValueError("capital_input must be > 0 when using capital-based sizing.")
+    if reserve_cash_pct < 0.0 or reserve_cash_pct >= 1.0:
+        raise ValueError("reserve_cash_pct must be >= 0 and < 1.")
+    if max_allocation_pct <= 0.0 or max_allocation_pct > 1.0:
+        raise ValueError("max_allocation_pct must be > 0 and <= 1.")
+    if baseline_signal_capital <= 0.0:
+        raise ValueError("baseline_signal_capital must be > 0.")
+
+    desired_positions = desired_positions_from_signal(signal)
+    usable_capital = round(float(capital_input) * (1.0 - float(reserve_cash_pct)), 2)
+    base_context = {
+        "mode": sizing_mode,
+        "baseline_signal_capital": float(baseline_signal_capital),
+        "capital_input": float(capital_input),
+        "reserve_cash_pct": float(reserve_cash_pct),
+        "max_allocation_pct": float(max_allocation_pct),
+        "usable_capital": usable_capital,
+    }
+    if not desired_positions:
+        return (
+            desired_positions,
+            SizingContext(
+                inferred_signal_allocation_pct=None,
+                applied_allocation_pct=None,
+                **base_context,
+            ),
+            [],
+            [],
+        )
+    if len(desired_positions) != 1:
+        raise ValueError("Capital sizing currently supports a single desired symbol.")
+
+    symbol, signal_target_shares = next(iter(desired_positions.items()))
+    reference_price = resolve_reference_price(
+        signal=signal,
+        broker_snapshot=broker_snapshot,
+        symbol=symbol,
+        data_dir=data_dir,
+    )
+    if reference_price is None or reference_price <= 0.0:
+        return (
+            desired_positions,
+            SizingContext(
+                inferred_signal_allocation_pct=None,
+                applied_allocation_pct=None,
+                **base_context,
+            ),
+            [],
+            ["capital_sizing_missing_reference_price"],
+        )
+
+    inferred_signal_allocation_pct = min(
+        1.0,
+        max(0.0, round((signal_target_shares * reference_price) / float(baseline_signal_capital), 6)),
+    )
+    applied_allocation_pct = min(inferred_signal_allocation_pct, float(max_allocation_pct))
+    computed_shares = int((usable_capital * applied_allocation_pct) // reference_price)
+    computed_positions = {symbol: computed_shares} if computed_shares > 0 else {}
+    blockers: list[str] = []
+    if signal_target_shares > 0 and computed_shares <= 0:
+        blockers.append("capital_sizing_yields_zero_shares")
+
+    return (
+        computed_positions,
+        SizingContext(
+            inferred_signal_allocation_pct=inferred_signal_allocation_pct,
+            applied_allocation_pct=applied_allocation_pct,
+            **base_context,
+        ),
+        [],
+        blockers,
+    )
+
+
 def build_execution_plan(
     *,
     signal: SignalPayload,
@@ -174,11 +288,25 @@ def build_execution_plan(
     broker_source_ref: str | None,
     data_dir: Path | None,
     generated_at: datetime | None = None,
+    sizing_mode: str = "signal_target_shares",
+    capital_input: float | None = None,
+    reserve_cash_pct: float = 0.0,
+    max_allocation_pct: float = 1.0,
+    baseline_signal_capital: float = DEFAULT_SIGNAL_CAPITAL_BASE,
 ) -> ExecutionPlan:
     if account_scope not in ACCOUNT_SCOPES:
         raise ValueError(f"Unsupported account_scope {account_scope!r}. Expected one of: {', '.join(ACCOUNT_SCOPES)}")
     generated_dt = generated_at or _chicago_now()
-    desired_positions = desired_positions_from_signal(signal)
+    desired_positions, sizing, sizing_warnings, sizing_blockers = _resolve_desired_positions(
+        signal=signal,
+        broker_snapshot=broker_snapshot,
+        data_dir=data_dir,
+        sizing_mode=sizing_mode,
+        capital_input=capital_input,
+        reserve_cash_pct=reserve_cash_pct,
+        max_allocation_pct=max_allocation_pct,
+        baseline_signal_capital=baseline_signal_capital,
+    )
     managed_symbol_list = sorted({symbol.upper() for symbol in (managed_symbols or set())})
     managed_symbol_set = set(managed_symbol_list)
     managed_supported_positions: list[ScopedBrokerPosition] = []
@@ -213,8 +341,8 @@ def build_execution_plan(
     items: list[PlanItem] = []
     total_buy_notional = 0.0
     total_sell_notional = 0.0
-    warnings: list[str] = []
-    blockers: list[str] = []
+    warnings: list[str] = list(sizing_warnings)
+    blockers: list[str] = list(sizing_blockers)
 
     for symbol in symbols:
         desired = desired_positions.get(symbol, 0)
@@ -299,6 +427,7 @@ def build_execution_plan(
         source_ref=source_ref,
         broker_source_ref=broker_source_ref,
         signal=signal,
+        sizing=sizing,
         broker_snapshot=broker_snapshot,
         managed_supported_positions=managed_supported_positions,
         managed_unsupported_positions=managed_unsupported_positions,
@@ -350,6 +479,16 @@ def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | N
         },
         "dry_run": plan.dry_run,
         "generated_at_chicago": plan.generated_at_chicago,
+        "sizing": {
+            "applied_allocation_pct": plan.sizing.applied_allocation_pct,
+            "baseline_signal_capital": plan.sizing.baseline_signal_capital,
+            "capital_input": plan.sizing.capital_input,
+            "inferred_signal_allocation_pct": plan.sizing.inferred_signal_allocation_pct,
+            "max_allocation_pct": plan.sizing.max_allocation_pct,
+            "mode": plan.sizing.mode,
+            "reserve_cash_pct": plan.sizing.reserve_cash_pct,
+            "usable_capital": plan.sizing.usable_capital,
+        },
         "managed_supported_positions": _scoped_positions_payload(plan.managed_supported_positions),
         "managed_symbols_universe": list(plan.managed_symbols_universe),
         "managed_unsupported_positions": _scoped_positions_payload(plan.managed_unsupported_positions),
@@ -436,9 +575,12 @@ def build_order_intent_export(plan: ExecutionPlan) -> OrderIntentExport:
         source_kind=plan.source_kind,
         source_label=plan.source_label,
         source_ref=plan.source_ref,
+        broker_name=plan.broker_snapshot.broker_name,
+        account_id=plan.broker_snapshot.account_id,
         broker_source_ref=plan.broker_source_ref,
         account_scope=plan.account_scope,
         plan_math_scope=plan.plan_math_scope,
+        sizing=plan.sizing,
         managed_symbols_universe=list(plan.managed_symbols_universe),
         blockers=list(plan.blockers),
         warnings=list(plan.warnings),
@@ -449,6 +591,49 @@ def build_order_intent_export(plan: ExecutionPlan) -> OrderIntentExport:
     )
 
 
+def build_simulated_submission_export(export: OrderIntentExport) -> SimulatedSubmissionExport:
+    orders = [
+        SimulatedOrderRequest(
+            account_id=export.account_id,
+            broker_name=export.broker_name,
+            symbol=intent.symbol,
+            side=intent.side,
+            quantity=intent.quantity,
+            order_type=SIMULATED_ORDER_TYPE,
+            time_in_force=SIMULATED_TIME_IN_FORCE,
+            strategy=intent.strategy,
+            event_id=intent.event_id,
+            reference_price=intent.reference_price,
+            estimated_notional=intent.estimated_notional,
+            classification=intent.classification,
+            blockers=list(intent.blockers),
+            warnings=list(intent.warnings),
+        )
+        for intent in export.intents
+    ]
+
+    return SimulatedSubmissionExport(
+        generated_at_chicago=export.generated_at_chicago,
+        dry_run=export.dry_run,
+        source_kind=export.source_kind,
+        source_label=export.source_label,
+        source_ref=export.source_ref,
+        broker_name=export.broker_name,
+        account_id=export.account_id,
+        broker_source_ref=export.broker_source_ref,
+        account_scope=export.account_scope,
+        plan_math_scope=export.plan_math_scope,
+        sizing=export.sizing,
+        managed_symbols_universe=list(export.managed_symbols_universe),
+        blockers=list(export.blockers),
+        warnings=list(export.warnings),
+        unmanaged_holdings_acknowledged=export.unmanaged_holdings_acknowledged,
+        unmanaged_positions_count=export.unmanaged_positions_count,
+        unmanaged_positions_summary=list(export.unmanaged_positions_summary),
+        orders=orders,
+    )
+
+
 def order_intent_export_to_dict(
     export: OrderIntentExport,
     *,
@@ -456,8 +641,10 @@ def order_intent_export_to_dict(
 ) -> dict[str, Any]:
     return {
         "account_scope": export.account_scope,
+        "account_id": export.account_id,
         "artifacts": artifacts or {},
         "blockers": list(export.blockers),
+        "broker_name": export.broker_name,
         "broker_source_ref": export.broker_source_ref,
         "dry_run": export.dry_run,
         "generated_at_chicago": export.generated_at_chicago,
@@ -482,6 +669,86 @@ def order_intent_export_to_dict(
         "plan_math_scope": export.plan_math_scope,
         "schema_name": "order_intent_export",
         "schema_version": 1,
+        "sizing": {
+            "applied_allocation_pct": export.sizing.applied_allocation_pct,
+            "baseline_signal_capital": export.sizing.baseline_signal_capital,
+            "capital_input": export.sizing.capital_input,
+            "inferred_signal_allocation_pct": export.sizing.inferred_signal_allocation_pct,
+            "max_allocation_pct": export.sizing.max_allocation_pct,
+            "mode": export.sizing.mode,
+            "reserve_cash_pct": export.sizing.reserve_cash_pct,
+            "usable_capital": export.sizing.usable_capital,
+        },
+        "source": {
+            "kind": export.source_kind,
+            "label": export.source_label,
+            "ref": export.source_ref,
+        },
+        "unmanaged_holdings_acknowledged": export.unmanaged_holdings_acknowledged,
+        "unmanaged_positions_count": export.unmanaged_positions_count,
+        "unmanaged_positions_summary": [
+            {
+                "classification_reason": position.classification_reason,
+                "instrument_type": position.instrument_type,
+                "price": position.price,
+                "scope_symbol": position.scope_symbol,
+                "shares": position.shares,
+                "symbol": position.symbol,
+                "underlying_symbol": position.underlying_symbol,
+            }
+            for position in export.unmanaged_positions_summary
+        ],
+        "warnings": list(export.warnings),
+    }
+
+
+def simulated_submission_export_to_dict(
+    export: SimulatedSubmissionExport,
+    *,
+    artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "account_id": export.account_id,
+        "account_scope": export.account_scope,
+        "artifacts": artifacts or {},
+        "blockers": list(export.blockers),
+        "broker_name": export.broker_name,
+        "broker_source_ref": export.broker_source_ref,
+        "dry_run": export.dry_run,
+        "generated_at_chicago": export.generated_at_chicago,
+        "managed_symbols_universe": list(export.managed_symbols_universe),
+        "orders": [
+            {
+                "account_id": order.account_id,
+                "blockers": list(order.blockers),
+                "broker_name": order.broker_name,
+                "classification": order.classification,
+                "estimated_notional": order.estimated_notional,
+                "event_id": order.event_id,
+                "order_type": order.order_type,
+                "quantity": order.quantity,
+                "reference_price": order.reference_price,
+                "side": order.side,
+                "strategy": order.strategy,
+                "symbol": order.symbol,
+                "time_in_force": order.time_in_force,
+                "warnings": list(order.warnings),
+            }
+            for order in export.orders
+        ],
+        "plan_math_scope": export.plan_math_scope,
+        "schema_name": "simulated_submission_export",
+        "schema_version": 1,
+        "sizing": {
+            "applied_allocation_pct": export.sizing.applied_allocation_pct,
+            "baseline_signal_capital": export.sizing.baseline_signal_capital,
+            "capital_input": export.sizing.capital_input,
+            "inferred_signal_allocation_pct": export.sizing.inferred_signal_allocation_pct,
+            "max_allocation_pct": export.sizing.max_allocation_pct,
+            "mode": export.sizing.mode,
+            "reserve_cash_pct": export.sizing.reserve_cash_pct,
+            "usable_capital": export.sizing.usable_capital,
+        },
         "source": {
             "kind": export.source_kind,
             "label": export.source_label,

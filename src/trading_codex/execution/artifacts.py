@@ -8,8 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from trading_codex.execution.models import ExecutionPlan, OrderIntentExport
-from trading_codex.execution.planner import execution_plan_to_dict, order_intent_export_to_dict
+from trading_codex.execution.models import ExecutionPlan, OrderIntentExport, SimulatedSubmissionExport
+from trading_codex.execution.planner import (
+    execution_plan_to_dict,
+    order_intent_export_to_dict,
+    simulated_submission_export_to_dict,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -83,6 +87,13 @@ def build_manual_ticket_csv_path(artifacts: ArtifactPaths) -> Path:
     return artifacts.plans_dir / artifacts.json_path.name.replace("_execution_plan.json", "_manual_ticket_export.csv")
 
 
+def build_simulated_submission_artifact_path(artifacts: ArtifactPaths) -> Path:
+    return artifacts.plans_dir / artifacts.json_path.name.replace(
+        "_execution_plan.json",
+        "_simulated_order_requests.json",
+    )
+
+
 def render_manual_order_checklist(export: OrderIntentExport) -> str:
     lines = [
         f"# Manual Order Checklist {export.source_label}",
@@ -93,8 +104,12 @@ def render_manual_order_checklist(export: OrderIntentExport) -> str:
         f"- Source label: `{export.source_label}`",
         f"- Source ref: `{export.source_ref or '-'}`",
         f"- Broker source: `{export.broker_source_ref or '-'}`",
+        f"- Broker/account: `{export.broker_name} / {export.account_id or '-'}`",
         f"- Account scope: `{export.account_scope}`",
         f"- Plan math scope: `{export.plan_math_scope}`",
+        f"- Sizing mode: `{export.sizing.mode}`",
+        f"- Capital input: `{export.sizing.capital_input if export.sizing.capital_input is not None else '-'}`",
+        f"- Usable capital: `{export.sizing.usable_capital if export.sizing.usable_capital is not None else '-'}`",
         f"- Managed symbols universe: `{', '.join(export.managed_symbols_universe) if export.managed_symbols_universe else '-'}`",
         f"- Unmanaged positions count: `{export.unmanaged_positions_count}`",
         f"- Warnings: `{', '.join(export.warnings) if export.warnings else '-'}`",
@@ -147,6 +162,13 @@ def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
         f"- Strategy signal: `{plan.signal.action} {plan.signal.symbol} target={plan.signal.desired_target_shares}`",
         f"- Event ID: `{plan.signal.event_id}`",
         f"- Next rebalance: `{plan.signal.next_rebalance or '-'}`",
+        f"- Sizing mode: `{plan.sizing.mode}`",
+        f"- Capital input: `{plan.sizing.capital_input if plan.sizing.capital_input is not None else '-'}`",
+        f"- Reserve cash pct: `{plan.sizing.reserve_cash_pct}`",
+        f"- Max allocation pct: `{plan.sizing.max_allocation_pct}`",
+        f"- Usable capital: `{plan.sizing.usable_capital if plan.sizing.usable_capital is not None else '-'}`",
+        f"- Inferred signal allocation pct: `{plan.sizing.inferred_signal_allocation_pct if plan.sizing.inferred_signal_allocation_pct is not None else '-'}`",
+        f"- Applied allocation pct: `{plan.sizing.applied_allocation_pct if plan.sizing.applied_allocation_pct is not None else '-'}`",
         f"- JSON artifact: `{artifacts.json_path}`",
         f"- CSV log: `{artifacts.csv_log_path}`",
         "",
@@ -265,6 +287,17 @@ def write_order_intent_artifact(
     artifacts: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     payload = order_intent_export_to_dict(export, artifacts=artifacts)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def write_simulated_submission_artifact(
+    export: SimulatedSubmissionExport,
+    *,
+    path: Path,
+    artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    payload = simulated_submission_export_to_dict(export, artifacts=artifacts)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
 

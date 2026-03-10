@@ -723,6 +723,61 @@ def test_plan_execution_cli_exports_order_intents_for_clean_plan(tmp_path: Path)
     assert "BUY 18 EFA" in checklist_text
 
 
+def test_plan_execution_cli_exports_simulated_orders_for_clean_capital_sized_plan(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 20_000.0,
+                "positions": [{"symbol": "EFA", "shares": 32, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:40:30-05:00",
+        "--emit",
+        "json",
+        "--sleeve-capital",
+        "5000",
+        "--export-simulated-orders",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    payload = json.loads(proc.stdout)
+    assert payload["sizing"]["mode"] == "sleeve_capital"
+    assert payload["sizing"]["usable_capital"] == 5000.0
+    assert payload["items"][0]["desired_target_shares"] == 50
+    assert payload["items"][0]["delta_shares"] == 18
+    assert Path(payload["artifacts"]["order_intents_json_path"]).exists()
+    simulated_path = Path(payload["artifacts"]["simulated_order_requests_path"])
+    assert simulated_path.exists()
+
+    simulated_payload = json.loads(simulated_path.read_text(encoding="utf-8"))
+    assert simulated_payload["schema_name"] == "simulated_submission_export"
+    assert simulated_payload["orders"][0]["symbol"] == "EFA"
+    assert simulated_payload["orders"][0]["side"] == "BUY"
+    assert simulated_payload["orders"][0]["quantity"] == 18
+
+
 def test_plan_execution_cli_refuses_blocked_order_intent_export_by_default(tmp_path: Path) -> None:
     repo_root, env = _repo_root_and_env()
     signal_path = tmp_path / "signal.json"
@@ -768,6 +823,55 @@ def test_plan_execution_cli_refuses_blocked_order_intent_export_by_default(tmp_p
     assert order_intent_artifacts == []
     checklist_artifacts = list((base_dir / "reviews" / "2026-03-09").glob("*_manual_order_checklist.md"))
     assert checklist_artifacts == []
+
+
+def test_plan_execution_cli_refuses_simulated_orders_for_insufficient_capital(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 20_000.0,
+                "positions": [{"symbol": "EFA", "shares": 0, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:41:30-05:00",
+        "--emit",
+        "json",
+        "--sleeve-capital",
+        "50",
+        "--export-simulated-orders",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 2, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    assert "capital sizing yields zero affordable shares" in proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["blockers"] == ["capital_sizing_yields_zero_shares"]
+    assert payload["items"] == []
+    assert "simulated_order_requests_path" not in payload["artifacts"]
+    assert "order_intents_json_path" not in payload["artifacts"]
+    simulated_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*_simulated_order_requests.json"))
+    assert simulated_artifacts == []
 
 
 def test_plan_execution_cli_exports_manual_ticket_csv_for_clean_plan(tmp_path: Path) -> None:
@@ -878,7 +982,7 @@ def test_plan_execution_cli_refuses_manual_ticket_csv_for_blocked_plan(tmp_path:
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
 
     assert proc.returncode == 2
-    assert "REFUSED MANUAL TICKET CSV EXPORT" in proc.stderr
+    assert "REFUSED ORDER INTENT / MANUAL TICKET CSV EXPORT" in proc.stderr
     payload = json.loads(proc.stdout)
     assert "manual_ticket_csv_path" not in payload["artifacts"]
     csv_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*_manual_ticket_export.csv"))
