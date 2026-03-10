@@ -25,6 +25,7 @@ from trading_codex.execution import (
     TastytradeBrokerPositionAdapter,
     build_artifact_paths,
     build_manual_order_checklist_path,
+    build_manual_ticket_csv_path,
     build_execution_plan,
     build_order_intent_artifact_path,
     build_order_intent_export,
@@ -33,6 +34,7 @@ from trading_codex.execution import (
     resolve_timestamp,
     write_artifacts,
     write_manual_order_checklist,
+    write_manual_ticket_csv,
     write_order_intent_artifact,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
@@ -186,6 +188,14 @@ def _load_local_tastytrade_secrets(secrets_file: Path | None) -> Path | None:
     return load_tastytrade_secrets(secrets_file=secrets_file)
 
 
+def _export_refusal_prefix(args: argparse.Namespace) -> str:
+    if args.export_manual_ticket_csv and args.export_order_intents:
+        return "REFUSED ORDER INTENT / MANUAL TICKET CSV EXPORT"
+    if args.export_manual_ticket_csv:
+        return "REFUSED MANUAL TICKET CSV EXPORT"
+    return "REFUSED ORDER INTENT EXPORT"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a dry-run execution plan only. No live orders, broker writes, or auto-trading."
@@ -257,6 +267,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--export-order-intents",
         action="store_true",
         help="Write a dry-run order-intent export JSON artifact from a clean execution plan. Refused by default when plan blockers exist.",
+    )
+    parser.add_argument(
+        "--export-manual-ticket-csv",
+        action="store_true",
+        help="Write a manual-entry CSV artifact derived from the clean order-intent export. Implies --export-order-intents.",
     )
     parser.add_argument("--timestamp", type=str, default=None, help="Optional ISO timestamp override for deterministic tests.")
     parser.add_argument("--emit", choices=["text", "json"], default="text", help="Stdout format after writing artifacts.")
@@ -343,32 +358,40 @@ def main(argv: list[str] | None = None) -> int:
 
         base_dir = Path(daily_signal._expand_user(str(args.base_dir)))
         artifact_paths = build_artifact_paths(base_dir, timestamp=timestamp, source_label=source_label)
+        export_order_intents_requested = args.export_order_intents or args.export_manual_ticket_csv
         extra_artifacts: dict[str, str] | None = None
-        if args.export_order_intents and not plan.blockers:
+        if export_order_intents_requested and not plan.blockers:
             order_intent_artifact_path = build_order_intent_artifact_path(artifact_paths)
             manual_order_checklist_path = build_manual_order_checklist_path(artifact_paths)
+            manual_ticket_csv_path = build_manual_ticket_csv_path(artifact_paths)
             order_intent_export = build_order_intent_export(plan)
+            export_artifacts = {
+                "json_path": str(order_intent_artifact_path),
+                "manual_order_checklist_path": str(manual_order_checklist_path),
+            }
+            if args.export_manual_ticket_csv:
+                export_artifacts["manual_ticket_csv_path"] = str(manual_ticket_csv_path)
             write_order_intent_artifact(
                 order_intent_export,
                 path=order_intent_artifact_path,
-                artifacts={
-                    "json_path": str(order_intent_artifact_path),
-                    "manual_order_checklist_path": str(manual_order_checklist_path),
-                },
+                artifacts=export_artifacts,
             )
             write_manual_order_checklist(order_intent_export, path=manual_order_checklist_path)
             extra_artifacts = {
                 "order_intents_json_path": str(order_intent_artifact_path),
                 "manual_order_checklist_path": str(manual_order_checklist_path),
             }
+            if args.export_manual_ticket_csv:
+                write_manual_ticket_csv(order_intent_export, path=manual_ticket_csv_path)
+                extra_artifacts["manual_ticket_csv_path"] = str(manual_ticket_csv_path)
         json_payload = write_artifacts(plan, artifacts=artifact_paths, extra_artifacts=extra_artifacts)
 
         if args.emit == "json":
             print(json.dumps(json_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         else:
             print(render_markdown(plan, artifacts=artifact_paths), end="")
-        if args.export_order_intents and plan.blockers:
-            print(f"[plan_execution] REFUSED ORDER INTENT EXPORT: {_blocked_summary(plan)}", file=sys.stderr)
+        if export_order_intents_requested and plan.blockers:
+            print(f"[plan_execution] {_export_refusal_prefix(args)}: {_blocked_summary(plan)}", file=sys.stderr)
             return 2
         if plan.blockers:
             print(f"[plan_execution] BLOCKED: {_blocked_summary(plan)}", file=sys.stderr)

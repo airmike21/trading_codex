@@ -79,6 +79,10 @@ def build_manual_order_checklist_path(artifacts: ArtifactPaths) -> Path:
     return artifacts.reviews_dir / artifacts.markdown_path.name.replace("_execution_plan.md", "_manual_order_checklist.md")
 
 
+def build_manual_ticket_csv_path(artifacts: ArtifactPaths) -> Path:
+    return artifacts.plans_dir / artifacts.json_path.name.replace("_execution_plan.json", "_manual_ticket_export.csv")
+
+
 def render_manual_order_checklist(export: OrderIntentExport) -> str:
     lines = [
         f"# Manual Order Checklist {export.source_label}",
@@ -267,6 +271,53 @@ def write_order_intent_artifact(
 
 def write_manual_order_checklist(export: OrderIntentExport, *, path: Path) -> None:
     path.write_text(render_manual_order_checklist(export) + "\n", encoding="utf-8")
+
+
+def write_manual_ticket_csv(export: OrderIntentExport, *, path: Path) -> None:
+    fieldnames = [
+        "generated_at_chicago",
+        "source_label",
+        "event_id",
+        "strategy",
+        "account_scope",
+        "plan_math_scope",
+        "symbol",
+        "side",
+        "quantity",
+        "reference_price",
+        "estimated_notional",
+        "classification",
+        "current_broker_shares",
+        "desired_target_shares",
+        "warnings",
+        "unmanaged_positions_count",
+        "broker_source_ref",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for intent in export.intents:
+            writer.writerow(
+                {
+                    "generated_at_chicago": export.generated_at_chicago,
+                    "source_label": export.source_label,
+                    "event_id": intent.event_id,
+                    "strategy": intent.strategy,
+                    "account_scope": export.account_scope,
+                    "plan_math_scope": export.plan_math_scope,
+                    "symbol": intent.symbol,
+                    "side": intent.side,
+                    "quantity": str(intent.quantity),
+                    "reference_price": "" if intent.reference_price is None else f"{intent.reference_price:.2f}",
+                    "estimated_notional": "" if intent.estimated_notional is None else f"{intent.estimated_notional:.2f}",
+                    "classification": intent.classification,
+                    "current_broker_shares": str(intent.current_broker_shares),
+                    "desired_target_shares": str(intent.desired_target_shares),
+                    "warnings": ", ".join(intent.warnings),
+                    "unmanaged_positions_count": str(export.unmanaged_positions_count),
+                    "broker_source_ref": export.broker_source_ref or "",
+                }
+            )
 
 
 def write_artifacts(

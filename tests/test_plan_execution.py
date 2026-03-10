@@ -768,3 +768,118 @@ def test_plan_execution_cli_refuses_blocked_order_intent_export_by_default(tmp_p
     assert order_intent_artifacts == []
     checklist_artifacts = list((base_dir / "reviews" / "2026-03-09").glob("*_manual_order_checklist.md"))
     assert checklist_artifacts == []
+
+
+def test_plan_execution_cli_exports_manual_ticket_csv_for_clean_plan(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 20000.0,
+                "cash": 20000.0,
+                "positions": [{"symbol": "EFA", "shares": 82, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:42:00-05:00",
+        "--emit",
+        "json",
+        "--export-manual-ticket-csv",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    payload = json.loads(proc.stdout)
+    csv_path = Path(payload["artifacts"]["manual_ticket_csv_path"])
+    assert csv_path.exists()
+    assert Path(payload["artifacts"]["order_intents_json_path"]).exists()
+
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "EFA"
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["quantity"] == "18"
+    assert rows[0]["classification"] == "RESIZE_BUY"
+    assert set(rows[0]) >= {
+        "generated_at_chicago",
+        "source_label",
+        "event_id",
+        "strategy",
+        "account_scope",
+        "plan_math_scope",
+        "symbol",
+        "side",
+        "quantity",
+        "reference_price",
+        "estimated_notional",
+        "classification",
+        "current_broker_shares",
+        "desired_target_shares",
+        "warnings",
+    }
+
+
+def test_plan_execution_cli_refuses_manual_ticket_csv_for_blocked_plan(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 500.0,
+                "cash": 500.0,
+                "positions": [{"symbol": "EFA", "shares": 0, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:43:00-05:00",
+        "--emit",
+        "json",
+        "--export-manual-ticket-csv",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 2
+    assert "REFUSED MANUAL TICKET CSV EXPORT" in proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "manual_ticket_csv_path" not in payload["artifacts"]
+    csv_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*_manual_ticket_export.csv"))
+    assert csv_artifacts == []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime
 
 import pytest
@@ -14,6 +15,7 @@ from trading_codex.execution import (
     parse_signal_payload,
     render_manual_order_checklist,
     render_markdown,
+    write_manual_ticket_csv,
 )
 
 
@@ -530,3 +532,26 @@ def test_manual_order_checklist_renders_from_order_intent_export() -> None:
     assert "No orders were placed" in checklist
     assert "BUY 18 EFA" in checklist
     assert "Classification: `RESIZE_BUY`" in checklist
+
+
+def test_manual_ticket_csv_hold_only_writes_header_only(tmp_path) -> None:
+    signal = parse_signal_payload(_signal_payload())
+    broker = parse_broker_snapshot(_broker_snapshot({"symbol": "EFA", "shares": 100, "price": 99.16}))
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="csv_hold",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    csv_path = tmp_path / "manual_ticket_export.csv"
+    write_manual_ticket_csv(build_order_intent_export(plan), path=csv_path)
+
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+
+    assert rows == []
