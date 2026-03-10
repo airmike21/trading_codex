@@ -12,6 +12,7 @@ from trading_codex.execution import (
     order_intent_export_to_dict,
     parse_broker_snapshot,
     parse_signal_payload,
+    render_manual_order_checklist,
     render_markdown,
 )
 
@@ -507,3 +508,25 @@ def test_order_intent_export_includes_managed_sleeve_metadata_and_unmanaged_summ
     assert payload["unmanaged_positions_count"] == 1
     assert payload["unmanaged_positions_summary"][0]["symbol"] == "XYZ"
     assert [intent["symbol"] for intent in payload["intents"]] == ["EFA"]
+
+
+def test_manual_order_checklist_renders_from_order_intent_export() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(_broker_snapshot({"symbol": "EFA", "shares": 82, "price": 99.16}))
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="checklist",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    checklist = render_manual_order_checklist(build_order_intent_export(plan))
+
+    assert "Manual Order Checklist checklist" in checklist
+    assert "No orders were placed" in checklist
+    assert "BUY 18 EFA" in checklist
+    assert "Classification: `RESIZE_BUY`" in checklist

@@ -708,13 +708,19 @@ def test_plan_execution_cli_exports_order_intents_for_clean_plan(tmp_path: Path)
     assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
     payload = json.loads(proc.stdout)
     order_intents_path = Path(payload["artifacts"]["order_intents_json_path"])
+    checklist_path = Path(payload["artifacts"]["manual_order_checklist_path"])
     assert order_intents_path.exists()
+    assert checklist_path.exists()
 
     export_payload = json.loads(order_intents_path.read_text(encoding="utf-8"))
     assert export_payload["schema_name"] == "order_intent_export"
+    assert export_payload["artifacts"]["manual_order_checklist_path"] == str(checklist_path)
     assert len(export_payload["intents"]) == 1
     assert export_payload["intents"][0]["side"] == "BUY"
     assert export_payload["intents"][0]["quantity"] == 18
+    checklist_text = checklist_path.read_text(encoding="utf-8")
+    assert "Manual Order Checklist signal" in checklist_text
+    assert "BUY 18 EFA" in checklist_text
 
 
 def test_plan_execution_cli_refuses_blocked_order_intent_export_by_default(tmp_path: Path) -> None:
@@ -757,5 +763,8 @@ def test_plan_execution_cli_refuses_blocked_order_intent_export_by_default(tmp_p
     assert "REFUSED ORDER INTENT EXPORT" in proc.stderr
     payload = json.loads(proc.stdout)
     assert "order_intents_json_path" not in payload["artifacts"]
+    assert "manual_order_checklist_path" not in payload["artifacts"]
     order_intent_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*_order_intents.json"))
     assert order_intent_artifacts == []
+    checklist_artifacts = list((base_dir / "reviews" / "2026-03-09").glob("*_manual_order_checklist.md"))
+    assert checklist_artifacts == []

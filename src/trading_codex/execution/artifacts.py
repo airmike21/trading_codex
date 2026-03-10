@@ -75,6 +75,55 @@ def build_order_intent_artifact_path(artifacts: ArtifactPaths) -> Path:
     return artifacts.plans_dir / artifacts.json_path.name.replace("_execution_plan.json", "_order_intents.json")
 
 
+def build_manual_order_checklist_path(artifacts: ArtifactPaths) -> Path:
+    return artifacts.reviews_dir / artifacts.markdown_path.name.replace("_execution_plan.md", "_manual_order_checklist.md")
+
+
+def render_manual_order_checklist(export: OrderIntentExport) -> str:
+    lines = [
+        f"# Manual Order Checklist {export.source_label}",
+        "",
+        "- This is a dry-run review artifact only. No orders were placed.",
+        f"- Generated: `{export.generated_at_chicago}`",
+        f"- Dry run only: `{str(export.dry_run).lower()}`",
+        f"- Source label: `{export.source_label}`",
+        f"- Source ref: `{export.source_ref or '-'}`",
+        f"- Broker source: `{export.broker_source_ref or '-'}`",
+        f"- Account scope: `{export.account_scope}`",
+        f"- Plan math scope: `{export.plan_math_scope}`",
+        f"- Managed symbols universe: `{', '.join(export.managed_symbols_universe) if export.managed_symbols_universe else '-'}`",
+        f"- Unmanaged positions count: `{export.unmanaged_positions_count}`",
+        f"- Warnings: `{', '.join(export.warnings) if export.warnings else '-'}`",
+        "",
+    ]
+
+    if not export.intents:
+        lines.extend(["## Orders", "", "- None", ""])
+        return "\n".join(lines)
+
+    lines.extend(["## Orders", ""])
+    for index, intent in enumerate(export.intents, start=1):
+        reference_price = "-" if intent.reference_price is None else f"{intent.reference_price:.2f}"
+        estimated_notional = "-" if intent.estimated_notional is None else f"{intent.estimated_notional:.2f}"
+        lines.extend(
+            [
+                f"### {index}. {intent.side} {intent.quantity} {intent.symbol}",
+                "",
+                f"- Event ID: `{intent.event_id}`",
+                f"- Strategy: `{intent.strategy}`",
+                f"- Account scope: `{export.account_scope}`",
+                f"- Symbol: `{intent.symbol}`",
+                f"- Side: `{intent.side}`",
+                f"- Quantity: `{intent.quantity}`",
+                f"- Reference price: `{reference_price}`",
+                f"- Estimated notional: `{estimated_notional}`",
+                f"- Classification: `{intent.classification}`",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
     plan_status = "BLOCKED" if plan.blockers else "READY"
     lines = [
@@ -214,6 +263,10 @@ def write_order_intent_artifact(
     payload = order_intent_export_to_dict(export, artifacts=artifacts)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
+
+
+def write_manual_order_checklist(export: OrderIntentExport, *, path: Path) -> None:
+    path.write_text(render_manual_order_checklist(export) + "\n", encoding="utf-8")
 
 
 def write_artifacts(

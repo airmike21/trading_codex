@@ -24,6 +24,7 @@ from trading_codex.execution import (
     RequestsTastytradeHttpClient,
     TastytradeBrokerPositionAdapter,
     build_artifact_paths,
+    build_manual_order_checklist_path,
     build_execution_plan,
     build_order_intent_artifact_path,
     build_order_intent_export,
@@ -31,6 +32,7 @@ from trading_codex.execution import (
     render_markdown,
     resolve_timestamp,
     write_artifacts,
+    write_manual_order_checklist,
     write_order_intent_artifact,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
@@ -344,13 +346,21 @@ def main(argv: list[str] | None = None) -> int:
         extra_artifacts: dict[str, str] | None = None
         if args.export_order_intents and not plan.blockers:
             order_intent_artifact_path = build_order_intent_artifact_path(artifact_paths)
+            manual_order_checklist_path = build_manual_order_checklist_path(artifact_paths)
             order_intent_export = build_order_intent_export(plan)
             write_order_intent_artifact(
                 order_intent_export,
                 path=order_intent_artifact_path,
-                artifacts={"json_path": str(order_intent_artifact_path)},
+                artifacts={
+                    "json_path": str(order_intent_artifact_path),
+                    "manual_order_checklist_path": str(manual_order_checklist_path),
+                },
             )
-            extra_artifacts = {"order_intents_json_path": str(order_intent_artifact_path)}
+            write_manual_order_checklist(order_intent_export, path=manual_order_checklist_path)
+            extra_artifacts = {
+                "order_intents_json_path": str(order_intent_artifact_path),
+                "manual_order_checklist_path": str(manual_order_checklist_path),
+            }
         json_payload = write_artifacts(plan, artifacts=artifact_paths, extra_artifacts=extra_artifacts)
 
         if args.emit == "json":
