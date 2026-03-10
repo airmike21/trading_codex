@@ -690,6 +690,7 @@ def test_simulated_submission_export_builds_broker_shaped_payloads() -> None:
     assert payload["orders"][0]["symbol"] == "EFA"
     assert payload["orders"][0]["side"] == "BUY"
     assert payload["orders"][0]["quantity"] == 18
+    assert payload["orders"][0]["instrument_type"] == "Equity"
     assert payload["orders"][0]["order_type"] == "MARKET"
     assert payload["orders"][0]["time_in_force"] == "DAY"
 

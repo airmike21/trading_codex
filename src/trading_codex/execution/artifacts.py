@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from trading_codex.execution.models import ExecutionPlan, OrderIntentExport, SimulatedSubmissionExport
+from trading_codex.execution.models import ExecutionPlan, LiveSubmissionExport, OrderIntentExport, SimulatedSubmissionExport
 from trading_codex.execution.planner import (
     execution_plan_to_dict,
     order_intent_export_to_dict,
@@ -91,6 +91,13 @@ def build_simulated_submission_artifact_path(artifacts: ArtifactPaths) -> Path:
     return artifacts.plans_dir / artifacts.json_path.name.replace(
         "_execution_plan.json",
         "_simulated_order_requests.json",
+    )
+
+
+def build_live_submission_artifact_path(artifacts: ArtifactPaths) -> Path:
+    return artifacts.plans_dir / artifacts.json_path.name.replace(
+        "_execution_plan.json",
+        "_live_submission.json",
     )
 
 
@@ -302,6 +309,100 @@ def write_simulated_submission_artifact(
     artifacts: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     payload = simulated_submission_export_to_dict(export, artifacts=artifacts)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def _live_submission_export_to_dict(
+    export: LiveSubmissionExport,
+    *,
+    artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "account_id": export.account_id,
+        "account_scope": export.account_scope,
+        "artifacts": artifacts or {},
+        "blockers": list(export.blockers),
+        "broker_name": export.broker_name,
+        "broker_source_ref": export.broker_source_ref,
+        "dry_run": export.dry_run,
+        "generated_at_chicago": export.generated_at_chicago,
+        "live_submit_attempted": export.live_submit_attempted,
+        "live_submit_requested": export.live_submit_requested,
+        "managed_symbols_universe": list(export.managed_symbols_universe),
+        "orders": [
+            {
+                "account_id": order.account_id,
+                "attempted": order.attempted,
+                "broker_name": order.broker_name,
+                "broker_order_id": order.broker_order_id,
+                "broker_response": order.broker_response,
+                "broker_status": order.broker_status,
+                "classification": order.classification,
+                "dry_run": order.dry_run,
+                "error": order.error,
+                "estimated_notional": order.estimated_notional,
+                "event_id": order.event_id,
+                "instrument_type": order.instrument_type,
+                "order_type": order.order_type,
+                "quantity": order.quantity,
+                "reference_price": order.reference_price,
+                "side": order.side,
+                "strategy": order.strategy,
+                "submitted_at_chicago": order.submitted_at_chicago,
+                "succeeded": order.succeeded,
+                "symbol": order.symbol,
+                "time_in_force": order.time_in_force,
+            }
+            for order in export.orders
+        ],
+        "plan_math_scope": export.plan_math_scope,
+        "refusal_reasons": list(export.refusal_reasons),
+        "schema_name": "live_submission_export",
+        "schema_version": 1,
+        "sizing": {
+            "applied_allocation_pct": export.sizing.applied_allocation_pct,
+            "baseline_signal_capital": export.sizing.baseline_signal_capital,
+            "buying_power_cap_applied": export.sizing.buying_power_cap_applied,
+            "capital_input": export.sizing.capital_input,
+            "effective_capital_used": export.sizing.effective_capital_used,
+            "inferred_signal_allocation_pct": export.sizing.inferred_signal_allocation_pct,
+            "max_allocation_pct": export.sizing.max_allocation_pct,
+            "mode": export.sizing.mode,
+            "reserve_cash_pct": export.sizing.reserve_cash_pct,
+            "usable_capital": export.sizing.usable_capital,
+        },
+        "source": {
+            "kind": export.source_kind,
+            "label": export.source_label,
+            "ref": export.source_ref,
+        },
+        "submission_succeeded": export.submission_succeeded,
+        "unmanaged_holdings_acknowledged": export.unmanaged_holdings_acknowledged,
+        "unmanaged_positions_count": export.unmanaged_positions_count,
+        "unmanaged_positions_summary": [
+            {
+                "classification_reason": position.classification_reason,
+                "instrument_type": position.instrument_type,
+                "price": position.price,
+                "scope_symbol": position.scope_symbol,
+                "shares": position.shares,
+                "symbol": position.symbol,
+                "underlying_symbol": position.underlying_symbol,
+            }
+            for position in export.unmanaged_positions_summary
+        ],
+        "warnings": list(export.warnings),
+    }
+
+
+def write_live_submission_artifact(
+    export: LiveSubmissionExport,
+    *,
+    path: Path,
+    artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    payload = _live_submission_export_to_dict(export, artifacts=artifacts)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
 

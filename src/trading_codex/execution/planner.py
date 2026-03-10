@@ -46,6 +46,7 @@ ORDER_INTENT_SIDE_BY_CLASSIFICATION = {
 }
 SIMULATED_ORDER_TYPE = "MARKET"
 SIMULATED_TIME_IN_FORCE = "DAY"
+SIMULATED_INSTRUMENT_TYPE = "Equity"
 
 
 def _classify_item(*, signal: SignalPayload, symbol: str, desired: int, current: int) -> str:
@@ -623,6 +624,7 @@ def build_simulated_submission_export(export: OrderIntentExport) -> SimulatedSub
             symbol=intent.symbol,
             side=intent.side,
             quantity=intent.quantity,
+            instrument_type=SIMULATED_INSTRUMENT_TYPE,
             order_type=SIMULATED_ORDER_TYPE,
             time_in_force=SIMULATED_TIME_IN_FORCE,
             strategy=intent.strategy,
@@ -740,6 +742,7 @@ def simulated_submission_export_to_dict(
                 "classification": order.classification,
                 "estimated_notional": order.estimated_notional,
                 "event_id": order.event_id,
+                "instrument_type": order.instrument_type,
                 "order_type": order.order_type,
                 "quantity": order.quantity,
                 "reference_price": order.reference_price,

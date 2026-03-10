@@ -22,8 +22,10 @@ except ImportError:  # pragma: no cover - direct script execution path
 from trading_codex.execution import (
     FileBrokerPositionAdapter,
     RequestsTastytradeHttpClient,
-    TastytradeBrokerPositionAdapter,
+    TastytradeBrokerExecutionAdapter,
     build_artifact_paths,
+    build_live_submission_artifact_path,
+    build_live_submission_refusal_from_plan,
     build_manual_order_checklist_path,
     build_simulated_submission_artifact_path,
     build_manual_ticket_csv_path,
@@ -35,6 +37,7 @@ from trading_codex.execution import (
     render_markdown,
     resolve_timestamp,
     write_artifacts,
+    write_live_submission_artifact,
     write_manual_order_checklist,
     write_manual_ticket_csv,
     write_order_intent_artifact,
@@ -216,6 +219,18 @@ def _resolve_sizing_args(args: argparse.Namespace) -> tuple[str, float | None]:
     return "signal_target_shares", None
 
 
+def _live_submit_summary(export: Any) -> str:
+    if export.refusal_reasons:
+        return "; ".join(export.refusal_reasons)
+    failed_orders = [order for order in export.orders if not order.succeeded]
+    if failed_orders:
+        return "; ".join(
+            f"{order.symbol} {order.side} {order.quantity}: {order.error or 'submission failed'}"
+            for order in failed_orders
+        )
+    return f"submitted {len(export.orders)} live orders"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a dry-run execution plan only. No live orders, broker writes, or auto-trading."
@@ -328,6 +343,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write a dry-run simulated broker-order request artifact derived from the clean order-intent export. No orders are submitted.",
     )
+    parser.add_argument(
+        "--live-submit",
+        action="store_true",
+        help="Attempt real tastytrade submission for clean managed-sleeve ETF orders only. Requires --confirm-live-submit.",
+    )
+    parser.add_argument(
+        "--confirm-live-submit",
+        type=str,
+        default=None,
+        help="Required live-submit confirmation. Must exactly match the tastytrade account id being submitted.",
+    )
     parser.add_argument("--timestamp", type=str, default=None, help="Optional ISO timestamp override for deterministic tests.")
     parser.add_argument("--emit", choices=["text", "json"], default="text", help="Stdout format after writing artifacts.")
     return parser
@@ -344,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
         source_ref: str | None
         data_dir: Path | None
         preset: daily_signal.Preset | None = None
+        if args.confirm_live_submit and not args.live_submit:
+            raise ValueError("--confirm-live-submit requires --live-submit.")
         if args.account_scope == "full_account" and args.ack_unmanaged_holdings:
             raise ValueError("--ack-unmanaged-holdings can only be used with --account-scope managed_sleeve.")
 
@@ -387,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     "--account-id is required when --broker tastytrade unless TASTYTRADE_ACCOUNT is available via env or secrets file."
                 )
-            broker_adapter = TastytradeBrokerPositionAdapter(
+            broker_adapter = TastytradeBrokerExecutionAdapter(
                 account_id=resolved_account_id,
                 client=RequestsTastytradeHttpClient(
                     challenge_code=args.tastytrade_challenge_code,
@@ -424,35 +452,38 @@ def main(argv: list[str] | None = None) -> int:
             or args.export_manual_ticket_csv
             or args.export_simulated_orders
         )
+        order_intent_export = None
+        simulated_export = None
         extra_artifacts: dict[str, str] | None = None
-        if export_order_intents_requested and not plan.blockers:
+        if (export_order_intents_requested or args.live_submit) and not plan.blockers:
             order_intent_artifact_path = build_order_intent_artifact_path(artifact_paths)
             manual_order_checklist_path = build_manual_order_checklist_path(artifact_paths)
             manual_ticket_csv_path = build_manual_ticket_csv_path(artifact_paths)
             simulated_submission_path = build_simulated_submission_artifact_path(artifact_paths)
             order_intent_export = build_order_intent_export(plan)
-            export_artifacts = {
-                "json_path": str(order_intent_artifact_path),
-                "manual_order_checklist_path": str(manual_order_checklist_path),
-            }
-            if args.export_manual_ticket_csv:
-                export_artifacts["manual_ticket_csv_path"] = str(manual_ticket_csv_path)
-            if args.export_simulated_orders:
-                export_artifacts["simulated_order_requests_path"] = str(simulated_submission_path)
-            write_order_intent_artifact(
-                order_intent_export,
-                path=order_intent_artifact_path,
-                artifacts=export_artifacts,
-            )
-            write_manual_order_checklist(order_intent_export, path=manual_order_checklist_path)
-            extra_artifacts = {
-                "order_intents_json_path": str(order_intent_artifact_path),
-                "manual_order_checklist_path": str(manual_order_checklist_path),
-            }
+            if export_order_intents_requested or args.live_submit:
+                export_artifacts = {
+                    "json_path": str(order_intent_artifact_path),
+                    "manual_order_checklist_path": str(manual_order_checklist_path),
+                }
+                if args.export_manual_ticket_csv:
+                    export_artifacts["manual_ticket_csv_path"] = str(manual_ticket_csv_path)
+                if args.export_simulated_orders or args.live_submit:
+                    export_artifacts["simulated_order_requests_path"] = str(simulated_submission_path)
+                write_order_intent_artifact(
+                    order_intent_export,
+                    path=order_intent_artifact_path,
+                    artifacts=export_artifacts,
+                )
+                write_manual_order_checklist(order_intent_export, path=manual_order_checklist_path)
+                extra_artifacts = {
+                    "order_intents_json_path": str(order_intent_artifact_path),
+                    "manual_order_checklist_path": str(manual_order_checklist_path),
+                }
             if args.export_manual_ticket_csv:
                 write_manual_ticket_csv(order_intent_export, path=manual_ticket_csv_path)
                 extra_artifacts["manual_ticket_csv_path"] = str(manual_ticket_csv_path)
-            if args.export_simulated_orders:
+            if args.export_simulated_orders or args.live_submit:
                 simulated_export = build_simulated_submission_export(order_intent_export)
                 write_simulated_submission_artifact(
                     simulated_export,
@@ -460,12 +491,58 @@ def main(argv: list[str] | None = None) -> int:
                     artifacts={"json_path": str(simulated_submission_path)},
                 )
                 extra_artifacts["simulated_order_requests_path"] = str(simulated_submission_path)
+        live_submission_export = None
+        if args.live_submit:
+            live_submission_path = build_live_submission_artifact_path(artifact_paths)
+            if plan.blockers:
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_refused_for_blocked_plan"],
+                )
+            elif args.confirm_live_submit is None:
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_requires_confirmation"],
+                )
+            elif args.broker != "tastytrade":
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_requires_tastytrade_broker"],
+                )
+            elif simulated_export is None:
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_requires_simulated_orders"],
+                )
+            elif not hasattr(broker_adapter, "submit_live_orders"):
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["broker_adapter_not_live_submit_capable"],
+                )
+            else:
+                live_submission_export = broker_adapter.submit_live_orders(
+                    export=simulated_export,
+                    confirm_account_id=args.confirm_live_submit,
+                    allowed_symbols=managed_symbols or set(),
+                )
+            write_live_submission_artifact(
+                live_submission_export,
+                path=live_submission_path,
+                artifacts={"json_path": str(live_submission_path)},
+            )
+            if extra_artifacts is None:
+                extra_artifacts = {}
+            extra_artifacts["live_submission_json_path"] = str(live_submission_path)
         json_payload = write_artifacts(plan, artifacts=artifact_paths, extra_artifacts=extra_artifacts)
 
         if args.emit == "json":
             print(json.dumps(json_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         else:
             print(render_markdown(plan, artifacts=artifact_paths), end="")
+        if args.live_submit and live_submission_export is not None:
+            if not live_submission_export.live_submit_attempted or not live_submission_export.submission_succeeded:
+                print(f"[plan_execution] LIVE SUBMIT REFUSED: {_live_submit_summary(live_submission_export)}", file=sys.stderr)
+                return 2
         if export_order_intents_requested and plan.blockers:
             print(f"[plan_execution] {_export_refusal_prefix(args)}: {_blocked_summary(plan)}", file=sys.stderr)
             return 2

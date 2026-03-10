@@ -161,6 +161,7 @@ class SimulatedOrderRequest:
     symbol: str
     side: str
     quantity: int
+    instrument_type: str
     order_type: str
     time_in_force: str
     strategy: str
@@ -192,3 +193,54 @@ class SimulatedSubmissionExport:
     unmanaged_positions_count: int
     unmanaged_positions_summary: list[ScopedBrokerPosition]
     orders: list[SimulatedOrderRequest]
+
+
+@dataclass(frozen=True)
+class LiveSubmittedOrder:
+    submitted_at_chicago: str | None
+    account_id: str | None
+    broker_name: str
+    symbol: str
+    side: str
+    quantity: int
+    instrument_type: str
+    order_type: str
+    time_in_force: str
+    strategy: str
+    event_id: str
+    reference_price: float | None
+    estimated_notional: float | None
+    classification: str
+    dry_run: bool
+    attempted: bool
+    succeeded: bool
+    broker_order_id: str | None
+    broker_status: str | None
+    broker_response: dict[str, Any] | None
+    error: str | None
+
+
+@dataclass(frozen=True)
+class LiveSubmissionExport:
+    generated_at_chicago: str
+    dry_run: bool
+    live_submit_requested: bool
+    live_submit_attempted: bool
+    submission_succeeded: bool
+    source_kind: str
+    source_label: str
+    source_ref: str | None
+    broker_name: str
+    account_id: str | None
+    broker_source_ref: str | None
+    account_scope: str
+    plan_math_scope: str
+    sizing: SizingContext
+    managed_symbols_universe: list[str]
+    blockers: list[str]
+    warnings: list[str]
+    unmanaged_holdings_acknowledged: bool
+    unmanaged_positions_count: int
+    unmanaged_positions_summary: list[ScopedBrokerPosition]
+    refusal_reasons: list[str]
+    orders: list[LiveSubmittedOrder]

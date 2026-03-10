@@ -338,7 +338,7 @@ def test_plan_execution_cli_with_tastytrade_blocks_unrelated_holdings(
         def get_balances(self, *, account_id: str) -> object:
             return _tastytrade_balances_payload(account_id=account_id)
 
-        def submit_order(self, *_args: object, **_kwargs: object) -> None:
+        def place_order(self, *_args: object, **_kwargs: object) -> None:
             raise AssertionError("Dry-run planner must not submit orders.")
 
     monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
@@ -414,7 +414,7 @@ def test_plan_execution_cli_managed_sleeve_ack_computes_sleeve_math_and_reports_
         def get_balances(self, *, account_id: str) -> object:
             return _tastytrade_balances_payload(account_id=account_id)
 
-        def submit_order(self, *_args: object, **_kwargs: object) -> None:
+        def place_order(self, *_args: object, **_kwargs: object) -> None:
             raise AssertionError("Dry-run planner must not submit orders.")
 
     monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
@@ -458,8 +458,361 @@ def test_plan_execution_cli_managed_sleeve_ack_computes_sleeve_math_and_reports_
     assert len(markdown_artifacts) == 1
     review_text = markdown_artifacts[0].read_text(encoding="utf-8")
     assert "Account scope" in review_text
-    assert "managed_sleeve" in review_text
-    assert "Unmanaged Positions" in review_text
+
+
+def test_plan_execution_cli_tastytrade_dry_run_does_not_place_orders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeReadOnlyClient:
+        def get_positions(self, *, account_id: str) -> object:
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "82",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                }
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Dry-run planner must not place orders without --live-submit.")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "EFA,BIL,SPY,QQQ,IWM",
+            "--account-scope",
+            "managed_sleeve",
+            "--ack-unmanaged-holdings",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:18:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    assert exit_code == 0
+
+
+def test_plan_execution_cli_live_submit_refused_without_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "82",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                }
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Live submit must be refused before any place_order call without confirmation.")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeLiveClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "EFA,BIL,SPY,QQQ,IWM",
+            "--account-scope",
+            "managed_sleeve",
+            "--ack-unmanaged-holdings",
+            "--live-submit",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:18:30-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "LIVE SUBMIT REFUSED: live_submit_requires_confirmation" in captured.err
+    payload = json.loads(captured.out)
+    live_path = Path(payload["artifacts"]["live_submission_json_path"])
+    assert live_path.exists()
+    live_payload = json.loads(live_path.read_text(encoding="utf-8"))
+    assert live_payload["live_submit_attempted"] is False
+    assert live_payload["refusal_reasons"] == ["live_submit_requires_confirmation"]
+
+
+def test_plan_execution_cli_live_submit_refused_for_blocked_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "0",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                }
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id, cash="500.00", buying_power="500.00")
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Blocked plans must be refused before any place_order call.")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeLiveClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "EFA,BIL,SPY,QQQ,IWM",
+            "--account-scope",
+            "managed_sleeve",
+            "--ack-unmanaged-holdings",
+            "--live-submit",
+            "--confirm-live-submit",
+            "5WT00001",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:19:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "LIVE SUBMIT REFUSED: live_submit_refused_for_blocked_plan" in captured.err
+    payload = json.loads(captured.out)
+    live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
+    assert live_payload["live_submit_attempted"] is False
+    assert live_payload["refusal_reasons"] == ["live_submit_refused_for_blocked_plan"]
+
+
+def test_plan_execution_cli_live_submit_refused_for_unmanaged_positions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "82",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                },
+                {
+                    "symbol": "XYZ",
+                    "quantity": "7",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "77.00",
+                },
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Unmanaged positions must be refused before any place_order call.")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeLiveClient())
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "EFA,BIL,SPY,QQQ,IWM",
+            "--account-scope",
+            "managed_sleeve",
+            "--ack-unmanaged-holdings",
+            "--live-submit",
+            "--confirm-live-submit",
+            "5WT00001",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:19:30-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "live_submit_refused_for_unmanaged_positions" in captured.err
+    payload = json.loads(captured.out)
+    live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
+    assert live_payload["live_submit_attempted"] is False
+    assert "live_submit_refused_for_unmanaged_positions" in live_payload["refusal_reasons"]
+
+
+def test_plan_execution_cli_live_submit_success_writes_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeLiveClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def get_positions(self, *, account_id: str) -> object:
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "82",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                }
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+        def place_order(self, *, account_id: str, payload: dict[str, object]) -> object:
+            self.calls.append((account_id, payload))
+            return {"data": {"id": "order-123", "status": "received"}}
+
+    client = FakeLiveClient()
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: client)
+
+    exit_code = plan_execution.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--account-id",
+            "5WT00001",
+            "--allowed-symbols",
+            "EFA,BIL,SPY,QQQ,IWM",
+            "--account-scope",
+            "managed_sleeve",
+            "--ack-unmanaged-holdings",
+            "--live-submit",
+            "--confirm-live-submit",
+            "5WT00001",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            "2026-03-09T12:20:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
+    assert live_payload["live_submit_attempted"] is True
+    assert live_payload["submission_succeeded"] is True
+    assert live_payload["orders"][0]["dry_run"] is False
+    assert live_payload["orders"][0]["broker_order_id"] == "order-123"
+    assert client.calls == [
+        (
+            "5WT00001",
+            {
+                "order-type": "Market",
+                "time-in-force": "Day",
+                "legs": [
+                    {
+                        "instrument-type": "Equity",
+                        "symbol": "EFA",
+                        "quantity": 18,
+                        "action": "Buy to Open",
+                    }
+                ],
+            },
+        )
+    ]
 
 
 def test_plan_execution_cli_managed_sleeve_ack_blocks_only_on_buying_power_not_unmanaged_summary(

@@ -3,13 +3,40 @@ from __future__ import annotations
 import getpass
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 import sys
 from typing import Any, Protocol
 
 import requests
 
-from trading_codex.execution.models import BrokerPosition, BrokerSnapshot
+from trading_codex.execution.models import (
+    ExecutionPlan,
+    BrokerPosition,
+    BrokerSnapshot,
+    LiveSubmissionExport,
+    LiveSubmittedOrder,
+    SimulatedOrderRequest,
+    SimulatedSubmissionExport,
+)
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
+
+
+LIVE_SUPPORTED_SIDES = {"BUY", "SELL"}
+LIVE_SUPPORTED_CLASSIFICATIONS = {"BUY", "SELL", "RESIZE_BUY", "RESIZE_SELL", "EXIT"}
+LIVE_SUPPORTED_INSTRUMENT_TYPE = "Equity"
+LIVE_SUPPORTED_ORDER_TYPE = "MARKET"
+LIVE_SUPPORTED_TIME_IN_FORCE = "DAY"
+
+
+def _chicago_now() -> datetime:
+    if ZoneInfo is not None:
+        return datetime.now(ZoneInfo("America/Chicago")).replace(microsecond=0)
+    return datetime.now().replace(microsecond=0)
 
 
 def _coerce_int_like(value: object, *, field_name: str) -> int:
@@ -357,6 +384,227 @@ def parse_broker_snapshot(raw: Any) -> BrokerSnapshot:
     )
 
 
+def _scoped_positions_payload(items: list[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "classification_reason": item.classification_reason,
+            "instrument_type": item.instrument_type,
+            "price": item.price,
+            "scope_symbol": item.scope_symbol,
+            "shares": item.shares,
+            "symbol": item.symbol,
+            "underlying_symbol": item.underlying_symbol,
+        }
+        for item in items
+    ]
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    return sorted({item for item in items if item})
+
+
+def _refusal_orders_from_simulated(export: SimulatedSubmissionExport, *, error: str) -> list[LiveSubmittedOrder]:
+    return [
+        LiveSubmittedOrder(
+            submitted_at_chicago=None,
+            account_id=order.account_id,
+            broker_name=order.broker_name,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            instrument_type=order.instrument_type,
+            order_type=order.order_type,
+            time_in_force=order.time_in_force,
+            strategy=order.strategy,
+            event_id=order.event_id,
+            reference_price=order.reference_price,
+            estimated_notional=order.estimated_notional,
+            classification=order.classification,
+            dry_run=True,
+            attempted=False,
+            succeeded=False,
+            broker_order_id=None,
+            broker_status=None,
+            broker_response=None,
+            error=error,
+        )
+        for order in export.orders
+    ]
+
+
+def build_live_submission_refusal_from_plan(
+    *,
+    plan: ExecutionPlan,
+    refusal_reasons: list[str],
+) -> LiveSubmissionExport:
+    rendered_reasons = _dedupe_strings(refusal_reasons)
+    return LiveSubmissionExport(
+        generated_at_chicago=_chicago_now().isoformat(),
+        dry_run=True,
+        live_submit_requested=True,
+        live_submit_attempted=False,
+        submission_succeeded=False,
+        source_kind=plan.source_kind,
+        source_label=plan.source_label,
+        source_ref=plan.source_ref,
+        broker_name=plan.broker_snapshot.broker_name,
+        account_id=plan.broker_snapshot.account_id,
+        broker_source_ref=plan.broker_source_ref,
+        account_scope=plan.account_scope,
+        plan_math_scope=plan.plan_math_scope,
+        sizing=plan.sizing,
+        managed_symbols_universe=list(plan.managed_symbols_universe),
+        blockers=list(plan.blockers),
+        warnings=list(plan.warnings),
+        unmanaged_holdings_acknowledged=plan.unmanaged_holdings_acknowledged,
+        unmanaged_positions_count=len(plan.unmanaged_positions),
+        unmanaged_positions_summary=list(plan.unmanaged_positions),
+        refusal_reasons=rendered_reasons,
+        orders=[],
+    )
+
+
+def _build_live_submission_refusal_from_simulated(
+    *,
+    export: SimulatedSubmissionExport,
+    refusal_reasons: list[str],
+) -> LiveSubmissionExport:
+    rendered_reasons = _dedupe_strings(refusal_reasons)
+    error = "; ".join(rendered_reasons) if rendered_reasons else "live submission refused"
+    return LiveSubmissionExport(
+        generated_at_chicago=_chicago_now().isoformat(),
+        dry_run=True,
+        live_submit_requested=True,
+        live_submit_attempted=False,
+        submission_succeeded=False,
+        source_kind=export.source_kind,
+        source_label=export.source_label,
+        source_ref=export.source_ref,
+        broker_name=export.broker_name,
+        account_id=export.account_id,
+        broker_source_ref=export.broker_source_ref,
+        account_scope=export.account_scope,
+        plan_math_scope=export.plan_math_scope,
+        sizing=export.sizing,
+        managed_symbols_universe=list(export.managed_symbols_universe),
+        blockers=list(export.blockers),
+        warnings=list(export.warnings),
+        unmanaged_holdings_acknowledged=export.unmanaged_holdings_acknowledged,
+        unmanaged_positions_count=export.unmanaged_positions_count,
+        unmanaged_positions_summary=list(export.unmanaged_positions_summary),
+        refusal_reasons=rendered_reasons,
+        orders=_refusal_orders_from_simulated(export, error=error),
+    )
+
+
+def _live_refusal_reasons(
+    *,
+    export: SimulatedSubmissionExport,
+    expected_account_id: str,
+    allowed_symbols: set[str],
+) -> list[str]:
+    reasons: list[str] = []
+    allowed_symbol_set = {symbol.upper() for symbol in allowed_symbols}
+
+    if export.broker_name != "tastytrade":
+        reasons.append("live_submit_requires_tastytrade_broker")
+    if export.account_scope != "managed_sleeve":
+        reasons.append("live_submit_requires_managed_sleeve_scope")
+    if export.blockers:
+        reasons.append("live_submit_refused_for_blocked_plan")
+    if export.unmanaged_positions_count > 0:
+        reasons.append("live_submit_refused_for_unmanaged_positions")
+    if not export.account_id:
+        reasons.append("live_submit_requires_account_id")
+    elif export.account_id != expected_account_id:
+        reasons.append("live_submit_confirmation_account_mismatch")
+    if not allowed_symbol_set:
+        reasons.append("live_submit_requires_allowed_symbols")
+    if not export.orders:
+        reasons.append("live_submit_requires_actionable_orders")
+
+    for order in export.orders:
+        if order.side not in LIVE_SUPPORTED_SIDES:
+            reasons.append(f"live_submit_unsupported_side:{order.symbol}:{order.side}")
+        if order.classification not in LIVE_SUPPORTED_CLASSIFICATIONS:
+            reasons.append(f"live_submit_unsupported_classification:{order.symbol}:{order.classification}")
+        if order.instrument_type != LIVE_SUPPORTED_INSTRUMENT_TYPE:
+            reasons.append(f"live_submit_unsupported_instrument_type:{order.symbol}:{order.instrument_type}")
+        if order.symbol.upper() not in allowed_symbol_set:
+            reasons.append(f"live_submit_symbol_outside_allowed_universe:{order.symbol}")
+        if not isinstance(order.quantity, int) or order.quantity <= 0:
+            reasons.append(f"live_submit_invalid_quantity:{order.symbol}:{order.quantity}")
+        if order.order_type != LIVE_SUPPORTED_ORDER_TYPE:
+            reasons.append(f"live_submit_unsupported_order_type:{order.symbol}:{order.order_type}")
+        if order.time_in_force != LIVE_SUPPORTED_TIME_IN_FORCE:
+            reasons.append(f"live_submit_unsupported_time_in_force:{order.symbol}:{order.time_in_force}")
+
+    return _dedupe_strings(reasons)
+
+
+def _tastytrade_equity_order_payload(order: SimulatedOrderRequest) -> dict[str, Any]:
+    action = "Buy to Open" if order.side == "BUY" else "Sell to Close"
+    return {
+        "order-type": "Market",
+        "time-in-force": "Day",
+        "legs": [
+            {
+                "instrument-type": "Equity",
+                "symbol": order.symbol,
+                "quantity": order.quantity,
+                "action": action,
+            }
+        ],
+    }
+
+
+def _normalize_tastytrade_order_submission(
+    *,
+    order: SimulatedOrderRequest,
+    payload: Any,
+    submitted_at_chicago: str,
+) -> LiveSubmittedOrder:
+    data = _extract_tastytrade_data_object(payload, endpoint="/accounts/{account_id}/orders")
+    order_id = None
+    for key in ("id", "order-id", "order_id"):
+        raw_value = data.get(key)
+        if raw_value is not None and str(raw_value).strip():
+            order_id = str(raw_value).strip()
+            break
+    status = None
+    for key in ("status", "order-status", "order_status"):
+        raw_value = data.get(key)
+        if raw_value is not None and str(raw_value).strip():
+            status = str(raw_value).strip()
+            break
+    if order_id is None and status is None:
+        raise ValueError("Tastytrade order submission response must include an order id or status.")
+
+    return LiveSubmittedOrder(
+        submitted_at_chicago=submitted_at_chicago,
+        account_id=order.account_id,
+        broker_name=order.broker_name,
+        symbol=order.symbol,
+        side=order.side,
+        quantity=order.quantity,
+        instrument_type=order.instrument_type,
+        order_type=order.order_type,
+        time_in_force=order.time_in_force,
+        strategy=order.strategy,
+        event_id=order.event_id,
+        reference_price=order.reference_price,
+        estimated_notional=order.estimated_notional,
+        classification=order.classification,
+        dry_run=False,
+        attempted=True,
+        succeeded=True,
+        broker_order_id=order_id,
+        broker_status=status,
+        broker_response=data,
+        error=None,
+    )
+
+
 class BrokerPositionAdapter(Protocol):
     def load_snapshot(self) -> BrokerSnapshot:
         ...
@@ -367,6 +615,11 @@ class TastytradeHttpClient(Protocol):
         ...
 
     def get_positions(self, *, account_id: str) -> Any:
+        ...
+
+
+class TastytradeOrderSubmitCapableClient(TastytradeHttpClient, Protocol):
+    def place_order(self, *, account_id: str, payload: dict[str, Any]) -> Any:
         ...
 
 
@@ -578,6 +831,9 @@ class RequestsTastytradeHttpClient:
     def get_positions(self, *, account_id: str) -> Any:
         return self._request_json("GET", f"/accounts/{account_id}/positions")
 
+    def place_order(self, *, account_id: str, payload: dict[str, Any]) -> Any:
+        return self._request_json("POST", f"/accounts/{account_id}/orders", json_payload=payload)
+
 
 class FileBrokerPositionAdapter:
     def __init__(self, path: Path) -> None:
@@ -600,4 +856,98 @@ class TastytradeBrokerPositionAdapter:
             account_id=self.account_id,
             positions_payload=positions_payload,
             balances_payload=balances_payload,
+        )
+
+
+class TastytradeBrokerExecutionAdapter(TastytradeBrokerPositionAdapter):
+    client: TastytradeHttpClient
+
+    def __init__(self, *, account_id: str, client: TastytradeHttpClient | None = None) -> None:
+        super().__init__(account_id=account_id, client=client)
+
+    def submit_live_orders(
+        self,
+        *,
+        export: SimulatedSubmissionExport,
+        confirm_account_id: str,
+        allowed_symbols: set[str],
+    ) -> LiveSubmissionExport:
+        refusal_reasons = _live_refusal_reasons(
+            export=export,
+            expected_account_id=_coerce_non_empty_string(confirm_account_id, field_name="confirm_account_id"),
+            allowed_symbols=allowed_symbols,
+        )
+        place_order = getattr(self.client, "place_order", None)
+        if not callable(place_order):
+            refusal_reasons.append("broker_adapter_not_live_submit_capable")
+        refusal_reasons = _dedupe_strings(refusal_reasons)
+        if refusal_reasons:
+            return _build_live_submission_refusal_from_simulated(export=export, refusal_reasons=refusal_reasons)
+
+        submitted_orders: list[LiveSubmittedOrder] = []
+        submission_succeeded = True
+        for order in export.orders:
+            submitted_at = _chicago_now().isoformat()
+            request_payload = _tastytrade_equity_order_payload(order)
+            try:
+                raw_response = place_order(account_id=self.account_id, payload=request_payload)
+                submitted_orders.append(
+                    _normalize_tastytrade_order_submission(
+                        order=order,
+                        payload=raw_response,
+                        submitted_at_chicago=submitted_at,
+                    )
+                )
+            except Exception as exc:
+                submission_succeeded = False
+                submitted_orders.append(
+                    LiveSubmittedOrder(
+                        submitted_at_chicago=submitted_at,
+                        account_id=order.account_id,
+                        broker_name=order.broker_name,
+                        symbol=order.symbol,
+                        side=order.side,
+                        quantity=order.quantity,
+                        instrument_type=order.instrument_type,
+                        order_type=order.order_type,
+                        time_in_force=order.time_in_force,
+                        strategy=order.strategy,
+                        event_id=order.event_id,
+                        reference_price=order.reference_price,
+                        estimated_notional=order.estimated_notional,
+                        classification=order.classification,
+                        dry_run=False,
+                        attempted=True,
+                        succeeded=False,
+                        broker_order_id=None,
+                        broker_status=None,
+                        broker_response=None,
+                        error=str(exc),
+                    )
+                )
+                break
+
+        return LiveSubmissionExport(
+            generated_at_chicago=_chicago_now().isoformat(),
+            dry_run=False,
+            live_submit_requested=True,
+            live_submit_attempted=True,
+            submission_succeeded=submission_succeeded and len(submitted_orders) == len(export.orders),
+            source_kind=export.source_kind,
+            source_label=export.source_label,
+            source_ref=export.source_ref,
+            broker_name=export.broker_name,
+            account_id=export.account_id,
+            broker_source_ref=export.broker_source_ref,
+            account_scope=export.account_scope,
+            plan_math_scope=export.plan_math_scope,
+            sizing=export.sizing,
+            managed_symbols_universe=list(export.managed_symbols_universe),
+            blockers=list(export.blockers),
+            warnings=list(export.warnings),
+            unmanaged_holdings_acknowledged=export.unmanaged_holdings_acknowledged,
+            unmanaged_positions_count=export.unmanaged_positions_count,
+            unmanaged_positions_summary=list(export.unmanaged_positions_summary),
+            refusal_reasons=[],
+            orders=submitted_orders,
         )
