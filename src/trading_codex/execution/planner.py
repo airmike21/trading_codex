@@ -10,6 +10,8 @@ from trading_codex.execution.models import (
     BrokerPosition,
     BrokerSnapshot,
     ExecutionPlan,
+    OrderIntent,
+    OrderIntentExport,
     PlanItem,
     ScopedBrokerPosition,
     SignalPayload,
@@ -30,6 +32,13 @@ def _chicago_now() -> datetime:
 
 SUPPORTED_INSTRUMENT_TYPES = {"equity"}
 DERIVATIVE_INSTRUMENT_MARKERS = ("option", "future", "derivative")
+ORDER_INTENT_SIDE_BY_CLASSIFICATION = {
+    "BUY": "BUY",
+    "RESIZE_BUY": "BUY",
+    "SELL": "SELL",
+    "RESIZE_SELL": "SELL",
+    "EXIT": "SELL",
+}
 
 
 def _classify_item(*, signal: SignalPayload, symbol: str, desired: int, current: int) -> str:
@@ -387,4 +396,110 @@ def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | N
         "unmanaged_holdings_acknowledged": plan.unmanaged_holdings_acknowledged,
         "unmanaged_positions": _scoped_positions_payload(plan.unmanaged_positions),
         "warnings": list(plan.warnings),
+    }
+
+
+def build_order_intent_export(plan: ExecutionPlan) -> OrderIntentExport:
+    if plan.blockers:
+        raise ValueError(
+            "Order intent export refused because execution plan has blockers: " + ", ".join(plan.blockers)
+        )
+
+    intents: list[OrderIntent] = []
+    for item in plan.items:
+        side = ORDER_INTENT_SIDE_BY_CLASSIFICATION.get(item.classification)
+        if side is None:
+            continue
+        quantity = abs(item.delta_shares)
+        if quantity <= 0:
+            continue
+        intents.append(
+            OrderIntent(
+                event_id=plan.signal.event_id,
+                strategy=plan.signal.strategy,
+                symbol=item.symbol,
+                side=side,
+                quantity=quantity,
+                reference_price=item.reference_price,
+                estimated_notional=item.estimated_notional,
+                classification=item.classification,
+                current_broker_shares=item.current_broker_shares,
+                desired_target_shares=item.desired_target_shares,
+                blockers=list(item.blockers),
+                warnings=list(item.warnings),
+            )
+        )
+
+    return OrderIntentExport(
+        generated_at_chicago=plan.generated_at_chicago,
+        dry_run=plan.dry_run,
+        source_kind=plan.source_kind,
+        source_label=plan.source_label,
+        source_ref=plan.source_ref,
+        broker_source_ref=plan.broker_source_ref,
+        account_scope=plan.account_scope,
+        plan_math_scope=plan.plan_math_scope,
+        managed_symbols_universe=list(plan.managed_symbols_universe),
+        blockers=list(plan.blockers),
+        warnings=list(plan.warnings),
+        unmanaged_holdings_acknowledged=plan.unmanaged_holdings_acknowledged,
+        unmanaged_positions_count=len(plan.unmanaged_positions),
+        unmanaged_positions_summary=list(plan.unmanaged_positions),
+        intents=intents,
+    )
+
+
+def order_intent_export_to_dict(
+    export: OrderIntentExport,
+    *,
+    artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "account_scope": export.account_scope,
+        "artifacts": artifacts or {},
+        "blockers": list(export.blockers),
+        "broker_source_ref": export.broker_source_ref,
+        "dry_run": export.dry_run,
+        "generated_at_chicago": export.generated_at_chicago,
+        "intents": [
+            {
+                "blockers": list(intent.blockers),
+                "classification": intent.classification,
+                "current_broker_shares": intent.current_broker_shares,
+                "desired_target_shares": intent.desired_target_shares,
+                "estimated_notional": intent.estimated_notional,
+                "event_id": intent.event_id,
+                "quantity": intent.quantity,
+                "reference_price": intent.reference_price,
+                "side": intent.side,
+                "strategy": intent.strategy,
+                "symbol": intent.symbol,
+                "warnings": list(intent.warnings),
+            }
+            for intent in export.intents
+        ],
+        "managed_symbols_universe": list(export.managed_symbols_universe),
+        "plan_math_scope": export.plan_math_scope,
+        "schema_name": "order_intent_export",
+        "schema_version": 1,
+        "source": {
+            "kind": export.source_kind,
+            "label": export.source_label,
+            "ref": export.source_ref,
+        },
+        "unmanaged_holdings_acknowledged": export.unmanaged_holdings_acknowledged,
+        "unmanaged_positions_count": export.unmanaged_positions_count,
+        "unmanaged_positions_summary": [
+            {
+                "classification_reason": position.classification_reason,
+                "instrument_type": position.instrument_type,
+                "price": position.price,
+                "scope_symbol": position.scope_symbol,
+                "shares": position.shares,
+                "symbol": position.symbol,
+                "underlying_symbol": position.underlying_symbol,
+            }
+            for position in export.unmanaged_positions_summary
+        ],
+        "warnings": list(export.warnings),
     }

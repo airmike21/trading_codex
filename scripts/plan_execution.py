@@ -25,10 +25,13 @@ from trading_codex.execution import (
     TastytradeBrokerPositionAdapter,
     build_artifact_paths,
     build_execution_plan,
+    build_order_intent_artifact_path,
+    build_order_intent_export,
     parse_signal_payload,
     render_markdown,
     resolve_timestamp,
     write_artifacts,
+    write_order_intent_artifact,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
 
@@ -248,6 +251,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path.home() / ".trading_codex" / "execution_plans",
         help="Durable dry-run execution plan artifact directory.",
     )
+    parser.add_argument(
+        "--export-order-intents",
+        action="store_true",
+        help="Write a dry-run order-intent export JSON artifact from a clean execution plan. Refused by default when plan blockers exist.",
+    )
     parser.add_argument("--timestamp", type=str, default=None, help="Optional ISO timestamp override for deterministic tests.")
     parser.add_argument("--emit", choices=["text", "json"], default="text", help="Stdout format after writing artifacts.")
     return parser
@@ -333,12 +341,25 @@ def main(argv: list[str] | None = None) -> int:
 
         base_dir = Path(daily_signal._expand_user(str(args.base_dir)))
         artifact_paths = build_artifact_paths(base_dir, timestamp=timestamp, source_label=source_label)
-        json_payload = write_artifacts(plan, artifacts=artifact_paths)
+        extra_artifacts: dict[str, str] | None = None
+        if args.export_order_intents and not plan.blockers:
+            order_intent_artifact_path = build_order_intent_artifact_path(artifact_paths)
+            order_intent_export = build_order_intent_export(plan)
+            write_order_intent_artifact(
+                order_intent_export,
+                path=order_intent_artifact_path,
+                artifacts={"json_path": str(order_intent_artifact_path)},
+            )
+            extra_artifacts = {"order_intents_json_path": str(order_intent_artifact_path)}
+        json_payload = write_artifacts(plan, artifacts=artifact_paths, extra_artifacts=extra_artifacts)
 
         if args.emit == "json":
             print(json.dumps(json_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         else:
             print(render_markdown(plan, artifacts=artifact_paths), end="")
+        if args.export_order_intents and plan.blockers:
+            print(f"[plan_execution] REFUSED ORDER INTENT EXPORT: {_blocked_summary(plan)}", file=sys.stderr)
+            return 2
         if plan.blockers:
             print(f"[plan_execution] BLOCKED: {_blocked_summary(plan)}", file=sys.stderr)
             return 2

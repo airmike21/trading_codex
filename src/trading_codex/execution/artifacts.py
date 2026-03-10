@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from trading_codex.execution.models import ExecutionPlan
-from trading_codex.execution.planner import execution_plan_to_dict
+from trading_codex.execution.models import ExecutionPlan, OrderIntentExport
+from trading_codex.execution.planner import execution_plan_to_dict, order_intent_export_to_dict
 
 try:
     from zoneinfo import ZoneInfo
@@ -69,6 +69,10 @@ def build_artifact_paths(base_dir: Path, *, timestamp: datetime, source_label: s
         json_path=plans_dir / f"{stamp}_{safe_label}_execution_plan.json",
         markdown_path=reviews_dir / f"{stamp}_{safe_label}_execution_plan.md",
     )
+
+
+def build_order_intent_artifact_path(artifacts: ArtifactPaths) -> Path:
+    return artifacts.plans_dir / artifacts.json_path.name.replace("_execution_plan.json", "_order_intents.json")
 
 
 def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
@@ -201,12 +205,30 @@ def _append_csv_log(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> None:
         writer.writerow(row)
 
 
-def write_artifacts(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> dict[str, Any]:
+def write_order_intent_artifact(
+    export: OrderIntentExport,
+    *,
+    path: Path,
+    artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    payload = order_intent_export_to_dict(export, artifacts=artifacts)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def write_artifacts(
+    plan: ExecutionPlan,
+    *,
+    artifacts: ArtifactPaths,
+    extra_artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
     artifact_dict = {
         "csv_log_path": str(artifacts.csv_log_path),
         "json_path": str(artifacts.json_path),
         "markdown_path": str(artifacts.markdown_path),
     }
+    if extra_artifacts:
+        artifact_dict.update(extra_artifacts)
     payload = execution_plan_to_dict(plan, artifacts=artifact_dict)
     artifacts.json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     artifacts.markdown_path.write_text(render_markdown(plan, artifacts=artifacts), encoding="utf-8")

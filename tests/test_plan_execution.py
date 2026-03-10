@@ -667,3 +667,95 @@ def test_plan_execution_cli_loads_tastytrade_secrets_file_and_respects_shell_env
         "username": "shell-user@example.com",
         "password": "file-password",
     }
+
+
+def test_plan_execution_cli_exports_order_intents_for_clean_plan(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 20000.0,
+                "positions": [{"symbol": "EFA", "shares": 82, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:40:00-05:00",
+        "--emit",
+        "json",
+        "--export-order-intents",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    payload = json.loads(proc.stdout)
+    order_intents_path = Path(payload["artifacts"]["order_intents_json_path"])
+    assert order_intents_path.exists()
+
+    export_payload = json.loads(order_intents_path.read_text(encoding="utf-8"))
+    assert export_payload["schema_name"] == "order_intent_export"
+    assert len(export_payload["intents"]) == 1
+    assert export_payload["intents"][0]["side"] == "BUY"
+    assert export_payload["intents"][0]["quantity"] == 18
+
+
+def test_plan_execution_cli_refuses_blocked_order_intent_export_by_default(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 500.0,
+                "positions": [{"symbol": "EFA", "shares": 0, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:41:00-05:00",
+        "--emit",
+        "json",
+        "--export-order-intents",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 2
+    assert "REFUSED ORDER INTENT EXPORT" in proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "order_intents_json_path" not in payload["artifacts"]
+    order_intent_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*_order_intents.json"))
+    assert order_intent_artifacts == []

@@ -7,7 +7,9 @@ import pytest
 from trading_codex.execution import (
     build_artifact_paths,
     build_execution_plan,
+    build_order_intent_export,
     execution_plan_to_dict,
+    order_intent_export_to_dict,
     parse_broker_snapshot,
     parse_signal_payload,
     render_markdown,
@@ -412,3 +414,96 @@ def test_execution_plan_scope_metadata_renders_in_json_and_markdown(tmp_path) ->
     assert "Account scope" in markdown
     assert "Managed Supported Positions" in markdown
     assert "Unmanaged Positions" in markdown
+
+
+def test_order_intent_export_clean_buy_item_exports_one_intent() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(_broker_snapshot())
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="intent_buy",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+    export = build_order_intent_export(plan)
+    payload = order_intent_export_to_dict(export)
+
+    assert payload["schema_name"] == "order_intent_export"
+    assert len(payload["intents"]) == 1
+    assert payload["intents"][0]["side"] == "BUY"
+    assert payload["intents"][0]["quantity"] == 100
+    assert payload["intents"][0]["symbol"] == "EFA"
+
+
+def test_order_intent_export_hold_only_exports_zero_intents() -> None:
+    signal = parse_signal_payload(_signal_payload())
+    broker = parse_broker_snapshot(_broker_snapshot({"symbol": "EFA", "shares": 100, "price": 99.16}))
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="intent_hold",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    export = build_order_intent_export(plan)
+
+    assert export.intents == []
+
+
+def test_order_intent_export_refuses_blocked_plan_by_default() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(_broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16}, buying_power=500.0))
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="intent_blocked",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    with pytest.raises(ValueError, match="Order intent export refused"):
+        build_order_intent_export(plan)
+
+
+def test_order_intent_export_includes_managed_sleeve_metadata_and_unmanaged_summary() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"},
+            {"symbol": "XYZ", "shares": 7, "price": 77.0, "instrument_type": "Equity"},
+        )
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"AAA", "BBB", "CCC", "BIL", "EFA"},
+        ack_unmanaged_holdings=True,
+        source_kind="signal_json_file",
+        source_label="intent_managed_sleeve",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    payload = order_intent_export_to_dict(build_order_intent_export(plan))
+
+    assert payload["account_scope"] == "managed_sleeve"
+    assert payload["plan_math_scope"] == "managed_sleeve_only"
+    assert payload["managed_symbols_universe"] == ["AAA", "BBB", "BIL", "CCC", "EFA"]
+    assert payload["unmanaged_holdings_acknowledged"] is True
+    assert payload["unmanaged_positions_count"] == 1
+    assert payload["unmanaged_positions_summary"][0]["symbol"] == "XYZ"
+    assert [intent["symbol"] for intent in payload["intents"]] == ["EFA"]

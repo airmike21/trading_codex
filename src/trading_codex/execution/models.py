@@ -6,6 +6,7 @@ from typing import Any
 
 PLAN_CLASSIFICATIONS = ("BUY", "SELL", "RESIZE_BUY", "RESIZE_SELL", "HOLD", "EXIT")
 ACCOUNT_SCOPES = ("full_account", "managed_sleeve")
+ORDER_INTENT_SIDES = ("BUY", "SELL")
 
 
 @dataclass(frozen=True)
@@ -97,3 +98,38 @@ class ExecutionPlan:
     net_notional: float
     warnings: list[str]
     blockers: list[str]
+
+
+@dataclass(frozen=True)
+class OrderIntent:
+    event_id: str
+    strategy: str
+    symbol: str
+    side: str
+    quantity: int
+    reference_price: float | None
+    estimated_notional: float | None
+    classification: str
+    current_broker_shares: int
+    desired_target_shares: int
+    blockers: list[str]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class OrderIntentExport:
+    generated_at_chicago: str
+    dry_run: bool
+    source_kind: str
+    source_label: str
+    source_ref: str | None
+    broker_source_ref: str | None
+    account_scope: str
+    plan_math_scope: str
+    managed_symbols_universe: list[str]
+    blockers: list[str]
+    warnings: list[str]
+    unmanaged_holdings_acknowledged: bool
+    unmanaged_positions_count: int
+    unmanaged_positions_summary: list[ScopedBrokerPosition]
+    intents: list[OrderIntent]
