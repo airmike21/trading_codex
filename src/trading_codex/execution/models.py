@@ -36,6 +36,8 @@ class SizingContext:
     mode: str
     baseline_signal_capital: float | None
     capital_input: float | None
+    effective_capital_used: float | None
+    buying_power_cap_applied: bool
     reserve_cash_pct: float
     max_allocation_pct: float
     usable_capital: float | None

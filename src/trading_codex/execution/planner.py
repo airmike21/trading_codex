@@ -175,6 +175,7 @@ def _resolve_desired_positions(
     data_dir: Path | None,
     sizing_mode: str,
     capital_input: float | None,
+    cap_to_buying_power: bool,
     reserve_cash_pct: float,
     max_allocation_pct: float,
     baseline_signal_capital: float,
@@ -190,6 +191,8 @@ def _resolve_desired_positions(
                 mode=sizing_mode,
                 baseline_signal_capital=None,
                 capital_input=None,
+                effective_capital_used=None,
+                buying_power_cap_applied=False,
                 reserve_cash_pct=float(reserve_cash_pct),
                 max_allocation_pct=float(max_allocation_pct),
                 usable_capital=None,
@@ -210,11 +213,24 @@ def _resolve_desired_positions(
         raise ValueError("baseline_signal_capital must be > 0.")
 
     desired_positions = desired_positions_from_signal(signal)
-    usable_capital = round(float(capital_input) * (1.0 - float(reserve_cash_pct)), 2)
+    sizing_warnings: list[str] = []
+    effective_capital = float(capital_input)
+    buying_power_cap_applied = False
+    if cap_to_buying_power:
+        if broker_snapshot.buying_power is None:
+            sizing_warnings.append("buying_power_missing_for_cap_to_buying_power")
+        else:
+            buying_power = float(broker_snapshot.buying_power)
+            effective_capital = min(effective_capital, buying_power)
+            buying_power_cap_applied = effective_capital < float(capital_input)
+    effective_capital = round(effective_capital, 2)
+    usable_capital = round(effective_capital * (1.0 - float(reserve_cash_pct)), 2)
     base_context = {
         "mode": sizing_mode,
         "baseline_signal_capital": float(baseline_signal_capital),
         "capital_input": float(capital_input),
+        "effective_capital_used": effective_capital,
+        "buying_power_cap_applied": buying_power_cap_applied,
         "reserve_cash_pct": float(reserve_cash_pct),
         "max_allocation_pct": float(max_allocation_pct),
         "usable_capital": usable_capital,
@@ -227,7 +243,7 @@ def _resolve_desired_positions(
                 applied_allocation_pct=None,
                 **base_context,
             ),
-            [],
+            sizing_warnings,
             [],
         )
     if len(desired_positions) != 1:
@@ -248,7 +264,7 @@ def _resolve_desired_positions(
                 applied_allocation_pct=None,
                 **base_context,
             ),
-            [],
+            sizing_warnings,
             ["capital_sizing_missing_reference_price"],
         )
 
@@ -270,7 +286,7 @@ def _resolve_desired_positions(
             applied_allocation_pct=applied_allocation_pct,
             **base_context,
         ),
-        [],
+        sizing_warnings,
         blockers,
     )
 
@@ -290,6 +306,7 @@ def build_execution_plan(
     generated_at: datetime | None = None,
     sizing_mode: str = "signal_target_shares",
     capital_input: float | None = None,
+    cap_to_buying_power: bool = False,
     reserve_cash_pct: float = 0.0,
     max_allocation_pct: float = 1.0,
     baseline_signal_capital: float = DEFAULT_SIGNAL_CAPITAL_BASE,
@@ -303,6 +320,7 @@ def build_execution_plan(
         data_dir=data_dir,
         sizing_mode=sizing_mode,
         capital_input=capital_input,
+        cap_to_buying_power=cap_to_buying_power,
         reserve_cash_pct=reserve_cash_pct,
         max_allocation_pct=max_allocation_pct,
         baseline_signal_capital=baseline_signal_capital,
@@ -441,6 +459,21 @@ def build_execution_plan(
     )
 
 
+def _sizing_payload(sizing: SizingContext) -> dict[str, Any]:
+    return {
+        "applied_allocation_pct": sizing.applied_allocation_pct,
+        "baseline_signal_capital": sizing.baseline_signal_capital,
+        "buying_power_cap_applied": sizing.buying_power_cap_applied,
+        "capital_input": sizing.capital_input,
+        "effective_capital_used": sizing.effective_capital_used,
+        "inferred_signal_allocation_pct": sizing.inferred_signal_allocation_pct,
+        "max_allocation_pct": sizing.max_allocation_pct,
+        "mode": sizing.mode,
+        "reserve_cash_pct": sizing.reserve_cash_pct,
+        "usable_capital": sizing.usable_capital,
+    }
+
+
 def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | None = None) -> dict[str, Any]:
     def _scoped_positions_payload(items: list[ScopedBrokerPosition]) -> list[dict[str, Any]]:
         return [
@@ -479,16 +512,7 @@ def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | N
         },
         "dry_run": plan.dry_run,
         "generated_at_chicago": plan.generated_at_chicago,
-        "sizing": {
-            "applied_allocation_pct": plan.sizing.applied_allocation_pct,
-            "baseline_signal_capital": plan.sizing.baseline_signal_capital,
-            "capital_input": plan.sizing.capital_input,
-            "inferred_signal_allocation_pct": plan.sizing.inferred_signal_allocation_pct,
-            "max_allocation_pct": plan.sizing.max_allocation_pct,
-            "mode": plan.sizing.mode,
-            "reserve_cash_pct": plan.sizing.reserve_cash_pct,
-            "usable_capital": plan.sizing.usable_capital,
-        },
+        "sizing": _sizing_payload(plan.sizing),
         "managed_supported_positions": _scoped_positions_payload(plan.managed_supported_positions),
         "managed_symbols_universe": list(plan.managed_symbols_universe),
         "managed_unsupported_positions": _scoped_positions_payload(plan.managed_unsupported_positions),
@@ -669,16 +693,7 @@ def order_intent_export_to_dict(
         "plan_math_scope": export.plan_math_scope,
         "schema_name": "order_intent_export",
         "schema_version": 1,
-        "sizing": {
-            "applied_allocation_pct": export.sizing.applied_allocation_pct,
-            "baseline_signal_capital": export.sizing.baseline_signal_capital,
-            "capital_input": export.sizing.capital_input,
-            "inferred_signal_allocation_pct": export.sizing.inferred_signal_allocation_pct,
-            "max_allocation_pct": export.sizing.max_allocation_pct,
-            "mode": export.sizing.mode,
-            "reserve_cash_pct": export.sizing.reserve_cash_pct,
-            "usable_capital": export.sizing.usable_capital,
-        },
+        "sizing": _sizing_payload(export.sizing),
         "source": {
             "kind": export.source_kind,
             "label": export.source_label,
@@ -739,16 +754,7 @@ def simulated_submission_export_to_dict(
         "plan_math_scope": export.plan_math_scope,
         "schema_name": "simulated_submission_export",
         "schema_version": 1,
-        "sizing": {
-            "applied_allocation_pct": export.sizing.applied_allocation_pct,
-            "baseline_signal_capital": export.sizing.baseline_signal_capital,
-            "capital_input": export.sizing.capital_input,
-            "inferred_signal_allocation_pct": export.sizing.inferred_signal_allocation_pct,
-            "max_allocation_pct": export.sizing.max_allocation_pct,
-            "mode": export.sizing.mode,
-            "reserve_cash_pct": export.sizing.reserve_cash_pct,
-            "usable_capital": export.sizing.usable_capital,
-        },
+        "sizing": _sizing_payload(export.sizing),
         "source": {
             "kind": export.source_kind,
             "label": export.source_label,

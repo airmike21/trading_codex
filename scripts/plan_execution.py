@@ -309,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional cap on allocation percent when capital sizing is enabled (default: 1.0).",
     )
     parser.add_argument(
+        "--cap-to-buying-power",
+        action="store_true",
+        help="For capital-based sizing only, cap configured capital to the current broker buying power when available.",
+    )
+    parser.add_argument(
         "--export-order-intents",
         action="store_true",
         help="Write a dry-run order-intent export JSON artifact from a clean execution plan. Refused by default when plan blockers exist.",
@@ -407,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
             generated_at=timestamp,
             sizing_mode=sizing_mode,
             capital_input=capital_input,
+            cap_to_buying_power=args.cap_to_buying_power,
             reserve_cash_pct=float(args.reserve_cash_pct),
             max_allocation_pct=float(args.max_allocation_pct),
         )

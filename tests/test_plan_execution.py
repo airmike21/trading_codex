@@ -764,6 +764,9 @@ def test_plan_execution_cli_exports_simulated_orders_for_clean_capital_sized_pla
     assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
     payload = json.loads(proc.stdout)
     assert payload["sizing"]["mode"] == "sleeve_capital"
+    assert payload["sizing"]["capital_input"] == 5000.0
+    assert payload["sizing"]["effective_capital_used"] == 5000.0
+    assert payload["sizing"]["buying_power_cap_applied"] is False
     assert payload["sizing"]["usable_capital"] == 5000.0
     assert payload["items"][0]["desired_target_shares"] == 50
     assert payload["items"][0]["delta_shares"] == 18
@@ -776,6 +779,65 @@ def test_plan_execution_cli_exports_simulated_orders_for_clean_capital_sized_pla
     assert simulated_payload["orders"][0]["symbol"] == "EFA"
     assert simulated_payload["orders"][0]["side"] == "BUY"
     assert simulated_payload["orders"][0]["quantity"] == 18
+
+
+def test_plan_execution_cli_caps_capital_sizing_to_buying_power_for_clean_plan(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 2455.99,
+                "positions": [{"symbol": "EFA", "shares": 10, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:40:45-05:00",
+        "--emit",
+        "json",
+        "--sleeve-capital",
+        "5000",
+        "--cap-to-buying-power",
+        "--export-simulated-orders",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    payload = json.loads(proc.stdout)
+    assert payload["sizing"]["mode"] == "sleeve_capital"
+    assert payload["sizing"]["capital_input"] == 5000.0
+    assert payload["sizing"]["effective_capital_used"] == 2455.99
+    assert payload["sizing"]["buying_power_cap_applied"] is True
+    assert payload["sizing"]["usable_capital"] == 2455.99
+    assert payload["items"][0]["desired_target_shares"] == 24
+    assert payload["items"][0]["delta_shares"] == 14
+    simulated_path = Path(payload["artifacts"]["simulated_order_requests_path"])
+    assert simulated_path.exists()
+
+    simulated_payload = json.loads(simulated_path.read_text(encoding="utf-8"))
+    assert simulated_payload["sizing"]["effective_capital_used"] == 2455.99
+    assert simulated_payload["sizing"]["buying_power_cap_applied"] is True
+    assert simulated_payload["orders"][0]["symbol"] == "EFA"
+    assert simulated_payload["orders"][0]["side"] == "BUY"
+    assert simulated_payload["orders"][0]["quantity"] == 14
 
 
 def test_plan_execution_cli_refuses_blocked_order_intent_export_by_default(tmp_path: Path) -> None:
@@ -872,6 +934,56 @@ def test_plan_execution_cli_refuses_simulated_orders_for_insufficient_capital(tm
     assert "order_intents_json_path" not in payload["artifacts"]
     simulated_artifacts = list((base_dir / "plans" / "2026-03-09").glob("*_simulated_order_requests.json"))
     assert simulated_artifacts == []
+
+
+def test_plan_execution_cli_refuses_hybrid_sized_simulated_orders_when_buying_power_cap_is_too_small(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            {
+                "broker_name": "mock",
+                "account_id": "paper-1",
+                "buying_power": 50.0,
+                "positions": [{"symbol": "EFA", "shares": 0, "price": 99.16}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "execution_plans"
+
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "plan_execution.py"),
+        "--signal-json-file",
+        str(signal_path),
+        "--positions-file",
+        str(positions_path),
+        "--base-dir",
+        str(base_dir),
+        "--timestamp",
+        "2026-03-09T12:41:45-05:00",
+        "--emit",
+        "json",
+        "--sleeve-capital",
+        "5000",
+        "--cap-to-buying-power",
+        "--export-simulated-orders",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+
+    assert proc.returncode == 2, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    assert "capital sizing yields zero affordable shares" in proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["sizing"]["capital_input"] == 5000.0
+    assert payload["sizing"]["effective_capital_used"] == 50.0
+    assert payload["sizing"]["buying_power_cap_applied"] is True
+    assert payload["blockers"] == ["capital_sizing_yields_zero_shares"]
+    assert payload["items"] == []
+    assert "simulated_order_requests_path" not in payload["artifacts"]
 
 
 def test_plan_execution_cli_exports_manual_ticket_csv_for_clean_plan(tmp_path: Path) -> None:

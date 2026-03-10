@@ -223,10 +223,65 @@ def test_execution_plan_sleeve_capital_scales_target_shares_from_capital() -> No
     )
 
     assert plan.sizing.mode == "sleeve_capital"
+    assert plan.sizing.capital_input == 5_000.0
+    assert plan.sizing.effective_capital_used == 5_000.0
+    assert plan.sizing.buying_power_cap_applied is False
     assert plan.sizing.usable_capital == 5_000.0
     assert plan.items[0].desired_target_shares == 50
     assert plan.items[0].delta_shares == 50
     assert plan.blockers == []
+
+
+def test_execution_plan_cap_to_buying_power_uses_lower_effective_capital() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(
+        _broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16}, buying_power=2_455.99)
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="cap_to_bp",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+        sizing_mode="sleeve_capital",
+        capital_input=5_000.0,
+        cap_to_buying_power=True,
+    )
+
+    assert plan.sizing.capital_input == 5_000.0
+    assert plan.sizing.effective_capital_used == 2_455.99
+    assert plan.sizing.buying_power_cap_applied is True
+    assert plan.sizing.usable_capital == 2_455.99
+    assert plan.items[0].desired_target_shares == 24
+    assert plan.items[0].delta_shares == 24
+    assert plan.blockers == []
+
+
+def test_execution_plan_cap_to_buying_power_warns_when_buying_power_missing() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(_broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16}))
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="cap_to_bp_missing",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+        sizing_mode="sleeve_capital",
+        capital_input=5_000.0,
+        cap_to_buying_power=True,
+    )
+
+    assert plan.sizing.capital_input == 5_000.0
+    assert plan.sizing.effective_capital_used == 5_000.0
+    assert plan.sizing.buying_power_cap_applied is False
+    assert "buying_power_missing_for_cap_to_buying_power" in plan.warnings
+    assert plan.items[0].desired_target_shares == 50
 
 
 def test_execution_plan_capital_sizing_blocks_when_target_is_too_small() -> None:
@@ -245,6 +300,31 @@ def test_execution_plan_capital_sizing_blocks_when_target_is_too_small() -> None
         capital_input=50.0,
     )
 
+    assert plan.items == []
+    assert plan.blockers == ["capital_sizing_yields_zero_shares"]
+
+
+def test_execution_plan_cap_to_buying_power_can_block_when_effective_capital_is_too_small() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(
+        _broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16}, buying_power=50.0)
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="cap_to_bp_too_small",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+        sizing_mode="sleeve_capital",
+        capital_input=5_000.0,
+        cap_to_buying_power=True,
+    )
+
+    assert plan.sizing.effective_capital_used == 50.0
+    assert plan.sizing.buying_power_cap_applied is True
     assert plan.items == []
     assert plan.blockers == ["capital_sizing_yields_zero_shares"]
 
@@ -478,6 +558,8 @@ def test_execution_plan_scope_metadata_renders_in_json_and_markdown(tmp_path) ->
     assert payload["account_scope"] == "managed_sleeve"
     assert payload["plan_math_scope"] == "managed_sleeve_only"
     assert payload["sizing"]["mode"] == "signal_target_shares"
+    assert payload["sizing"]["effective_capital_used"] is None
+    assert payload["sizing"]["buying_power_cap_applied"] is False
     assert payload["managed_symbols_universe"] == ["AAA", "BBB", "BIL", "CCC", "EFA"]
     assert payload["unmanaged_holdings_acknowledged"] is True
     assert payload["managed_supported_positions"][0]["symbol"] == "EFA"
@@ -574,6 +656,8 @@ def test_order_intent_export_includes_managed_sleeve_metadata_and_unmanaged_summ
 
     assert payload["account_scope"] == "managed_sleeve"
     assert payload["sizing"]["mode"] == "signal_target_shares"
+    assert payload["sizing"]["effective_capital_used"] is None
+    assert payload["sizing"]["buying_power_cap_applied"] is False
     assert payload["plan_math_scope"] == "managed_sleeve_only"
     assert payload["managed_symbols_universe"] == ["AAA", "BBB", "BIL", "CCC", "EFA"]
     assert payload["unmanaged_holdings_acknowledged"] is True
@@ -608,6 +692,40 @@ def test_simulated_submission_export_builds_broker_shaped_payloads() -> None:
     assert payload["orders"][0]["quantity"] == 18
     assert payload["orders"][0]["order_type"] == "MARKET"
     assert payload["orders"][0]["time_in_force"] == "DAY"
+
+
+def test_capital_sized_exports_include_effective_capital_fields() -> None:
+    signal = parse_signal_payload(_signal_payload(action="ENTER"))
+    broker = parse_broker_snapshot(
+        _broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16}, buying_power=2_455.99)
+    )
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        source_kind="signal_json_file",
+        source_label="cap_export",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+        sizing_mode="sleeve_capital",
+        capital_input=5_000.0,
+        cap_to_buying_power=True,
+    )
+
+    plan_payload = execution_plan_to_dict(plan)
+    export_payload = order_intent_export_to_dict(build_order_intent_export(plan))
+    simulated_payload = simulated_submission_export_to_dict(
+        build_simulated_submission_export(build_order_intent_export(plan))
+    )
+
+    assert plan_payload["sizing"]["capital_input"] == 5_000.0
+    assert plan_payload["sizing"]["effective_capital_used"] == 2_455.99
+    assert plan_payload["sizing"]["buying_power_cap_applied"] is True
+    assert export_payload["sizing"]["effective_capital_used"] == 2_455.99
+    assert export_payload["sizing"]["buying_power_cap_applied"] is True
+    assert simulated_payload["sizing"]["effective_capital_used"] == 2_455.99
+    assert simulated_payload["sizing"]["buying_power_cap_applied"] is True
 
 
 def test_manual_order_checklist_renders_from_order_intent_export() -> None:
