@@ -12,6 +12,11 @@ dependencies = [
   "pytest",
 ]
 
+[project.optional-dependencies]
+dashboard = [
+  "streamlit",
+]
+
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
