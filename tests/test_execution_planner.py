@@ -564,7 +564,10 @@ def test_execution_plan_scope_metadata_renders_in_json_and_markdown(tmp_path) ->
     assert payload["unmanaged_holdings_acknowledged"] is True
     assert payload["managed_supported_positions"][0]["symbol"] == "EFA"
     assert payload["unmanaged_positions"][0]["symbol"] == "XYZ"
+    assert payload["plan_sha256"]
+    assert payload["live_submission_preview"]["broker"] == "mock"
     assert "Account scope" in markdown
+    assert "Plan SHA256" in markdown
     assert "Sizing mode" in markdown
     assert "Managed Supported Positions" in markdown
     assert "Unmanaged Positions" in markdown
@@ -695,6 +698,43 @@ def test_simulated_submission_export_builds_broker_shaped_payloads() -> None:
     assert payload["orders"][0]["time_in_force"] == "DAY"
 
 
+def test_plan_sha256_stays_consistent_across_dry_run_exports() -> None:
+    signal = parse_signal_payload(_signal_payload(action="RESIZE", resize_new_shares=100))
+    broker = parse_broker_snapshot(_broker_snapshot({"symbol": "EFA", "shares": 82, "price": 99.16}))
+
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"BIL", "EFA", "IWM", "QQQ", "SPY"},
+        ack_unmanaged_holdings=True,
+        source_kind="signal_json_file",
+        source_label="plan_hash",
+        source_ref="signal.json",
+        broker_source_ref="positions.json",
+        data_dir=None,
+    )
+
+    order_export = build_order_intent_export(plan)
+    simulated_export = build_simulated_submission_export(order_export)
+    plan_payload = execution_plan_to_dict(plan)
+    order_payload = order_intent_export_to_dict(order_export)
+    simulated_payload = simulated_submission_export_to_dict(simulated_export)
+
+    assert plan_payload["plan_sha256"] == order_payload["plan_sha256"] == simulated_payload["plan_sha256"]
+    assert plan_payload["live_submission_preview"] == order_payload["live_submission_preview"]
+    assert order_payload["live_submission_preview"] == simulated_payload["live_submission_preview"]
+    assert simulated_payload["live_submission_preview"]["candidate_orders"] == [
+        {
+            "order_type": "MARKET",
+            "qty": 18,
+            "side": "BUY",
+            "symbol": "EFA",
+            "tif": "DAY",
+        }
+    ]
+
+
 def test_capital_sized_exports_include_effective_capital_fields() -> None:
     signal = parse_signal_payload(_signal_payload(action="ENTER"))
     broker = parse_broker_snapshot(
@@ -749,6 +789,7 @@ def test_manual_order_checklist_renders_from_order_intent_export() -> None:
     assert "No orders were placed" in checklist
     assert "BUY 18 EFA" in checklist
     assert "Classification: `RESIZE_BUY`" in checklist
+    assert "Plan SHA256" in checklist
 
 
 def test_manual_ticket_csv_hold_only_writes_header_only(tmp_path) -> None:

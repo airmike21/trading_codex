@@ -151,6 +151,8 @@ class OrderIntentExport:
     unmanaged_holdings_acknowledged: bool
     unmanaged_positions_count: int
     unmanaged_positions_summary: list[ScopedBrokerPosition]
+    plan_preview: dict[str, Any]
+    plan_sha256: str
     intents: list[OrderIntent]
 
 
@@ -192,6 +194,8 @@ class SimulatedSubmissionExport:
     unmanaged_holdings_acknowledged: bool
     unmanaged_positions_count: int
     unmanaged_positions_summary: list[ScopedBrokerPosition]
+    plan_preview: dict[str, Any]
+    plan_sha256: str
     orders: list[SimulatedOrderRequest]
 
 
@@ -244,3 +248,10 @@ class LiveSubmissionExport:
     unmanaged_positions_summary: list[ScopedBrokerPosition]
     refusal_reasons: list[str]
     orders: list[LiveSubmittedOrder]
+    plan_preview: dict[str, Any] | None = None
+    plan_sha256: str | None = None
+    live_submission_fingerprint: str | None = None
+    live_allowed_account: str | None = None
+    live_max_order_notional: float | None = None
+    live_max_order_qty: int | None = None
+    duplicate_submit_refusal: dict[str, Any] | None = None

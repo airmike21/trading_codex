@@ -25,6 +25,8 @@ from trading_codex.execution import (
     TastytradeBrokerExecutionAdapter,
     build_artifact_paths,
     build_live_submission_artifact_path,
+    build_live_submission_ledger_path,
+    build_live_submission_preview,
     build_live_submission_refusal_from_plan,
     build_manual_order_checklist_path,
     build_simulated_submission_artifact_path,
@@ -36,6 +38,7 @@ from trading_codex.execution import (
     parse_signal_payload,
     render_markdown,
     resolve_timestamp,
+    plan_sha256_for_preview,
     write_artifacts,
     write_live_submission_artifact,
     write_manual_order_checklist,
@@ -354,6 +357,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Required live-submit confirmation. Must exactly match the tastytrade account id being submitted.",
     )
+    parser.add_argument(
+        "--live-allowed-account",
+        type=str,
+        default=None,
+        help="Required live-submit account binding. Must exactly match the tastytrade account id being submitted.",
+    )
+    parser.add_argument(
+        "--confirm-plan-sha256",
+        type=str,
+        default=None,
+        help="Required live-submit plan confirmation. Must exactly match the dry-run plan_sha256 being submitted.",
+    )
+    parser.add_argument(
+        "--live-max-order-notional",
+        type=float,
+        default=None,
+        help="Required live-submit-only per-order notional safety cap.",
+    )
+    parser.add_argument(
+        "--live-max-order-qty",
+        type=int,
+        default=None,
+        help="Required live-submit-only per-order quantity safety cap.",
+    )
     parser.add_argument("--timestamp", type=str, default=None, help="Optional ISO timestamp override for deterministic tests.")
     parser.add_argument("--emit", choices=["text", "json"], default="text", help="Stdout format after writing artifacts.")
     return parser
@@ -372,6 +399,18 @@ def main(argv: list[str] | None = None) -> int:
         preset: daily_signal.Preset | None = None
         if args.confirm_live_submit and not args.live_submit:
             raise ValueError("--confirm-live-submit requires --live-submit.")
+        if args.live_allowed_account and not args.live_submit:
+            raise ValueError("--live-allowed-account requires --live-submit.")
+        if args.confirm_plan_sha256 and not args.live_submit:
+            raise ValueError("--confirm-plan-sha256 requires --live-submit.")
+        if args.live_max_order_notional is not None and not args.live_submit:
+            raise ValueError("--live-max-order-notional requires --live-submit.")
+        if args.live_max_order_qty is not None and not args.live_submit:
+            raise ValueError("--live-max-order-qty requires --live-submit.")
+        if args.live_max_order_notional is not None and args.live_max_order_notional <= 0:
+            raise ValueError("--live-max-order-notional must be > 0.")
+        if args.live_max_order_qty is not None and args.live_max_order_qty <= 0:
+            raise ValueError("--live-max-order-qty must be > 0.")
         if args.account_scope == "full_account" and args.ack_unmanaged_holdings:
             raise ValueError("--ack-unmanaged-holdings can only be used with --account-scope managed_sleeve.")
 
@@ -444,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
             reserve_cash_pct=float(args.reserve_cash_pct),
             max_allocation_pct=float(args.max_allocation_pct),
         )
+        plan_preview = build_live_submission_preview(plan)
+        plan_sha256 = plan_sha256_for_preview(plan_preview)
 
         base_dir = Path(daily_signal._expand_user(str(args.base_dir)))
         artifact_paths = build_artifact_paths(base_dir, timestamp=timestamp, source_label=source_label)
@@ -494,36 +535,108 @@ def main(argv: list[str] | None = None) -> int:
         live_submission_export = None
         if args.live_submit:
             live_submission_path = build_live_submission_artifact_path(artifact_paths)
+            live_submission_ledger_path = build_live_submission_ledger_path(artifact_paths)
             if plan.blockers:
                 live_submission_export = build_live_submission_refusal_from_plan(
                     plan=plan,
                     refusal_reasons=["live_submit_refused_for_blocked_plan"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
                 )
             elif args.confirm_live_submit is None:
                 live_submission_export = build_live_submission_refusal_from_plan(
                     plan=plan,
                     refusal_reasons=["live_submit_requires_confirmation"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
+                )
+            elif args.live_allowed_account is None:
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_requires_live_allowed_account"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
+                )
+            elif args.confirm_plan_sha256 is None:
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_requires_confirm_plan_sha256"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
+                )
+            elif args.live_max_order_notional is None:
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_requires_live_max_order_notional"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
+                )
+            elif args.live_max_order_qty is None:
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=["live_submit_requires_live_max_order_qty"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
                 )
             elif args.broker != "tastytrade":
                 live_submission_export = build_live_submission_refusal_from_plan(
                     plan=plan,
                     refusal_reasons=["live_submit_requires_tastytrade_broker"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
                 )
             elif simulated_export is None:
                 live_submission_export = build_live_submission_refusal_from_plan(
                     plan=plan,
                     refusal_reasons=["live_submit_requires_simulated_orders"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
                 )
             elif not hasattr(broker_adapter, "submit_live_orders"):
                 live_submission_export = build_live_submission_refusal_from_plan(
                     plan=plan,
                     refusal_reasons=["broker_adapter_not_live_submit_capable"],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
+                    live_allowed_account=args.live_allowed_account,
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
                 )
             else:
                 live_submission_export = broker_adapter.submit_live_orders(
                     export=simulated_export,
                     confirm_account_id=args.confirm_live_submit,
+                    live_allowed_account=args.live_allowed_account,
+                    confirm_plan_sha256=args.confirm_plan_sha256,
                     allowed_symbols=managed_symbols or set(),
+                    live_max_order_notional=args.live_max_order_notional,
+                    live_max_order_qty=args.live_max_order_qty,
+                    ledger_path=live_submission_ledger_path,
+                    live_submission_artifact_path=live_submission_path,
                 )
             write_live_submission_artifact(
                 live_submission_export,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -403,6 +404,56 @@ def _dedupe_strings(items: list[str]) -> list[str]:
     return sorted({item for item in items if item})
 
 
+def _stable_sha256(payload: dict[str, Any]) -> str:
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _live_submission_fingerprint(*, broker_account_id: str, plan_sha256: str) -> str:
+    return _stable_sha256(
+        {
+            "broker_account_id": broker_account_id,
+            "plan_sha256": plan_sha256,
+        }
+    )
+
+
+def _load_live_submission_ledger(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    entries: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line_number, raw_line in enumerate(fh, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Live submission ledger is malformed at line {line_number}: {exc}") from exc
+            if not isinstance(entry, dict):
+                raise ValueError(f"Live submission ledger line {line_number} must be a JSON object.")
+            entries.append(entry)
+    return entries
+
+
+def _find_duplicate_live_submission_record(path: Path, *, fingerprint: str) -> dict[str, Any] | None:
+    blocking_results = {"accepted", "submitted"}
+    for entry in reversed(_load_live_submission_ledger(path)):
+        if entry.get("live_submission_fingerprint") != fingerprint:
+            continue
+        if entry.get("result") in blocking_results:
+            return entry
+    return None
+
+
+def _append_live_submission_ledger_record(path: Path, *, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
 def _refusal_orders_from_simulated(export: SimulatedSubmissionExport, *, error: str) -> list[LiveSubmittedOrder]:
     return [
         LiveSubmittedOrder(
@@ -436,6 +487,13 @@ def build_live_submission_refusal_from_plan(
     *,
     plan: ExecutionPlan,
     refusal_reasons: list[str],
+    plan_preview: dict[str, Any] | None = None,
+    plan_sha256: str | None = None,
+    live_submission_fingerprint: str | None = None,
+    live_allowed_account: str | None = None,
+    live_max_order_notional: float | None = None,
+    live_max_order_qty: int | None = None,
+    duplicate_submit_refusal: dict[str, Any] | None = None,
 ) -> LiveSubmissionExport:
     rendered_reasons = _dedupe_strings(refusal_reasons)
     return LiveSubmissionExport(
@@ -461,6 +519,13 @@ def build_live_submission_refusal_from_plan(
         unmanaged_positions_summary=list(plan.unmanaged_positions),
         refusal_reasons=rendered_reasons,
         orders=[],
+        plan_preview=None if plan_preview is None else dict(plan_preview),
+        plan_sha256=plan_sha256,
+        live_submission_fingerprint=live_submission_fingerprint,
+        live_allowed_account=live_allowed_account,
+        live_max_order_notional=live_max_order_notional,
+        live_max_order_qty=live_max_order_qty,
+        duplicate_submit_refusal=duplicate_submit_refusal,
     )
 
 
@@ -468,6 +533,11 @@ def _build_live_submission_refusal_from_simulated(
     *,
     export: SimulatedSubmissionExport,
     refusal_reasons: list[str],
+    live_submission_fingerprint: str | None = None,
+    live_allowed_account: str | None = None,
+    live_max_order_notional: float | None = None,
+    live_max_order_qty: int | None = None,
+    duplicate_submit_refusal: dict[str, Any] | None = None,
 ) -> LiveSubmissionExport:
     rendered_reasons = _dedupe_strings(refusal_reasons)
     error = "; ".join(rendered_reasons) if rendered_reasons else "live submission refused"
@@ -494,14 +564,26 @@ def _build_live_submission_refusal_from_simulated(
         unmanaged_positions_summary=list(export.unmanaged_positions_summary),
         refusal_reasons=rendered_reasons,
         orders=_refusal_orders_from_simulated(export, error=error),
+        plan_preview=dict(export.plan_preview),
+        plan_sha256=export.plan_sha256,
+        live_submission_fingerprint=live_submission_fingerprint,
+        live_allowed_account=live_allowed_account,
+        live_max_order_notional=live_max_order_notional,
+        live_max_order_qty=live_max_order_qty,
+        duplicate_submit_refusal=duplicate_submit_refusal,
     )
 
 
 def _live_refusal_reasons(
     *,
     export: SimulatedSubmissionExport,
-    expected_account_id: str,
+    broker_account_id: str,
+    confirm_account_id: str | None,
+    live_allowed_account: str | None,
+    confirm_plan_sha256: str | None,
     allowed_symbols: set[str],
+    live_max_order_notional: float | None,
+    live_max_order_qty: int | None,
 ) -> list[str]:
     reasons: list[str] = []
     allowed_symbol_set = {symbol.upper() for symbol in allowed_symbols}
@@ -516,10 +598,30 @@ def _live_refusal_reasons(
         reasons.append("live_submit_refused_for_unmanaged_positions")
     if not export.account_id:
         reasons.append("live_submit_requires_account_id")
-    elif export.account_id != expected_account_id:
+    elif export.account_id != broker_account_id:
+        reasons.append("live_submit_broker_account_mismatch")
+    if confirm_account_id is None:
+        reasons.append("live_submit_requires_confirmation")
+    elif export.account_id is not None and confirm_account_id != export.account_id:
         reasons.append("live_submit_confirmation_account_mismatch")
+    if live_allowed_account is None:
+        reasons.append("live_submit_requires_live_allowed_account")
+    elif export.account_id is not None and live_allowed_account != export.account_id:
+        reasons.append("live_submit_live_allowed_account_mismatch")
+    if confirm_plan_sha256 is None:
+        reasons.append("live_submit_requires_confirm_plan_sha256")
+    elif confirm_plan_sha256 != export.plan_sha256:
+        reasons.append("live_submit_plan_sha256_mismatch")
     if not allowed_symbol_set:
         reasons.append("live_submit_requires_allowed_symbols")
+    if live_max_order_notional is None:
+        reasons.append("live_submit_requires_live_max_order_notional")
+    elif live_max_order_notional <= 0:
+        reasons.append("live_submit_invalid_live_max_order_notional")
+    if live_max_order_qty is None:
+        reasons.append("live_submit_requires_live_max_order_qty")
+    elif live_max_order_qty <= 0:
+        reasons.append("live_submit_invalid_live_max_order_qty")
     if not export.orders:
         reasons.append("live_submit_requires_actionable_orders")
 
@@ -532,8 +634,20 @@ def _live_refusal_reasons(
             reasons.append(f"live_submit_unsupported_instrument_type:{order.symbol}:{order.instrument_type}")
         if order.symbol.upper() not in allowed_symbol_set:
             reasons.append(f"live_submit_symbol_outside_allowed_universe:{order.symbol}")
-        if not isinstance(order.quantity, int) or order.quantity <= 0:
+        if not isinstance(order.quantity, int) or isinstance(order.quantity, bool) or order.quantity <= 0:
             reasons.append(f"live_submit_invalid_quantity:{order.symbol}:{order.quantity}")
+        elif live_max_order_qty is not None and live_max_order_qty > 0 and order.quantity > live_max_order_qty:
+            reasons.append(f"live_submit_order_qty_exceeds_cap:{order.symbol}:{order.quantity}:{live_max_order_qty}")
+        if order.estimated_notional is None:
+            reasons.append(f"live_submit_missing_estimated_notional:{order.symbol}")
+        elif (
+            live_max_order_notional is not None
+            and live_max_order_notional > 0
+            and order.estimated_notional > live_max_order_notional
+        ):
+            reasons.append(
+                f"live_submit_order_notional_exceeds_cap:{order.symbol}:{order.estimated_notional:.2f}:{live_max_order_notional:.2f}"
+            )
         if order.order_type != LIVE_SUPPORTED_ORDER_TYPE:
             reasons.append(f"live_submit_unsupported_order_type:{order.symbol}:{order.order_type}")
         if order.time_in_force != LIVE_SUPPORTED_TIME_IN_FORCE:
@@ -603,6 +717,43 @@ def _normalize_tastytrade_order_submission(
         broker_response=data,
         error=None,
     )
+
+
+def _accepted_order_count(orders: list[LiveSubmittedOrder]) -> int:
+    return sum(1 for order in orders if order.succeeded)
+
+
+def _live_submission_result_label(export: LiveSubmissionExport) -> str:
+    accepted_order_count = _accepted_order_count(export.orders)
+    if export.live_submit_attempted and export.submission_succeeded:
+        return "submitted"
+    if accepted_order_count > 0:
+        return "accepted"
+    if export.live_submit_attempted:
+        return "failed_before_acceptance"
+    if "live_submit_duplicate_fingerprint" in export.refusal_reasons:
+        return "refused_duplicate"
+    return "refused"
+
+
+def _live_submission_ledger_record(
+    *,
+    export: LiveSubmissionExport,
+    live_submission_fingerprint: str | None,
+    artifact_path: Path | None,
+) -> dict[str, Any]:
+    return {
+        "accepted_order_count": _accepted_order_count(export.orders),
+        "account_id": export.account_id,
+        "artifact_path": None if artifact_path is None else str(artifact_path),
+        "attempted_order_count": sum(1 for order in export.orders if order.attempted),
+        "broker_name": export.broker_name,
+        "generated_at_chicago": export.generated_at_chicago,
+        "live_submission_fingerprint": live_submission_fingerprint,
+        "plan_sha256": export.plan_sha256,
+        "result": _live_submission_result_label(export),
+        "submission_succeeded": export.submission_succeeded,
+    }
 
 
 class BrokerPositionAdapter(Protocol):
@@ -869,20 +1020,90 @@ class TastytradeBrokerExecutionAdapter(TastytradeBrokerPositionAdapter):
         self,
         *,
         export: SimulatedSubmissionExport,
-        confirm_account_id: str,
+        confirm_account_id: str | None,
+        live_allowed_account: str | None,
+        confirm_plan_sha256: str | None,
         allowed_symbols: set[str],
+        live_max_order_notional: float | None,
+        live_max_order_qty: int | None,
+        ledger_path: Path | None = None,
+        live_submission_artifact_path: Path | None = None,
     ) -> LiveSubmissionExport:
+        normalized_confirm_account_id = (
+            _coerce_non_empty_string(confirm_account_id, field_name="confirm_account_id")
+            if confirm_account_id is not None and confirm_account_id.strip()
+            else None
+        )
+        normalized_live_allowed_account = (
+            _coerce_non_empty_string(live_allowed_account, field_name="live_allowed_account")
+            if live_allowed_account is not None and live_allowed_account.strip()
+            else None
+        )
+        normalized_confirm_plan_sha256 = (
+            _coerce_non_empty_string(confirm_plan_sha256, field_name="confirm_plan_sha256")
+            if confirm_plan_sha256 is not None and confirm_plan_sha256.strip()
+            else None
+        )
+        live_submission_fingerprint = _live_submission_fingerprint(
+            broker_account_id=self.account_id,
+            plan_sha256=export.plan_sha256,
+        )
         refusal_reasons = _live_refusal_reasons(
             export=export,
-            expected_account_id=_coerce_non_empty_string(confirm_account_id, field_name="confirm_account_id"),
+            broker_account_id=self.account_id,
+            confirm_account_id=normalized_confirm_account_id,
+            live_allowed_account=normalized_live_allowed_account,
+            confirm_plan_sha256=normalized_confirm_plan_sha256,
             allowed_symbols=allowed_symbols,
+            live_max_order_notional=live_max_order_notional,
+            live_max_order_qty=live_max_order_qty,
         )
+        duplicate_submit_refusal: dict[str, Any] | None = None
+        if ledger_path is not None:
+            try:
+                duplicate_record = _find_duplicate_live_submission_record(
+                    ledger_path,
+                    fingerprint=live_submission_fingerprint,
+                )
+            except ValueError as exc:
+                refusal_reasons.append("live_submit_duplicate_ledger_unreadable")
+                duplicate_submit_refusal = {
+                    "error": str(exc),
+                    "ledger_path": str(ledger_path),
+                    "live_submission_fingerprint": live_submission_fingerprint,
+                }
+            else:
+                if duplicate_record is not None:
+                    refusal_reasons.append("live_submit_duplicate_fingerprint")
+                    duplicate_submit_refusal = {
+                        "ledger_path": str(ledger_path),
+                        "live_submission_fingerprint": live_submission_fingerprint,
+                        "prior_record": duplicate_record,
+                    }
         place_order = getattr(self.client, "place_order", None)
         if not callable(place_order):
             refusal_reasons.append("broker_adapter_not_live_submit_capable")
         refusal_reasons = _dedupe_strings(refusal_reasons)
         if refusal_reasons:
-            return _build_live_submission_refusal_from_simulated(export=export, refusal_reasons=refusal_reasons)
+            refused_export = _build_live_submission_refusal_from_simulated(
+                export=export,
+                refusal_reasons=refusal_reasons,
+                live_submission_fingerprint=live_submission_fingerprint,
+                live_allowed_account=normalized_live_allowed_account,
+                live_max_order_notional=live_max_order_notional,
+                live_max_order_qty=live_max_order_qty,
+                duplicate_submit_refusal=duplicate_submit_refusal,
+            )
+            if ledger_path is not None:
+                _append_live_submission_ledger_record(
+                    ledger_path,
+                    record=_live_submission_ledger_record(
+                        export=refused_export,
+                        live_submission_fingerprint=live_submission_fingerprint,
+                        artifact_path=live_submission_artifact_path,
+                    ),
+                )
+            return refused_export
 
         submitted_orders: list[LiveSubmittedOrder] = []
         submission_succeeded = True
@@ -927,7 +1148,7 @@ class TastytradeBrokerExecutionAdapter(TastytradeBrokerPositionAdapter):
                 )
                 break
 
-        return LiveSubmissionExport(
+        live_export = LiveSubmissionExport(
             generated_at_chicago=_chicago_now().isoformat(),
             dry_run=False,
             live_submit_requested=True,
@@ -950,4 +1171,21 @@ class TastytradeBrokerExecutionAdapter(TastytradeBrokerPositionAdapter):
             unmanaged_positions_summary=list(export.unmanaged_positions_summary),
             refusal_reasons=[],
             orders=submitted_orders,
+            plan_preview=dict(export.plan_preview),
+            plan_sha256=export.plan_sha256,
+            live_submission_fingerprint=live_submission_fingerprint,
+            live_allowed_account=normalized_live_allowed_account,
+            live_max_order_notional=live_max_order_notional,
+            live_max_order_qty=live_max_order_qty,
+            duplicate_submit_refusal=duplicate_submit_refusal,
         )
+        if ledger_path is not None:
+            _append_live_submission_ledger_record(
+                ledger_path,
+                record=_live_submission_ledger_record(
+                    export=live_export,
+                    live_submission_fingerprint=live_submission_fingerprint,
+                    artifact_path=live_submission_artifact_path,
+                ),
+            )
+        return live_export

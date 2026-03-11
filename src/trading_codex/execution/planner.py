@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -475,6 +477,65 @@ def _sizing_payload(sizing: SizingContext) -> dict[str, Any]:
     }
 
 
+def _normalized_preview_orders(
+    orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        orders,
+        key=lambda item: (
+            str(item["symbol"]),
+            str(item["side"]),
+            int(item["qty"]),
+            str(item["order_type"]),
+            str(item["tif"]),
+        ),
+    )
+
+
+def build_live_submission_preview(plan: ExecutionPlan) -> dict[str, Any]:
+    preview_orders: list[dict[str, Any]] = []
+    for item in plan.items:
+        side = ORDER_INTENT_SIDE_BY_CLASSIFICATION.get(item.classification)
+        if side is None:
+            continue
+        quantity = abs(item.delta_shares)
+        if quantity <= 0:
+            continue
+        preview_orders.append(
+            {
+                "symbol": item.symbol,
+                "side": side,
+                "qty": quantity,
+                "order_type": SIMULATED_ORDER_TYPE,
+                "tif": SIMULATED_TIME_IN_FORCE,
+            }
+        )
+
+    preview: dict[str, Any] = {
+        "account_scope": plan.account_scope,
+        "allowed_symbols": sorted(plan.managed_symbols_universe),
+        "broker": plan.broker_snapshot.broker_name,
+        "broker_account_id": plan.broker_snapshot.account_id,
+        "candidate_orders": _normalized_preview_orders(preview_orders),
+        "effective_capital_used": plan.sizing.effective_capital_used,
+        "strategy": plan.signal.strategy,
+    }
+    if plan.source_kind == "preset":
+        preview["preset"] = plan.source_label
+    if plan.signal.date:
+        preview["plan_date"] = plan.signal.date
+    if plan.signal.next_rebalance is not None:
+        preview["rebalance_date"] = plan.signal.next_rebalance
+    if plan.signal.event_id:
+        preview["event_id"] = plan.signal.event_id
+    return preview
+
+
+def plan_sha256_for_preview(preview: dict[str, Any]) -> str:
+    payload = json.dumps(preview, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | None = None) -> dict[str, Any]:
     def _scoped_positions_payload(items: list[ScopedBrokerPosition]) -> list[dict[str, Any]]:
         return [
@@ -489,6 +550,9 @@ def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | N
             }
             for item in items
         ]
+
+    plan_preview = build_live_submission_preview(plan)
+    plan_sha256 = plan_sha256_for_preview(plan_preview)
 
     return {
         "account_scope": plan.account_scope,
@@ -513,6 +577,7 @@ def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | N
         },
         "dry_run": plan.dry_run,
         "generated_at_chicago": plan.generated_at_chicago,
+        "live_submission_preview": plan_preview,
         "sizing": _sizing_payload(plan.sizing),
         "managed_supported_positions": _scoped_positions_payload(plan.managed_supported_positions),
         "managed_symbols_universe": list(plan.managed_symbols_universe),
@@ -531,6 +596,7 @@ def execution_plan_to_dict(plan: ExecutionPlan, *, artifacts: dict[str, str] | N
             }
             for item in plan.items
         ],
+        "plan_sha256": plan_sha256,
         "plan_math_scope": plan.plan_math_scope,
         "schema_name": "execution_plan",
         "schema_version": 2,
@@ -569,6 +635,8 @@ def build_order_intent_export(plan: ExecutionPlan) -> OrderIntentExport:
             "Order intent export refused because execution plan has blockers: " + ", ".join(plan.blockers)
         )
 
+    plan_preview = build_live_submission_preview(plan)
+    plan_sha256 = plan_sha256_for_preview(plan_preview)
     intents: list[OrderIntent] = []
     for item in plan.items:
         side = ORDER_INTENT_SIDE_BY_CLASSIFICATION.get(item.classification)
@@ -612,6 +680,8 @@ def build_order_intent_export(plan: ExecutionPlan) -> OrderIntentExport:
         unmanaged_holdings_acknowledged=plan.unmanaged_holdings_acknowledged,
         unmanaged_positions_count=len(plan.unmanaged_positions),
         unmanaged_positions_summary=list(plan.unmanaged_positions),
+        plan_preview=plan_preview,
+        plan_sha256=plan_sha256,
         intents=intents,
     )
 
@@ -656,6 +726,8 @@ def build_simulated_submission_export(export: OrderIntentExport) -> SimulatedSub
         unmanaged_holdings_acknowledged=export.unmanaged_holdings_acknowledged,
         unmanaged_positions_count=export.unmanaged_positions_count,
         unmanaged_positions_summary=list(export.unmanaged_positions_summary),
+        plan_preview=dict(export.plan_preview),
+        plan_sha256=export.plan_sha256,
         orders=orders,
     )
 
@@ -691,7 +763,9 @@ def order_intent_export_to_dict(
             }
             for intent in export.intents
         ],
+        "live_submission_preview": dict(export.plan_preview),
         "managed_symbols_universe": list(export.managed_symbols_universe),
+        "plan_sha256": export.plan_sha256,
         "plan_math_scope": export.plan_math_scope,
         "schema_name": "order_intent_export",
         "schema_version": 1,
@@ -734,6 +808,7 @@ def simulated_submission_export_to_dict(
         "dry_run": export.dry_run,
         "generated_at_chicago": export.generated_at_chicago,
         "managed_symbols_universe": list(export.managed_symbols_universe),
+        "live_submission_preview": dict(export.plan_preview),
         "orders": [
             {
                 "account_id": order.account_id,
@@ -754,6 +829,7 @@ def simulated_submission_export_to_dict(
             }
             for order in export.orders
         ],
+        "plan_sha256": export.plan_sha256,
         "plan_math_scope": export.plan_math_scope,
         "schema_name": "simulated_submission_export",
         "schema_version": 1,

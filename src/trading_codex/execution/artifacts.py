@@ -10,8 +10,10 @@ from typing import Any
 
 from trading_codex.execution.models import ExecutionPlan, LiveSubmissionExport, OrderIntentExport, SimulatedSubmissionExport
 from trading_codex.execution.planner import (
+    build_live_submission_preview,
     execution_plan_to_dict,
     order_intent_export_to_dict,
+    plan_sha256_for_preview,
     simulated_submission_export_to_dict,
 )
 
@@ -101,6 +103,10 @@ def build_live_submission_artifact_path(artifacts: ArtifactPaths) -> Path:
     )
 
 
+def build_live_submission_ledger_path(artifacts: ArtifactPaths) -> Path:
+    return artifacts.logs_dir / "live_submission_fingerprints.jsonl"
+
+
 def render_manual_order_checklist(export: OrderIntentExport) -> str:
     lines = [
         f"# Manual Order Checklist {export.source_label}",
@@ -114,6 +120,7 @@ def render_manual_order_checklist(export: OrderIntentExport) -> str:
         f"- Broker/account: `{export.broker_name} / {export.account_id or '-'}`",
         f"- Account scope: `{export.account_scope}`",
         f"- Plan math scope: `{export.plan_math_scope}`",
+        f"- Plan SHA256: `{export.plan_sha256}`",
         f"- Sizing mode: `{export.sizing.mode}`",
         f"- Capital input: `{export.sizing.capital_input if export.sizing.capital_input is not None else '-'}`",
         f"- Effective capital used: `{export.sizing.effective_capital_used if export.sizing.effective_capital_used is not None else '-'}`",
@@ -154,6 +161,8 @@ def render_manual_order_checklist(export: OrderIntentExport) -> str:
 
 def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
     plan_status = "BLOCKED" if plan.blockers else "READY"
+    plan_preview = build_live_submission_preview(plan)
+    plan_sha256 = plan_sha256_for_preview(plan_preview)
     lines = [
         f"# Dry-Run Execution Plan {plan.source_label}",
         "",
@@ -162,6 +171,7 @@ def render_markdown(plan: ExecutionPlan, *, artifacts: ArtifactPaths) -> str:
         f"- Dry run only: `{str(plan.dry_run).lower()}`",
         f"- Account scope: `{plan.account_scope}`",
         f"- Plan math scope: `{plan.plan_math_scope}`",
+        f"- Plan SHA256: `{plan_sha256}`",
         f"- Unmanaged holdings acknowledged: `{str(plan.unmanaged_holdings_acknowledged).lower()}`",
         f"- Managed symbols universe: `{', '.join(plan.managed_symbols_universe) if plan.managed_symbols_universe else '-'}`",
         f"- Signal source: `{plan.source_kind}`",
@@ -326,8 +336,14 @@ def _live_submission_export_to_dict(
         "broker_name": export.broker_name,
         "broker_source_ref": export.broker_source_ref,
         "dry_run": export.dry_run,
+        "duplicate_submit_refusal": export.duplicate_submit_refusal,
         "generated_at_chicago": export.generated_at_chicago,
+        "live_allowed_account": export.live_allowed_account,
+        "live_max_order_notional": export.live_max_order_notional,
+        "live_max_order_qty": export.live_max_order_qty,
+        "live_submission_fingerprint": export.live_submission_fingerprint,
         "live_submit_attempted": export.live_submit_attempted,
+        "live_submission_preview": export.plan_preview,
         "live_submit_requested": export.live_submit_requested,
         "managed_symbols_universe": list(export.managed_symbols_universe),
         "orders": [
@@ -356,6 +372,7 @@ def _live_submission_export_to_dict(
             }
             for order in export.orders
         ],
+        "plan_sha256": export.plan_sha256,
         "plan_math_scope": export.plan_math_scope,
         "refusal_reasons": list(export.refusal_reasons),
         "schema_name": "live_submission_export",

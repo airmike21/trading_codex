@@ -53,6 +53,31 @@ def _signal_payload() -> dict[str, object]:
     return payload
 
 
+def _managed_sleeve_simulated_export():
+    signal = parse_signal_payload(_signal_payload())
+    broker = parse_broker_snapshot(
+        {
+            "broker_name": "tastytrade",
+            "account_id": "5WT00001",
+            "buying_power": 20_000.0,
+            "positions": [{"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"}],
+        }
+    )
+    plan = build_execution_plan(
+        signal=signal,
+        broker_snapshot=broker,
+        account_scope="managed_sleeve",
+        managed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        ack_unmanaged_holdings=True,
+        source_kind="signal_json_file",
+        source_label="live_submit",
+        source_ref="signal.json",
+        broker_source_ref="tastytrade:5WT00001",
+        data_dir=None,
+    )
+    return build_simulated_submission_export(build_order_intent_export(plan))
+
+
 def test_normalize_tastytrade_snapshot_reads_signed_positions_and_balances() -> None:
     snapshot = normalize_tastytrade_snapshot(
         account_id="5WT00001",
@@ -489,28 +514,7 @@ def test_tastytrade_http_client_normalizes_whitespace_in_challenge_code(
 
 
 def test_tastytrade_execution_adapter_submits_supported_orders_with_mocked_client() -> None:
-    signal = parse_signal_payload(_signal_payload())
-    broker = parse_broker_snapshot(
-        {
-            "broker_name": "tastytrade",
-            "account_id": "5WT00001",
-            "buying_power": 20_000.0,
-            "positions": [{"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"}],
-        }
-    )
-    plan = build_execution_plan(
-        signal=signal,
-        broker_snapshot=broker,
-        account_scope="managed_sleeve",
-        managed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
-        ack_unmanaged_holdings=True,
-        source_kind="signal_json_file",
-        source_label="live_submit",
-        source_ref="signal.json",
-        broker_source_ref="tastytrade:5WT00001",
-        data_dir=None,
-    )
-    simulated = build_simulated_submission_export(build_order_intent_export(plan))
+    simulated = _managed_sleeve_simulated_export()
 
     class FakeLiveClient:
         def __init__(self) -> None:
@@ -530,12 +534,18 @@ def test_tastytrade_execution_adapter_submits_supported_orders_with_mocked_clien
     export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=client).submit_live_orders(
         export=simulated,
         confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
         allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
     )
 
     assert export.live_submit_attempted is True
     assert export.submission_succeeded is True
     assert export.refusal_reasons == []
+    assert export.plan_sha256 == simulated.plan_sha256
+    assert export.live_allowed_account == "5WT00001"
     assert len(export.orders) == 1
     assert export.orders[0].dry_run is False
     assert export.orders[0].succeeded is True
@@ -560,28 +570,7 @@ def test_tastytrade_execution_adapter_submits_supported_orders_with_mocked_clien
 
 
 def test_tastytrade_execution_adapter_refuses_unsupported_instrument_type() -> None:
-    signal = parse_signal_payload(_signal_payload())
-    broker = parse_broker_snapshot(
-        {
-            "broker_name": "tastytrade",
-            "account_id": "5WT00001",
-            "buying_power": 20_000.0,
-            "positions": [{"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"}],
-        }
-    )
-    plan = build_execution_plan(
-        signal=signal,
-        broker_snapshot=broker,
-        account_scope="managed_sleeve",
-        managed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
-        ack_unmanaged_holdings=True,
-        source_kind="signal_json_file",
-        source_label="live_submit_refuse",
-        source_ref="signal.json",
-        broker_source_ref="tastytrade:5WT00001",
-        data_dir=None,
-    )
-    simulated = build_simulated_submission_export(build_order_intent_export(plan))
+    simulated = _managed_sleeve_simulated_export()
     simulated = replace(simulated, orders=[replace(simulated.orders[0], instrument_type="Equity Option")])
 
     class FakeLiveClient:
@@ -597,7 +586,11 @@ def test_tastytrade_execution_adapter_refuses_unsupported_instrument_type() -> N
     export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=FakeLiveClient()).submit_live_orders(
         export=simulated,
         confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
         allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
     )
 
     assert export.live_submit_attempted is False
@@ -606,28 +599,7 @@ def test_tastytrade_execution_adapter_refuses_unsupported_instrument_type() -> N
 
 
 def test_tastytrade_execution_adapter_rejects_malformed_submission_response() -> None:
-    signal = parse_signal_payload(_signal_payload())
-    broker = parse_broker_snapshot(
-        {
-            "broker_name": "tastytrade",
-            "account_id": "5WT00001",
-            "buying_power": 20_000.0,
-            "positions": [{"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"}],
-        }
-    )
-    plan = build_execution_plan(
-        signal=signal,
-        broker_snapshot=broker,
-        account_scope="managed_sleeve",
-        managed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
-        ack_unmanaged_holdings=True,
-        source_kind="signal_json_file",
-        source_label="live_submit_bad_response",
-        source_ref="signal.json",
-        broker_source_ref="tastytrade:5WT00001",
-        data_dir=None,
-    )
-    simulated = build_simulated_submission_export(build_order_intent_export(plan))
+    simulated = _managed_sleeve_simulated_export()
 
     class FakeLiveClient:
         def get_positions(self, *, account_id: str) -> object:
@@ -644,7 +616,11 @@ def test_tastytrade_execution_adapter_rejects_malformed_submission_response() ->
     export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=FakeLiveClient()).submit_live_orders(
         export=simulated,
         confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
         allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
     )
 
     assert export.live_submit_attempted is True
@@ -653,3 +629,86 @@ def test_tastytrade_execution_adapter_rejects_malformed_submission_response() ->
     assert export.orders[0].attempted is True
     assert export.orders[0].succeeded is False
     assert "order id or status" in (export.orders[0].error or "")
+
+
+def test_tastytrade_execution_adapter_refuses_order_qty_over_cap() -> None:
+    simulated = _managed_sleeve_simulated_export()
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Quantity cap violations must be refused before any submit call.")
+
+    export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=FakeLiveClient()).submit_live_orders(
+        export=simulated,
+        confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
+        allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=10,
+    )
+
+    assert export.live_submit_attempted is False
+    assert "live_submit_order_qty_exceeds_cap:EFA:18:10" in export.refusal_reasons
+
+
+def test_tastytrade_execution_adapter_refuses_order_notional_over_cap() -> None:
+    simulated = _managed_sleeve_simulated_export()
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Notional cap violations must be refused before any submit call.")
+
+    export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=FakeLiveClient()).submit_live_orders(
+        export=simulated,
+        confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
+        allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=1_000.0,
+        live_max_order_qty=100,
+    )
+
+    assert export.live_submit_attempted is False
+    assert "live_submit_order_notional_exceeds_cap:EFA:1784.88:1000.00" in export.refusal_reasons
+
+
+@pytest.mark.parametrize("quantity", [1.5, 0])
+def test_tastytrade_execution_adapter_refuses_invalid_live_quantities(quantity: object) -> None:
+    simulated = _managed_sleeve_simulated_export()
+    simulated = replace(simulated, orders=[replace(simulated.orders[0], quantity=quantity)])
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Invalid quantities must be refused before any submit call.")
+
+    export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=FakeLiveClient()).submit_live_orders(
+        export=simulated,
+        confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
+        allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
+    )
+
+    assert export.live_submit_attempted is False
+    assert f"live_submit_invalid_quantity:EFA:{quantity}" in export.refusal_reasons
