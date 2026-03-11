@@ -15,6 +15,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = REPO_ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
+from trading_codex.run_archive import write_run_archive
+
 MODE_CHANGE_ONLY = "change_only"
 MODE_CHANGE_OR_REBALANCE_DUE = "change_or_rebalance_due"
 
@@ -280,6 +287,85 @@ def _extract_option_values(args: List[str], flag: str) -> List[str]:
     return []
 
 
+def _archive_alert_run(
+    *,
+    args: argparse.Namespace,
+    payload: dict[str, object],
+    json_line: str,
+    rb_args: List[str],
+    state_path: Path,
+    state_kind: str,
+    should_emit: bool,
+    event_changed: bool,
+    due_now: bool,
+    due_already_emitted: bool,
+    emitted_line: str | None,
+    emitted_kind: str | None,
+) -> None:
+    label = "_".join(
+        item
+        for item in (
+            str(payload.get("strategy") or "").strip(),
+            str(payload.get("symbol") or "").strip(),
+        )
+        if item
+    ) or "next_action_alert"
+    alert_context = {
+        "alert_mode": args.mode,
+        "configured_emit": args.emit,
+        "emitted": should_emit,
+        "emitted_kind": emitted_kind,
+        "event_changed": event_changed,
+        "due_now": due_now,
+        "due_already_emitted": due_already_emitted,
+        "dry_run": bool(args.dry_run),
+        "state_kind": state_kind,
+        "state_path": str(state_path),
+        "run_backtest_args": list(rb_args),
+    }
+    text_artifacts = {
+        "next_action_json_line": json_line,
+    }
+    if emitted_line is not None:
+        text_artifacts["emitted_line"] = emitted_line
+    try:
+        write_run_archive(
+            timestamp=_now_chicago_iso(),
+            run_kind="next_action_alert",
+            mode=args.mode,
+            label=label,
+            identity_parts=[
+                payload.get("event_id"),
+                args.mode,
+                args.emit,
+                should_emit,
+                " ".join(rb_args),
+            ],
+            manifest_fields={
+                "strategy": payload.get("strategy"),
+                "symbol": payload.get("symbol"),
+                "action": payload.get("action"),
+                "target_shares": payload.get("target_shares"),
+                "resize_new_shares": payload.get("resize_new_shares"),
+                "next_rebalance": payload.get("next_rebalance"),
+                "event_id": payload.get("event_id"),
+                "leverage": payload.get("leverage"),
+                "vol_target": payload.get("vol_target"),
+                "source": {
+                    "script": "scripts/next_action_alert.py",
+                },
+                "alert": alert_context,
+            },
+            json_artifacts={
+                "next_action_payload": payload,
+                "alert_context": alert_context,
+            },
+            text_artifacts=text_artifacts,
+        )
+    except Exception as exc:
+        print(f"[next_action_alert] WARN: failed to archive run: {exc}", file=sys.stderr)
+
+
 def resolve_state_path(
     state_file: Optional[str | Path],
     state_dir: Path,
@@ -349,6 +435,20 @@ def _handle_alert_under_lock(
         )
 
     if not should_emit:
+        _archive_alert_run(
+            args=args,
+            payload=payload,
+            json_line=json_line,
+            rb_args=rb_args,
+            state_path=state_path,
+            state_kind=state_kind,
+            should_emit=False,
+            event_changed=event_changed,
+            due_now=due_now,
+            due_already_emitted=due_already_emitted,
+            emitted_line=None,
+            emitted_kind=None,
+        )
         return 0
 
     # Emit -> update state unless dry-run, then print exactly one line.
@@ -377,6 +477,20 @@ def _handle_alert_under_lock(
                 emit_line=json_line,
                 verbose=args.verbose,
             )
+        _archive_alert_run(
+            args=args,
+            payload=payload,
+            json_line=json_line,
+            rb_args=rb_args,
+            state_path=state_path,
+            state_kind=state_kind,
+            should_emit=True,
+            event_changed=event_changed,
+            due_now=due_now,
+            due_already_emitted=due_already_emitted,
+            emitted_line=json_line,
+            emitted_kind="json",
+        )
         # print exactly one line (the JSON line from run_backtest)
         print(json_line)
         return 0
@@ -397,6 +511,21 @@ def _handle_alert_under_lock(
             emit_line=text_line,
             verbose=args.verbose,
         )
+
+    _archive_alert_run(
+        args=args,
+        payload=payload,
+        json_line=json_line,
+        rb_args=rb_args,
+        state_path=state_path,
+        state_kind=state_kind,
+        should_emit=True,
+        event_changed=event_changed,
+        due_now=due_now,
+        due_already_emitted=due_already_emitted,
+        emitted_line=text_line,
+        emitted_kind="text",
+    )
 
     # Still must be one line on stdout
     print(text_line)

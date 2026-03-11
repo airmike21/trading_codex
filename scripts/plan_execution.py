@@ -46,6 +46,7 @@ from trading_codex.execution import (
     write_order_intent_artifact,
     write_simulated_submission_artifact,
 )
+from trading_codex.run_archive import write_run_archive
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
 
 
@@ -232,6 +233,88 @@ def _live_submit_summary(export: Any) -> str:
             for order in failed_orders
         )
     return f"submitted {len(export.orders)} live orders"
+
+
+def _archive_plan_execution_run(
+    *,
+    args: argparse.Namespace,
+    timestamp: Any,
+    signal_raw: dict[str, Any],
+    source_kind: str,
+    source_label: str,
+    source_ref: str | None,
+    plan: Any,
+    artifact_paths: Any,
+    extra_artifacts: dict[str, str] | None,
+    plan_payload: dict[str, Any],
+    live_submission_export: Any,
+) -> None:
+    source_artifacts: dict[str, Path] = {
+        "execution_plan_json": artifact_paths.json_path,
+        "execution_plan_markdown": artifact_paths.markdown_path,
+    }
+    for key, raw_path in (extra_artifacts or {}).items():
+        source_artifacts[key] = Path(raw_path)
+
+    execution_context = {
+        "account_scope": args.account_scope,
+        "source_kind": source_kind,
+        "source_label": source_label,
+        "source_ref": source_ref,
+        "live_submit_requested": bool(args.live_submit),
+        "live_submit_attempted": bool(
+            live_submission_export is not None and getattr(live_submission_export, "live_submit_attempted", False)
+        ),
+    }
+    live_submit_state_touched = (
+        bool(args.live_submit)
+        and live_submission_export is not None
+        and getattr(live_submission_export, "durable_state", None) is not None
+    )
+    try:
+        write_run_archive(
+            timestamp=timestamp,
+            run_kind="execution_plan",
+            mode=args.account_scope,
+            label=source_label,
+            identity_parts=[
+                signal_raw.get("event_id"),
+                plan_payload.get("plan_sha256"),
+                source_label,
+                args.account_scope,
+            ],
+            manifest_fields={
+                "strategy": signal_raw.get("strategy"),
+                "symbol": signal_raw.get("symbol"),
+                "action": signal_raw.get("action"),
+                "target_shares": signal_raw.get("target_shares"),
+                "resize_new_shares": signal_raw.get("resize_new_shares"),
+                "next_rebalance": signal_raw.get("next_rebalance"),
+                "event_id": signal_raw.get("event_id"),
+                "warnings": list(plan.warnings),
+                "blockers": list(plan.blockers),
+                "buying_power_available": plan.broker_snapshot.buying_power,
+                "effective_capital": plan.sizing.effective_capital_used,
+                "leverage": signal_raw.get("leverage"),
+                "vol_target": signal_raw.get("vol_target"),
+                "plan_sha256": plan_payload.get("plan_sha256"),
+                "live_submit_state_touched": live_submit_state_touched,
+                "source": {
+                    "script": "scripts/plan_execution.py",
+                    "kind": source_kind,
+                    "label": source_label,
+                    "ref": source_ref,
+                },
+                "execution": execution_context,
+            },
+            source_artifacts=source_artifacts,
+            json_artifacts={
+                "signal_payload": signal_raw,
+                "execution_context": execution_context,
+            },
+        )
+    except Exception as exc:
+        print(f"[plan_execution] WARN: failed to archive run: {exc}", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -647,6 +730,19 @@ def main(argv: list[str] | None = None) -> int:
                 extra_artifacts = {}
             extra_artifacts["live_submission_json_path"] = str(live_submission_path)
         json_payload = write_artifacts(plan, artifacts=artifact_paths, extra_artifacts=extra_artifacts)
+        _archive_plan_execution_run(
+            args=args,
+            timestamp=timestamp,
+            signal_raw=signal_raw,
+            source_kind=source_kind,
+            source_label=source_label,
+            source_ref=source_ref,
+            plan=plan,
+            artifact_paths=artifact_paths,
+            extra_artifacts=extra_artifacts,
+            plan_payload=json_payload,
+            live_submission_export=live_submission_export,
+        )
 
         if args.emit == "json":
             print(json.dumps(json_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
