@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +17,7 @@ from trading_codex.execution import (
     parse_broker_snapshot,
     parse_signal_payload,
 )
+from trading_codex.execution.broker import _live_submission_fingerprint
 
 
 def _tastytrade_positions_payload(*items: dict[str, object]) -> dict[str, object]:
@@ -513,8 +516,10 @@ def test_tastytrade_http_client_normalizes_whitespace_in_challenge_code(
     assert session.calls[2][3]["X-Tastyworks-OTP"] == "229416"
 
 
-def test_tastytrade_execution_adapter_submits_supported_orders_with_mocked_client() -> None:
+def test_tastytrade_execution_adapter_submits_supported_orders_with_mocked_client(tmp_path: Path) -> None:
     simulated = _managed_sleeve_simulated_export()
+    ledger_path = tmp_path / "live_submit_state" / "live_submission_fingerprints.jsonl"
+    live_submission_artifact_path = tmp_path / "artifacts" / "live_submission.json"
 
     class FakeLiveClient:
         def __init__(self) -> None:
@@ -539,17 +544,27 @@ def test_tastytrade_execution_adapter_submits_supported_orders_with_mocked_clien
         allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
         live_max_order_notional=5_000.0,
         live_max_order_qty=100,
+        ledger_path=ledger_path,
+        live_submission_artifact_path=live_submission_artifact_path,
     )
 
     assert export.live_submit_attempted is True
     assert export.submission_succeeded is True
+    assert export.submission_result == "submitted"
+    assert export.manual_clearance_required is False
     assert export.refusal_reasons == []
     assert export.plan_sha256 == simulated.plan_sha256
     assert export.live_allowed_account == "5WT00001"
+    assert export.durable_state is not None
+    assert export.durable_state["ledger_path"] == str(ledger_path)
     assert len(export.orders) == 1
     assert export.orders[0].dry_run is False
     assert export.orders[0].succeeded is True
     assert export.orders[0].broker_order_id == "order-123"
+    assert not Path(export.durable_state["claim_path"]).exists()
+    ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    assert len(ledger_lines) == 1
+    assert json.loads(ledger_lines[0])["result"] == "submitted"
     assert client.payloads == [
         (
             "5WT00001",
@@ -567,6 +582,173 @@ def test_tastytrade_execution_adapter_submits_supported_orders_with_mocked_clien
             },
         )
     ]
+
+
+def test_tastytrade_execution_adapter_blocks_ambiguous_attempted_submit_retries(tmp_path: Path) -> None:
+    simulated = _managed_sleeve_simulated_export()
+    ledger_path = tmp_path / "live_submit_state" / "live_submission_fingerprints.jsonl"
+    live_submission_artifact_path = tmp_path / "artifacts" / "live_submission.json"
+
+    class AmbiguousLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def place_order(self, *, account_id: str, payload: dict[str, object]) -> object:
+            assert account_id == "5WT00001"
+            assert payload["legs"][0]["symbol"] == "EFA"
+            return {"data": {"foo": "bar"}}
+
+    first_export = TastytradeBrokerExecutionAdapter(
+        account_id="5WT00001",
+        client=AmbiguousLiveClient(),
+    ).submit_live_orders(
+        export=simulated,
+        confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
+        allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
+        ledger_path=ledger_path,
+        live_submission_artifact_path=live_submission_artifact_path,
+    )
+
+    assert first_export.live_submit_attempted is True
+    assert first_export.submission_succeeded is False
+    assert first_export.manual_clearance_required is True
+    assert first_export.submission_result == "ambiguous_attempted_submit_manual_clearance_required"
+    ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    assert len(ledger_lines) == 1
+    assert json.loads(ledger_lines[0])["result"] == "ambiguous_attempted_submit_manual_clearance_required"
+
+    class SuccessClient:
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Ambiguous prior submits must block a retry before any new submit call.")
+
+    second_export = TastytradeBrokerExecutionAdapter(
+        account_id="5WT00001",
+        client=SuccessClient(),
+    ).submit_live_orders(
+        export=simulated,
+        confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
+        allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
+        ledger_path=ledger_path,
+        live_submission_artifact_path=live_submission_artifact_path,
+    )
+
+    assert second_export.live_submit_attempted is False
+    assert second_export.submission_result == "refused_duplicate"
+    assert "live_submit_duplicate_fingerprint" in second_export.refusal_reasons
+    assert second_export.duplicate_submit_refusal is not None
+    assert (
+        second_export.duplicate_submit_refusal["prior_record"]["result"]
+        == "ambiguous_attempted_submit_manual_clearance_required"
+    )
+
+
+def test_tastytrade_execution_adapter_refuses_when_durable_ledger_is_corrupt(tmp_path: Path) -> None:
+    simulated = _managed_sleeve_simulated_export()
+    ledger_path = tmp_path / "live_submit_state" / "live_submission_fingerprints.jsonl"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text('{"broken":\n', encoding="utf-8")
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Corrupt durable ledger state must refuse before any submit call.")
+
+    export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=FakeLiveClient()).submit_live_orders(
+        export=simulated,
+        confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
+        allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
+        ledger_path=ledger_path,
+        live_submission_artifact_path=tmp_path / "artifacts" / "live_submission.json",
+    )
+
+    assert export.live_submit_attempted is False
+    assert export.submission_result == "refused_pre_submit"
+    assert "live_submit_duplicate_ledger_unreadable" in export.refusal_reasons
+    assert export.duplicate_submit_refusal is not None
+    assert export.duplicate_submit_refusal["ledger_path"] == str(ledger_path)
+    assert "malformed" in export.duplicate_submit_refusal["error"]
+    assert ledger_path.read_text(encoding="utf-8") == '{"broken":\n'
+
+
+def test_tastytrade_execution_adapter_refuses_when_pending_claim_exists(tmp_path: Path) -> None:
+    simulated = _managed_sleeve_simulated_export()
+    ledger_path = tmp_path / "live_submit_state" / "live_submission_fingerprints.jsonl"
+    fingerprint = _live_submission_fingerprint(
+        broker_account_id="5WT00001",
+        plan_sha256=simulated.plan_sha256,
+    )
+    claim_path = ledger_path.parent / "claims" / f"{fingerprint}.json"
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_path.write_text(
+        json.dumps(
+            {
+                "claim_path": str(claim_path),
+                "generated_at_chicago": "2026-03-09T12:00:00-05:00",
+                "live_submission_fingerprint": fingerprint,
+                "manual_clearance_required": True,
+                "plan_sha256": simulated.plan_sha256,
+                "result": "claim_pending_manual_clearance_required",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeLiveClient:
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Snapshot reads are not part of this submit-only unit test.")
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Pending claim state must block before any new submit call.")
+
+    export = TastytradeBrokerExecutionAdapter(account_id="5WT00001", client=FakeLiveClient()).submit_live_orders(
+        export=simulated,
+        confirm_account_id="5WT00001",
+        live_allowed_account="5WT00001",
+        confirm_plan_sha256=simulated.plan_sha256,
+        allowed_symbols={"EFA", "BIL", "SPY", "QQQ", "IWM"},
+        live_max_order_notional=5_000.0,
+        live_max_order_qty=100,
+        ledger_path=ledger_path,
+        live_submission_artifact_path=tmp_path / "artifacts" / "live_submission.json",
+    )
+
+    assert export.live_submit_attempted is False
+    assert export.submission_result == "refused_duplicate"
+    assert "live_submit_duplicate_fingerprint" in export.refusal_reasons
+    assert export.duplicate_submit_refusal is not None
+    assert export.duplicate_submit_refusal["prior_record"]["result"] == "claim_pending_manual_clearance_required"
+    assert claim_path.exists()
 
 
 def test_tastytrade_execution_adapter_refuses_unsupported_instrument_type() -> None:

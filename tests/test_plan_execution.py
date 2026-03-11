@@ -196,6 +196,20 @@ def _compute_tastytrade_plan_sha256(
     return str(payload["plan_sha256"])
 
 
+def _isolate_live_submit_state(
+    plan_execution,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Path:
+    ledger_path = tmp_path / "live_submit_state" / "live_submission_fingerprints.jsonl"
+    monkeypatch.setattr(
+        plan_execution,
+        "build_live_submission_ledger_path",
+        lambda *_args, **_kwargs: ledger_path,
+    )
+    return ledger_path
+
+
 def test_plan_execution_cli_from_signal_file_writes_artifacts_and_preserves_inputs(tmp_path: Path) -> None:
     repo_root, env = _repo_root_and_env()
     signal_path = tmp_path / "dual_mom_signal.json"
@@ -408,6 +422,7 @@ def test_plan_execution_cli_with_tastytrade_blocks_unrelated_holdings(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -478,6 +493,7 @@ def test_plan_execution_cli_managed_sleeve_ack_computes_sleeve_math_and_reports_
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -559,6 +575,7 @@ def test_plan_execution_cli_tastytrade_dry_run_does_not_place_orders(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -617,6 +634,7 @@ def test_plan_execution_cli_live_submit_refused_without_confirmation(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -684,6 +702,7 @@ def test_plan_execution_cli_live_submit_requires_live_allowed_account(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -753,6 +772,7 @@ def test_plan_execution_cli_live_submit_refuses_live_allowed_account_mismatch(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -843,6 +863,7 @@ def test_plan_execution_cli_live_submit_requires_live_max_caps(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -909,6 +930,7 @@ def test_plan_execution_cli_live_submit_refuses_when_confirm_hash_mismatches(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -980,6 +1002,7 @@ def test_plan_execution_cli_live_submit_refused_for_blocked_plan(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -1047,6 +1070,7 @@ def test_plan_execution_cli_live_submit_refused_for_unmanaged_positions(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -1123,6 +1147,7 @@ def test_plan_execution_cli_live_submit_success_writes_artifact(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
+    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -1222,7 +1247,9 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
-    base_dir = tmp_path / "execution_plans"
+    first_base_dir = tmp_path / "execution_plans_a"
+    second_base_dir = tmp_path / "execution_plans_b"
+    durable_ledger_path = tmp_path / "live_submit_state" / "live_submission_fingerprints.jsonl"
 
     class FakeLiveClient:
         def __init__(self) -> None:
@@ -1250,15 +1277,19 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
 
     client = FakeLiveClient()
     monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        plan_execution,
+        "build_live_submission_ledger_path",
+        lambda *_args, **_kwargs: durable_ledger_path,
+    )
     plan_sha256 = _compute_tastytrade_plan_sha256(
         plan_execution,
         signal_path=signal_path,
-        base_dir=base_dir,
+        base_dir=first_base_dir,
         capsys=capsys,
     )
 
-    live_args = [
-        *_managed_sleeve_tastytrade_args(signal_path, base_dir),
+    common_live_args = [
         "--live-submit",
         "--confirm-live-submit",
         "5WT00001",
@@ -1274,12 +1305,26 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
         "json",
     ]
 
-    first_exit_code = plan_execution.main([*live_args, "--timestamp", "2026-03-09T12:20:10-05:00"])
+    first_exit_code = plan_execution.main(
+        [
+            *_managed_sleeve_tastytrade_args(signal_path, first_base_dir),
+            *common_live_args,
+            "--timestamp",
+            "2026-03-09T12:20:10-05:00",
+        ]
+    )
     first_captured = capsys.readouterr()
     assert first_exit_code == 0, first_captured.err
     assert client.place_order_calls == 1
 
-    second_exit_code = plan_execution.main([*live_args, "--timestamp", "2026-03-09T12:21:10-05:00"])
+    second_exit_code = plan_execution.main(
+        [
+            *_managed_sleeve_tastytrade_args(signal_path, second_base_dir),
+            *common_live_args,
+            "--timestamp",
+            "2026-03-09T12:21:10-05:00",
+        ]
+    )
     second_captured = capsys.readouterr()
     assert second_exit_code == 2
     assert "live_submit_duplicate_fingerprint" in second_captured.err
@@ -1288,10 +1333,66 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
     payload = json.loads(second_captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
+    assert live_payload["submission_result"] == "refused_duplicate"
+    assert live_payload["durable_state"]["ledger_path"] == str(durable_ledger_path)
     assert live_payload["duplicate_submit_refusal"] is not None
     assert live_payload["duplicate_submit_refusal"]["prior_record"]["result"] == "submitted"
     assert live_payload["duplicate_submit_refusal"]["prior_record"]["plan_sha256"] == plan_sha256
     assert "live_submit_duplicate_fingerprint" in live_payload["refusal_reasons"]
+
+
+def test_plan_execution_cli_dry_run_does_not_touch_live_submit_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root, _env = _repo_root_and_env()
+    sys.path.insert(0, str(repo_root))
+    plan_execution = importlib.import_module("scripts.plan_execution")
+
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    base_dir = tmp_path / "execution_plans"
+
+    class FakeReadOnlyClient:
+        def get_positions(self, *, account_id: str) -> object:
+            return _tastytrade_positions_payload(
+                {
+                    "symbol": "EFA",
+                    "quantity": "82",
+                    "quantity-direction": "Long",
+                    "instrument-type": "Equity",
+                    "close-price": "99.16",
+                }
+            )
+
+        def get_balances(self, *, account_id: str) -> object:
+            return _tastytrade_balances_payload(account_id=account_id)
+
+        def place_order(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Dry-run plan generation must not submit live orders.")
+
+    monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: FakeReadOnlyClient())
+
+    def _unexpected_live_state(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("Dry-run execution must not resolve live-submit durable state.")
+
+    monkeypatch.setattr(plan_execution, "build_live_submission_ledger_path", _unexpected_live_state)
+
+    exit_code = plan_execution.main(
+        [
+            *_managed_sleeve_tastytrade_args(signal_path, base_dir),
+            "--timestamp",
+            "2026-03-09T12:00:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    payload = json.loads(captured.out)
+    assert "live_submission_json_path" not in payload["artifacts"]
 
 
 def test_plan_execution_cli_managed_sleeve_ack_blocks_only_on_buying_power_not_unmanaged_summary(

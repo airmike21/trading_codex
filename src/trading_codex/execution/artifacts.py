@@ -103,8 +103,17 @@ def build_live_submission_artifact_path(artifacts: ArtifactPaths) -> Path:
     )
 
 
-def build_live_submission_ledger_path(artifacts: ArtifactPaths) -> Path:
-    return artifacts.logs_dir / "live_submission_fingerprints.jsonl"
+def build_live_submission_state_dir(*, home_dir: Path | None = None) -> Path:
+    return (home_dir or Path.home()) / ".trading_codex" / "live_submit_state"
+
+
+def build_live_submission_ledger_path(
+    artifacts: ArtifactPaths | None = None,
+    *,
+    home_dir: Path | None = None,
+) -> Path:
+    del artifacts
+    return build_live_submission_state_dir(home_dir=home_dir) / "live_submission_fingerprints.jsonl"
 
 
 def render_manual_order_checklist(export: OrderIntentExport) -> str:
@@ -337,11 +346,13 @@ def _live_submission_export_to_dict(
         "broker_source_ref": export.broker_source_ref,
         "dry_run": export.dry_run,
         "duplicate_submit_refusal": export.duplicate_submit_refusal,
+        "durable_state": export.durable_state,
         "generated_at_chicago": export.generated_at_chicago,
         "live_allowed_account": export.live_allowed_account,
         "live_max_order_notional": export.live_max_order_notional,
         "live_max_order_qty": export.live_max_order_qty,
         "live_submission_fingerprint": export.live_submission_fingerprint,
+        "manual_clearance_required": export.manual_clearance_required,
         "live_submit_attempted": export.live_submit_attempted,
         "live_submission_preview": export.plan_preview,
         "live_submit_requested": export.live_submit_requested,
@@ -394,6 +405,7 @@ def _live_submission_export_to_dict(
             "label": export.source_label,
             "ref": export.source_ref,
         },
+        "submission_result": export.submission_result,
         "submission_succeeded": export.submission_succeeded,
         "unmanaged_holdings_acknowledged": export.unmanaged_holdings_acknowledged,
         "unmanaged_positions_count": export.unmanaged_positions_count,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 import getpass
 import hashlib
 import json
@@ -7,9 +8,15 @@ import os
 from datetime import datetime
 from pathlib import Path
 import sys
+import time
 from typing import Any, Protocol
 
 import requests
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from trading_codex.execution.models import (
     ExecutionPlan,
@@ -32,6 +39,17 @@ LIVE_SUPPORTED_CLASSIFICATIONS = {"BUY", "SELL", "RESIZE_BUY", "RESIZE_SELL", "E
 LIVE_SUPPORTED_INSTRUMENT_TYPE = "Equity"
 LIVE_SUPPORTED_ORDER_TYPE = "MARKET"
 LIVE_SUPPORTED_TIME_IN_FORCE = "DAY"
+LIVE_SUBMISSION_RESULT_REFUSED_PRE_SUBMIT = "refused_pre_submit"
+LIVE_SUBMISSION_RESULT_REFUSED_DUPLICATE = "refused_duplicate"
+LIVE_SUBMISSION_RESULT_SUBMITTED = "submitted"
+LIVE_SUBMISSION_RESULT_AMBIGUOUS = "ambiguous_attempted_submit_manual_clearance_required"
+LIVE_SUBMISSION_RESULT_CLAIM_PENDING = "claim_pending_manual_clearance_required"
+LIVE_SUBMISSION_BLOCKING_RESULTS = {
+    "accepted",
+    LIVE_SUBMISSION_RESULT_SUBMITTED,
+    LIVE_SUBMISSION_RESULT_AMBIGUOUS,
+    LIVE_SUBMISSION_RESULT_CLAIM_PENDING,
+}
 
 
 def _chicago_now() -> datetime:
@@ -418,6 +436,61 @@ def _live_submission_fingerprint(*, broker_account_id: str, plan_sha256: str) ->
     )
 
 
+def _live_submission_lock_path(ledger_path: Path) -> Path:
+    return ledger_path.parent / "live_submission_state.lock"
+
+
+def _live_submission_claim_path(ledger_path: Path, *, fingerprint: str) -> Path:
+    return ledger_path.parent / "claims" / f"{fingerprint}.json"
+
+
+def _live_submission_durable_state(
+    ledger_path: Path | None,
+    *,
+    fingerprint: str | None,
+) -> dict[str, Any] | None:
+    if ledger_path is None:
+        return None
+    claim_path = None if fingerprint is None else _live_submission_claim_path(ledger_path, fingerprint=fingerprint)
+    return {
+        "claim_path": None if claim_path is None else str(claim_path),
+        "ledger_path": str(ledger_path),
+        "lock_path": str(_live_submission_lock_path(ledger_path)),
+        "state_dir": str(ledger_path.parent),
+    }
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        dir_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+@contextmanager
+def _live_submission_state_lock(ledger_path: Path):
+    if fcntl is None:  # pragma: no cover
+        raise ValueError("Live submit durable state locking requires a POSIX platform.")
+
+    lock_path = _live_submission_lock_path(ledger_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        lock_file.seek(0)
+        lock_file.truncate(0)
+        lock_file.write(f"pid={os.getpid()} acquired_at={time.time():.6f}\n")
+        lock_file.flush()
+        os.fsync(lock_file.fileno())
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _load_live_submission_ledger(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -438,20 +511,82 @@ def _load_live_submission_ledger(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _load_live_submission_claim(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+
+    raw = path.read_text(encoding="utf-8").strip()
+    if raw == "":
+        raise ValueError(f"Live submission claim at {path} is empty.")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Live submission claim at {path} is malformed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Live submission claim at {path} must be a JSON object.")
+    return payload
+
+
+def _live_submission_record_blocks_retry(record: dict[str, Any]) -> bool:
+    if bool(record.get("manual_clearance_required")):
+        return True
+    return record.get("result") in LIVE_SUBMISSION_BLOCKING_RESULTS
+
+
 def _find_duplicate_live_submission_record(path: Path, *, fingerprint: str) -> dict[str, Any] | None:
-    blocking_results = {"accepted", "submitted"}
     for entry in reversed(_load_live_submission_ledger(path)):
         if entry.get("live_submission_fingerprint") != fingerprint:
             continue
-        if entry.get("result") in blocking_results:
+        if _live_submission_record_blocks_retry(entry):
             return entry
     return None
+
+
+def _find_live_submission_claim_record(path: Path, *, fingerprint: str) -> dict[str, Any] | None:
+    claim_path = _live_submission_claim_path(path, fingerprint=fingerprint)
+    payload = _load_live_submission_claim(claim_path)
+    if payload is None:
+        return None
+    payload = dict(payload)
+    payload.setdefault("claim_path", str(claim_path))
+    payload.setdefault("live_submission_fingerprint", fingerprint)
+    payload.setdefault("manual_clearance_required", True)
+    payload.setdefault("result", LIVE_SUBMISSION_RESULT_CLAIM_PENDING)
+    return payload
+
+
+def _create_live_submission_claim(path: Path, *, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    _fsync_directory(path.parent)
+
+
+def _remove_live_submission_claim(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    _fsync_directory(path.parent)
 
 
 def _append_live_submission_ledger_record(path: Path, *, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    _fsync_directory(path.parent)
 
 
 def _refusal_orders_from_simulated(export: SimulatedSubmissionExport, *, error: str) -> list[LiveSubmittedOrder]:
@@ -494,6 +629,8 @@ def build_live_submission_refusal_from_plan(
     live_max_order_notional: float | None = None,
     live_max_order_qty: int | None = None,
     duplicate_submit_refusal: dict[str, Any] | None = None,
+    submission_result: str = LIVE_SUBMISSION_RESULT_REFUSED_PRE_SUBMIT,
+    durable_state: dict[str, Any] | None = None,
 ) -> LiveSubmissionExport:
     rendered_reasons = _dedupe_strings(refusal_reasons)
     return LiveSubmissionExport(
@@ -526,6 +663,9 @@ def build_live_submission_refusal_from_plan(
         live_max_order_notional=live_max_order_notional,
         live_max_order_qty=live_max_order_qty,
         duplicate_submit_refusal=duplicate_submit_refusal,
+        submission_result=submission_result,
+        manual_clearance_required=False,
+        durable_state=durable_state,
     )
 
 
@@ -538,6 +678,8 @@ def _build_live_submission_refusal_from_simulated(
     live_max_order_notional: float | None = None,
     live_max_order_qty: int | None = None,
     duplicate_submit_refusal: dict[str, Any] | None = None,
+    submission_result: str = LIVE_SUBMISSION_RESULT_REFUSED_PRE_SUBMIT,
+    durable_state: dict[str, Any] | None = None,
 ) -> LiveSubmissionExport:
     rendered_reasons = _dedupe_strings(refusal_reasons)
     error = "; ".join(rendered_reasons) if rendered_reasons else "live submission refused"
@@ -571,6 +713,9 @@ def _build_live_submission_refusal_from_simulated(
         live_max_order_notional=live_max_order_notional,
         live_max_order_qty=live_max_order_qty,
         duplicate_submit_refusal=duplicate_submit_refusal,
+        submission_result=submission_result,
+        manual_clearance_required=False,
+        durable_state=durable_state,
     )
 
 
@@ -724,16 +869,15 @@ def _accepted_order_count(orders: list[LiveSubmittedOrder]) -> int:
 
 
 def _live_submission_result_label(export: LiveSubmissionExport) -> str:
-    accepted_order_count = _accepted_order_count(export.orders)
+    if export.submission_result:
+        return export.submission_result
     if export.live_submit_attempted and export.submission_succeeded:
-        return "submitted"
-    if accepted_order_count > 0:
-        return "accepted"
+        return LIVE_SUBMISSION_RESULT_SUBMITTED
     if export.live_submit_attempted:
-        return "failed_before_acceptance"
+        return LIVE_SUBMISSION_RESULT_AMBIGUOUS
     if "live_submit_duplicate_fingerprint" in export.refusal_reasons:
-        return "refused_duplicate"
-    return "refused"
+        return LIVE_SUBMISSION_RESULT_REFUSED_DUPLICATE
+    return LIVE_SUBMISSION_RESULT_REFUSED_PRE_SUBMIT
 
 
 def _live_submission_ledger_record(
@@ -750,7 +894,9 @@ def _live_submission_ledger_record(
         "broker_name": export.broker_name,
         "generated_at_chicago": export.generated_at_chicago,
         "live_submission_fingerprint": live_submission_fingerprint,
+        "manual_clearance_required": export.manual_clearance_required,
         "plan_sha256": export.plan_sha256,
+        "refusal_reasons": list(export.refusal_reasons),
         "result": _live_submission_result_label(export),
         "submission_succeeded": export.submission_succeeded,
     }
@@ -1058,134 +1204,207 @@ class TastytradeBrokerExecutionAdapter(TastytradeBrokerPositionAdapter):
             live_max_order_notional=live_max_order_notional,
             live_max_order_qty=live_max_order_qty,
         )
-        duplicate_submit_refusal: dict[str, Any] | None = None
-        if ledger_path is not None:
-            try:
-                duplicate_record = _find_duplicate_live_submission_record(
-                    ledger_path,
-                    fingerprint=live_submission_fingerprint,
-                )
-            except ValueError as exc:
-                refusal_reasons.append("live_submit_duplicate_ledger_unreadable")
-                duplicate_submit_refusal = {
-                    "error": str(exc),
-                    "ledger_path": str(ledger_path),
-                    "live_submission_fingerprint": live_submission_fingerprint,
-                }
-            else:
-                if duplicate_record is not None:
-                    refusal_reasons.append("live_submit_duplicate_fingerprint")
-                    duplicate_submit_refusal = {
-                        "ledger_path": str(ledger_path),
-                        "live_submission_fingerprint": live_submission_fingerprint,
-                        "prior_record": duplicate_record,
-                    }
         place_order = getattr(self.client, "place_order", None)
         if not callable(place_order):
             refusal_reasons.append("broker_adapter_not_live_submit_capable")
-        refusal_reasons = _dedupe_strings(refusal_reasons)
-        if refusal_reasons:
-            refused_export = _build_live_submission_refusal_from_simulated(
-                export=export,
-                refusal_reasons=refusal_reasons,
+        duplicate_submit_refusal: dict[str, Any] | None = None
+        durable_state = _live_submission_durable_state(
+            ledger_path,
+            fingerprint=live_submission_fingerprint,
+        )
+        claim_path = (
+            None
+            if ledger_path is None
+            else _live_submission_claim_path(ledger_path, fingerprint=live_submission_fingerprint)
+        )
+        can_append_ledger = ledger_path is not None
+        lock_context = _live_submission_state_lock(ledger_path) if ledger_path is not None else nullcontext()
+
+        with lock_context:
+            if ledger_path is not None:
+                try:
+                    pending_claim = _find_live_submission_claim_record(
+                        ledger_path,
+                        fingerprint=live_submission_fingerprint,
+                    )
+                except ValueError as exc:
+                    refusal_reasons.append("live_submit_duplicate_claim_unreadable")
+                    duplicate_submit_refusal = {
+                        "durable_state": durable_state,
+                        "error": str(exc),
+                        "ledger_path": str(ledger_path),
+                        "live_submission_fingerprint": live_submission_fingerprint,
+                    }
+                    can_append_ledger = False
+                else:
+                    if pending_claim is not None:
+                        refusal_reasons.append("live_submit_duplicate_fingerprint")
+                        duplicate_submit_refusal = {
+                            "durable_state": durable_state,
+                            "ledger_path": str(ledger_path),
+                            "live_submission_fingerprint": live_submission_fingerprint,
+                            "prior_record": pending_claim,
+                        }
+                    else:
+                        try:
+                            duplicate_record = _find_duplicate_live_submission_record(
+                                ledger_path,
+                                fingerprint=live_submission_fingerprint,
+                            )
+                        except ValueError as exc:
+                            refusal_reasons.append("live_submit_duplicate_ledger_unreadable")
+                            duplicate_submit_refusal = {
+                                "durable_state": durable_state,
+                                "error": str(exc),
+                                "ledger_path": str(ledger_path),
+                                "live_submission_fingerprint": live_submission_fingerprint,
+                            }
+                            can_append_ledger = False
+                        else:
+                            if duplicate_record is not None:
+                                refusal_reasons.append("live_submit_duplicate_fingerprint")
+                                duplicate_submit_refusal = {
+                                    "durable_state": durable_state,
+                                    "ledger_path": str(ledger_path),
+                                    "live_submission_fingerprint": live_submission_fingerprint,
+                                    "prior_record": duplicate_record,
+                                }
+
+            refusal_reasons = _dedupe_strings(refusal_reasons)
+            if refusal_reasons:
+                submission_result = (
+                    LIVE_SUBMISSION_RESULT_REFUSED_DUPLICATE
+                    if "live_submit_duplicate_fingerprint" in refusal_reasons
+                    else LIVE_SUBMISSION_RESULT_REFUSED_PRE_SUBMIT
+                )
+                refused_export = _build_live_submission_refusal_from_simulated(
+                    export=export,
+                    refusal_reasons=refusal_reasons,
+                    live_submission_fingerprint=live_submission_fingerprint,
+                    live_allowed_account=normalized_live_allowed_account,
+                    live_max_order_notional=live_max_order_notional,
+                    live_max_order_qty=live_max_order_qty,
+                    duplicate_submit_refusal=duplicate_submit_refusal,
+                    submission_result=submission_result,
+                    durable_state=durable_state,
+                )
+                if ledger_path is not None and can_append_ledger:
+                    _append_live_submission_ledger_record(
+                        ledger_path,
+                        record=_live_submission_ledger_record(
+                            export=refused_export,
+                            live_submission_fingerprint=live_submission_fingerprint,
+                            artifact_path=live_submission_artifact_path,
+                        ),
+                    )
+                return refused_export
+
+            if claim_path is not None:
+                _create_live_submission_claim(
+                    claim_path,
+                    record={
+                        "account_id": export.account_id,
+                        "artifact_path": None if live_submission_artifact_path is None else str(live_submission_artifact_path),
+                        "claim_path": str(claim_path),
+                        "generated_at_chicago": _chicago_now().isoformat(),
+                        "live_submission_fingerprint": live_submission_fingerprint,
+                        "manual_clearance_required": True,
+                        "plan_sha256": export.plan_sha256,
+                        "result": LIVE_SUBMISSION_RESULT_CLAIM_PENDING,
+                    },
+                )
+
+            submitted_orders: list[LiveSubmittedOrder] = []
+            submission_succeeded = True
+            for order in export.orders:
+                submitted_at = _chicago_now().isoformat()
+                request_payload = _tastytrade_equity_order_payload(order)
+                try:
+                    raw_response = place_order(account_id=self.account_id, payload=request_payload)
+                    submitted_orders.append(
+                        _normalize_tastytrade_order_submission(
+                            order=order,
+                            payload=raw_response,
+                            submitted_at_chicago=submitted_at,
+                        )
+                    )
+                except Exception as exc:
+                    submission_succeeded = False
+                    submitted_orders.append(
+                        LiveSubmittedOrder(
+                            submitted_at_chicago=submitted_at,
+                            account_id=order.account_id,
+                            broker_name=order.broker_name,
+                            symbol=order.symbol,
+                            side=order.side,
+                            quantity=order.quantity,
+                            instrument_type=order.instrument_type,
+                            order_type=order.order_type,
+                            time_in_force=order.time_in_force,
+                            strategy=order.strategy,
+                            event_id=order.event_id,
+                            reference_price=order.reference_price,
+                            estimated_notional=order.estimated_notional,
+                            classification=order.classification,
+                            dry_run=False,
+                            attempted=True,
+                            succeeded=False,
+                            broker_order_id=None,
+                            broker_status=None,
+                            broker_response=None,
+                            error=str(exc),
+                        )
+                    )
+                    break
+
+            submission_completed = submission_succeeded and len(submitted_orders) == len(export.orders)
+            live_export = LiveSubmissionExport(
+                generated_at_chicago=_chicago_now().isoformat(),
+                dry_run=False,
+                live_submit_requested=True,
+                live_submit_attempted=True,
+                submission_succeeded=submission_completed,
+                source_kind=export.source_kind,
+                source_label=export.source_label,
+                source_ref=export.source_ref,
+                broker_name=export.broker_name,
+                account_id=export.account_id,
+                broker_source_ref=export.broker_source_ref,
+                account_scope=export.account_scope,
+                plan_math_scope=export.plan_math_scope,
+                sizing=export.sizing,
+                managed_symbols_universe=list(export.managed_symbols_universe),
+                blockers=list(export.blockers),
+                warnings=list(export.warnings),
+                unmanaged_holdings_acknowledged=export.unmanaged_holdings_acknowledged,
+                unmanaged_positions_count=export.unmanaged_positions_count,
+                unmanaged_positions_summary=list(export.unmanaged_positions_summary),
+                refusal_reasons=[],
+                orders=submitted_orders,
+                plan_preview=dict(export.plan_preview),
+                plan_sha256=export.plan_sha256,
                 live_submission_fingerprint=live_submission_fingerprint,
                 live_allowed_account=normalized_live_allowed_account,
                 live_max_order_notional=live_max_order_notional,
                 live_max_order_qty=live_max_order_qty,
                 duplicate_submit_refusal=duplicate_submit_refusal,
+                submission_result=(
+                    LIVE_SUBMISSION_RESULT_SUBMITTED
+                    if submission_completed
+                    else LIVE_SUBMISSION_RESULT_AMBIGUOUS
+                ),
+                manual_clearance_required=not submission_completed,
+                durable_state=durable_state,
             )
             if ledger_path is not None:
                 _append_live_submission_ledger_record(
                     ledger_path,
                     record=_live_submission_ledger_record(
-                        export=refused_export,
+                        export=live_export,
                         live_submission_fingerprint=live_submission_fingerprint,
                         artifact_path=live_submission_artifact_path,
                     ),
                 )
-            return refused_export
-
-        submitted_orders: list[LiveSubmittedOrder] = []
-        submission_succeeded = True
-        for order in export.orders:
-            submitted_at = _chicago_now().isoformat()
-            request_payload = _tastytrade_equity_order_payload(order)
-            try:
-                raw_response = place_order(account_id=self.account_id, payload=request_payload)
-                submitted_orders.append(
-                    _normalize_tastytrade_order_submission(
-                        order=order,
-                        payload=raw_response,
-                        submitted_at_chicago=submitted_at,
-                    )
-                )
-            except Exception as exc:
-                submission_succeeded = False
-                submitted_orders.append(
-                    LiveSubmittedOrder(
-                        submitted_at_chicago=submitted_at,
-                        account_id=order.account_id,
-                        broker_name=order.broker_name,
-                        symbol=order.symbol,
-                        side=order.side,
-                        quantity=order.quantity,
-                        instrument_type=order.instrument_type,
-                        order_type=order.order_type,
-                        time_in_force=order.time_in_force,
-                        strategy=order.strategy,
-                        event_id=order.event_id,
-                        reference_price=order.reference_price,
-                        estimated_notional=order.estimated_notional,
-                        classification=order.classification,
-                        dry_run=False,
-                        attempted=True,
-                        succeeded=False,
-                        broker_order_id=None,
-                        broker_status=None,
-                        broker_response=None,
-                        error=str(exc),
-                    )
-                )
-                break
-
-        live_export = LiveSubmissionExport(
-            generated_at_chicago=_chicago_now().isoformat(),
-            dry_run=False,
-            live_submit_requested=True,
-            live_submit_attempted=True,
-            submission_succeeded=submission_succeeded and len(submitted_orders) == len(export.orders),
-            source_kind=export.source_kind,
-            source_label=export.source_label,
-            source_ref=export.source_ref,
-            broker_name=export.broker_name,
-            account_id=export.account_id,
-            broker_source_ref=export.broker_source_ref,
-            account_scope=export.account_scope,
-            plan_math_scope=export.plan_math_scope,
-            sizing=export.sizing,
-            managed_symbols_universe=list(export.managed_symbols_universe),
-            blockers=list(export.blockers),
-            warnings=list(export.warnings),
-            unmanaged_holdings_acknowledged=export.unmanaged_holdings_acknowledged,
-            unmanaged_positions_count=export.unmanaged_positions_count,
-            unmanaged_positions_summary=list(export.unmanaged_positions_summary),
-            refusal_reasons=[],
-            orders=submitted_orders,
-            plan_preview=dict(export.plan_preview),
-            plan_sha256=export.plan_sha256,
-            live_submission_fingerprint=live_submission_fingerprint,
-            live_allowed_account=normalized_live_allowed_account,
-            live_max_order_notional=live_max_order_notional,
-            live_max_order_qty=live_max_order_qty,
-            duplicate_submit_refusal=duplicate_submit_refusal,
-        )
-        if ledger_path is not None:
-            _append_live_submission_ledger_record(
-                ledger_path,
-                record=_live_submission_ledger_record(
-                    export=live_export,
-                    live_submission_fingerprint=live_submission_fingerprint,
-                    artifact_path=live_submission_artifact_path,
-                ),
-            )
-        return live_export
+            if claim_path is not None:
+                _remove_live_submission_claim(claim_path)
+            return live_export

@@ -535,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
         live_submission_export = None
         if args.live_submit:
             live_submission_path = build_live_submission_artifact_path(artifact_paths)
-            live_submission_ledger_path = build_live_submission_ledger_path(artifact_paths)
+            live_submission_ledger_path = build_live_submission_ledger_path()
             if plan.blockers:
                 live_submission_export = build_live_submission_refusal_from_plan(
                     plan=plan,

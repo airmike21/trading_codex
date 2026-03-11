@@ -255,3 +255,6 @@ class LiveSubmissionExport:
     live_max_order_notional: float | None = None
     live_max_order_qty: int | None = None
     duplicate_submit_refusal: dict[str, Any] | None = None
+    submission_result: str | None = None
+    manual_clearance_required: bool = False
+    durable_state: dict[str, Any] | None = None
