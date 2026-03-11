@@ -109,6 +109,58 @@ def test_alert_emit_text(monkeypatch, tmp_path, capsys):
     assert state.read_text().strip() == "E2"
 
 
+def test_archive_failure_is_silent_for_unchanged_poll(monkeypatch, tmp_path, capsys):
+    from scripts import next_action_alert
+
+    state = tmp_path / "state.txt"
+    state.write_text("E1\n", encoding="utf-8")
+    payload = {"event_id": "E1", "strategy": "dual_mom", "symbol": "TLT", "next_rebalance": "2025-01-03"}
+    json_line = json.dumps(payload, separators=(",", ":"))
+
+    def fake_run(argv, capture_output, text):
+        if "--next-action-json" in argv:
+            return _mk_completed(stdout=json_line + "\n")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    def fail_archive(**_kwargs):
+        raise RuntimeError("archive down")
+
+    monkeypatch.setattr(next_action_alert.subprocess, "run", fake_run)
+    monkeypatch.setattr(next_action_alert, "write_run_archive", fail_archive)
+
+    rc = next_action_alert.main(["--emit", "json", "--state-file", str(state), "--", "--strategy", "dual_mom"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_archive_failure_warns_but_preserves_one_line_stdout_on_emit(monkeypatch, tmp_path, capsys):
+    from scripts import next_action_alert
+
+    state = tmp_path / "state.txt"
+    payload = {"event_id": "E9", "strategy": "dual_mom", "symbol": "TLT", "next_rebalance": "2025-01-03"}
+    json_line = json.dumps(payload, separators=(",", ":"))
+
+    def fake_run(argv, capture_output, text):
+        if "--next-action-json" in argv:
+            return _mk_completed(stdout=json_line + "\n")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    def fail_archive(**_kwargs):
+        raise RuntimeError("archive down")
+
+    monkeypatch.setattr(next_action_alert.subprocess, "run", fake_run)
+    monkeypatch.setattr(next_action_alert, "write_run_archive", fail_archive)
+
+    rc = next_action_alert.main(["--emit", "json", "--state-file", str(state), "--", "--strategy", "dual_mom"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == json_line + "\n"
+    assert captured.err == "[next_action_alert] WARN: failed to archive run: archive down\n"
+    assert state.read_text(encoding="utf-8").strip() == "E9"
+
+
 def test_explicit_state_file_ignores_key(tmp_path):
     from scripts import next_action_alert
 

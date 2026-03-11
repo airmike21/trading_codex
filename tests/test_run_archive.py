@@ -9,6 +9,7 @@ from pathlib import Path
 from trading_codex.run_archive import (
     build_run_id,
     build_run_manifest,
+    load_run_index,
     recent_runs,
     resolve_archive_root,
     resolve_manifest_path,
@@ -108,6 +109,68 @@ def test_write_run_archive_writes_layout_manifest_and_index(tmp_path: Path) -> N
     assert len(index_entries) == 1
     assert index_entries[0]["run_id"] == archived.paths.run_dir.name
     assert resolve_manifest_path(index_entries[0], root_dir=archive_root) == archived.paths.manifest_path
+
+
+def test_load_run_index_skips_malformed_and_partial_lines(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    index_path = archive_root / "index" / "runs.jsonl"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    valid_old = {
+        "run_id": "run-old",
+        "date": "2026-03-09",
+        "timestamp": "2026-03-09T08:25:00-05:00",
+        "run_kind": "next_action_alert",
+        "mode": "change_only",
+    }
+    valid_new = {
+        "run_id": "run-new",
+        "date": "2026-03-09",
+        "timestamp": "2026-03-09T10:45:00-05:00",
+        "run_kind": "execution_plan",
+        "mode": "managed_sleeve",
+    }
+    index_path.write_text(
+        "\n".join(
+            [
+                json.dumps(valid_old, separators=(",", ":"), sort_keys=True),
+                '{"broken_json":',
+                "not-json",
+                json.dumps(valid_new, separators=(",", ":"), sort_keys=True),
+                '{"partial":true',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    entries = recent_runs(root_dir=archive_root, limit=10)
+    assert [entry["run_id"] for entry in entries] == ["run-new", "run-old"]
+
+
+def test_write_run_archive_records_multiple_entries_same_second(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    first = write_run_archive(
+        timestamp="2026-03-09T10:45:00-05:00",
+        run_kind="execution_plan",
+        mode="managed_sleeve",
+        label="dual_mom_signal",
+        identity_parts=["same-event", "same-plan"],
+        manifest_fields={"strategy": "dual_mom"},
+        preferred_root=archive_root,
+    )
+    second = write_run_archive(
+        timestamp="2026-03-09T10:45:00-05:00",
+        run_kind="execution_plan",
+        mode="managed_sleeve",
+        label="dual_mom_signal",
+        identity_parts=["same-event", "same-plan"],
+        manifest_fields={"strategy": "dual_mom"},
+        preferred_root=archive_root,
+    )
+
+    entries = load_run_index(root_dir=archive_root)
+    assert len(entries) == 2
+    assert first.paths.run_dir.name != second.paths.run_dir.name
+    assert second.paths.run_dir.name.endswith("_2")
 
 
 def test_list_runs_cli_smoke(tmp_path: Path) -> None:

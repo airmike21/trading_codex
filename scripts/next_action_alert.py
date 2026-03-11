@@ -301,6 +301,7 @@ def _archive_alert_run(
     due_already_emitted: bool,
     emitted_line: str | None,
     emitted_kind: str | None,
+    warn_on_failure: bool,
 ) -> None:
     label = "_".join(
         item
@@ -363,7 +364,8 @@ def _archive_alert_run(
             text_artifacts=text_artifacts,
         )
     except Exception as exc:
-        print(f"[next_action_alert] WARN: failed to archive run: {exc}", file=sys.stderr)
+        if warn_on_failure:
+            print(f"[next_action_alert] WARN: failed to archive run: {exc}", file=sys.stderr)
 
 
 def resolve_state_path(
@@ -448,6 +450,7 @@ def _handle_alert_under_lock(
             due_already_emitted=due_already_emitted,
             emitted_line=None,
             emitted_kind=None,
+            warn_on_failure=False,
         )
         return 0
 
@@ -490,6 +493,7 @@ def _handle_alert_under_lock(
             due_already_emitted=due_already_emitted,
             emitted_line=json_line,
             emitted_kind="json",
+            warn_on_failure=True,
         )
         # print exactly one line (the JSON line from run_backtest)
         print(json_line)
@@ -525,6 +529,7 @@ def _handle_alert_under_lock(
         due_already_emitted=due_already_emitted,
         emitted_line=text_line,
         emitted_kind="text",
+        warn_on_failure=True,
     )
 
     # Still must be one line on stdout

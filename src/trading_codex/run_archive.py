@@ -9,6 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
 
 @dataclass(frozen=True)
 class RunArchivePaths:
@@ -205,6 +210,39 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _fsync_directory(path: Path) -> None:
+    try:
+        dir_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _append_jsonl_record(path: Path, record: Mapping[str, Any]) -> None:
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    encoded = payload.encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        written = 0
+        while written < len(encoded):
+            written += os.write(fd, encoded[written:])
+        os.fsync(fd)
+    finally:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        os.close(fd)
+    _fsync_directory(path.parent)
+
+
 def _artifact_relative_path(paths: RunArchivePaths, artifact_path: Path) -> str:
     return str(artifact_path.relative_to(paths.run_dir))
 
@@ -305,9 +343,7 @@ def write_run_archive(
 
     index_record = dict(manifest)
     index_record["manifest_path"] = str(paths.manifest_path.relative_to(paths.root_dir))
-    with paths.index_path.open("a", encoding="utf-8", newline="") as fh:
-        fh.write(json.dumps(index_record, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
-        fh.write("\n")
+    _append_jsonl_record(paths.index_path, index_record)
 
     return ArchivedRun(paths=paths, manifest=manifest)
 
@@ -329,13 +365,17 @@ def load_run_index(
         return []
 
     entries: list[dict[str, Any]] = []
-    for raw_line in index_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        payload = json.loads(line)
-        if isinstance(payload, dict):
-            entries.append(payload)
+    with index_path.open("r", encoding="utf-8", errors="replace") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                entries.append(payload)
     return entries
 
 
