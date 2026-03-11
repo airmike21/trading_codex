@@ -28,7 +28,7 @@ def _run_print_only(*extra_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
 
 
-def test_hidden_mode_prints_hidden_wscript_launcher() -> None:
+def test_hidden_mode_prints_hidden_powershell_launcher() -> None:
     proc = _run_print_only(
         "-InstallMode",
         "Hidden",
@@ -62,9 +62,9 @@ def test_background_mode_prints_s4u_wsl_action() -> None:
         "-WslDistro",
         "Ubuntu",
         "-WslRepoPath",
-        "/tmp/trading_codex_sched_bg",
+        "/__trading_codex_print_only_preview_should_not_need_repo__",
         "-WslPython",
-        "/tmp/trading_codex_sched_bg/.venv/bin/python",
+        "/__trading_codex_print_only_preview_should_not_need_repo__/.venv/bin/python",
         "-BaseDir",
         "/tmp/trading_codex_runs",
     )
@@ -73,7 +73,7 @@ def test_background_mode_prints_s4u_wsl_action() -> None:
     stdout = proc.stdout
     assert "# mode=Background" in stdout
     assert "S4U non-interactive; local resources only" in stdout
-    assert "# action=wsl.exe -d Ubuntu -- bash /tmp/trading_codex_sched_bg/scripts/windows/trading_codex_scheduled_dual_compare.sh" in stdout
+    assert "# action=wsl.exe -d Ubuntu -- bash /__trading_codex_print_only_preview_should_not_need_repo__/scripts/windows/trading_codex_scheduled_dual_compare.sh" in stdout
     assert "--window morning_0825" in stdout
     assert "--window afternoon_1535" in stdout
     assert "schtasks.exe /Create /TN \"TradingCodex\\morning_0825_dual_compare\" /XML" in stdout

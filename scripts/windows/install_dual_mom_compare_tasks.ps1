@@ -165,9 +165,11 @@ $shellRunnerPath = $null
 if ($InstallMode -ne "Hidden") {
   $ResolvedWslRepoPath = Resolve-WslPath -PathValue $WslRepoPath -Distro $WslDistro
   $shellRunnerPath = "$($ResolvedWslRepoPath.TrimEnd('/'))/scripts/windows/trading_codex_scheduled_dual_compare.sh"
-  & wsl.exe -d $WslDistro -- test -f $shellRunnerPath *> $null
-  if ($LASTEXITCODE -ne 0) {
-    throw "WSL shell runner not found: $shellRunnerPath"
+  if (-not $PrintOnly) {
+    & wsl.exe -d $WslDistro -- test -f $shellRunnerPath *> $null
+    if ($LASTEXITCODE -ne 0) {
+      throw "WSL shell runner not found: $shellRunnerPath"
+    }
   }
 }
 
