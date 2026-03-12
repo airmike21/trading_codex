@@ -33,6 +33,7 @@ def _execution_plan_payload(
     blockers: list[str] | None = None,
     trade_warnings: list[str] | None = None,
     trade_blockers: list[str] | None = None,
+    items: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     warnings = ["warning_from_plan"] if warnings is None else list(warnings)
     blockers = [] if blockers is None else list(blockers)
@@ -63,7 +64,9 @@ def _execution_plan_payload(
             "effective_capital_used": effective_capital,
             "buying_power_cap_applied": True,
         },
-        "items": [
+        "items": items
+        if items is not None
+        else [
             {
                 "classification": action,
                 "delta_shares": quantity,
@@ -88,6 +91,27 @@ def _execution_plan_payload(
             "rebalance_date": "2026-03-31",
             "strategy": "dual_mom",
         },
+    }
+
+
+def _trade_item(
+    *,
+    symbol: str,
+    action: str,
+    quantity: int,
+    price: float = 99.16,
+    estimated_notional: float | None = None,
+) -> dict[str, object]:
+    return {
+        "classification": action,
+        "delta_shares": quantity,
+        "current_broker_shares": 0,
+        "desired_target_shares": quantity,
+        "estimated_notional": round(quantity * price, 2) if estimated_notional is None else estimated_notional,
+        "reference_price": price,
+        "symbol": symbol,
+        "warnings": [],
+        "blockers": [],
     }
 
 
@@ -372,3 +396,122 @@ def test_build_recent_activity_rows_orders_newest_first_and_includes_paths(tmp_p
     assert rows[0]["path"].endswith("execution_plan_markdown__plan-newer_execution_plan.md")
     assert "execution_plan_json.json" in rows[0]["related_paths"]
     assert rows[0]["status"] == "Archived run with 1 proposed trade"
+
+
+def test_trade_change_ignores_price_only_changes(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    first_plan = _execution_plan_payload(price=99.16, warnings=[], trade_warnings=[])
+    second_plan = _execution_plan_payload(price=101.23, warnings=[], trade_warnings=[])
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-price-older",
+        execution_plan=first_plan,
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:48:32-05:00",
+        identity="plan-price-newer",
+        execution_plan=second_plan,
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    comparison_rows = build_run_comparison_rows(runs[0], runs[1])
+    needs_review_rows = build_needs_review_rows(runs)
+    recent_activity_rows = build_recent_activity_rows(runs, limit=10)
+
+    changed_fields = {row["field"] for row in comparison_rows}
+    headlines = {row["headline"] for row in needs_review_rows}
+    assert "proposed_trades" not in changed_fields
+    assert "New execution plan with trade changes vs prior comparable run" not in headlines
+    assert "Capital allocation changed from prior comparable run" in headlines
+    assert recent_activity_rows[0]["status"] == "Capital allocation changed from prior comparable run"
+
+
+def test_trade_change_ignores_reordered_identical_trades(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    trade_a = _trade_item(symbol="EFA", action="BUY", quantity=24, price=99.16)
+    trade_b = _trade_item(symbol="BIL", action="SELL", quantity=10, price=91.2)
+    first_plan = _execution_plan_payload(
+        warnings=[],
+        trade_warnings=[],
+        items=[trade_a, trade_b],
+    )
+    second_plan = _execution_plan_payload(
+        warnings=[],
+        trade_warnings=[],
+        items=[trade_b, trade_a],
+    )
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-order-older",
+        execution_plan=first_plan,
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:48:32-05:00",
+        identity="plan-order-newer",
+        execution_plan=second_plan,
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    comparison_rows = build_run_comparison_rows(runs[0], runs[1])
+    needs_review_rows = build_needs_review_rows(runs)
+    recent_activity_rows = build_recent_activity_rows(runs, limit=10)
+
+    changed_fields = {row["field"] for row in comparison_rows}
+    headlines = {row["headline"] for row in needs_review_rows}
+    assert "proposed_trades" not in changed_fields
+    assert "New execution plan with trade changes vs prior comparable run" not in headlines
+    assert "Capital allocation changed from prior comparable run" not in headlines
+    assert recent_activity_rows[0]["status"] == "Archived run with 2 proposed trades"
+
+
+def test_trade_change_ignores_estimated_notional_only_changes(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    first_plan = _execution_plan_payload(warnings=[], trade_warnings=[])
+    second_plan = _execution_plan_payload(warnings=[], trade_warnings=[])
+    second_plan["items"] = [
+        {
+            **second_plan["items"][0],
+            "estimated_notional": 9_999.99,
+        }
+    ]
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-notional-older",
+        execution_plan=first_plan,
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:48:32-05:00",
+        identity="plan-notional-newer",
+        execution_plan=second_plan,
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    comparison_rows = build_run_comparison_rows(runs[0], runs[1])
+    needs_review_rows = build_needs_review_rows(runs)
+
+    changed_fields = {row["field"] for row in comparison_rows}
+    headlines = {row["headline"] for row in needs_review_rows}
+    assert "proposed_trades" not in changed_fields
+    assert "New execution plan with trade changes vs prior comparable run" not in headlines
+    assert "Capital allocation changed from prior comparable run" in headlines

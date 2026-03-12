@@ -526,22 +526,34 @@ def _extract_order_intent_trades(order_intents: Mapping[str, Any]) -> list[dict[
 
 
 def _trade_signatures(trades: list[dict[str, Any]]) -> list[str]:
-    signatures: list[str] = []
+    normalized: list[tuple[tuple[str, str, str, str], str]] = []
     for trade in trades:
-        signatures.append(
-            " ".join(
-                part
-                for part in (
-                    _format_value(trade.get("side")),
-                    _format_value(trade.get("quantity")),
-                    _format_value(trade.get("symbol")),
-                    f"@ {_format_value(trade.get('reference_price'))}",
-                    f"~ {_format_value(trade.get('estimated_notional'))}",
-                )
-                if part and part != "-"
-            )
-        )
-    return signatures
+        identity = _trade_intent_identity(trade)
+        normalized.append((identity, _trade_intent_signature(identity)))
+    normalized.sort(key=lambda item: item[0])
+    return [signature for _, signature in normalized]
+
+
+def _trade_intent_identity(trade: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    side = _format_value(trade.get("side"))
+    symbol = _format_value(trade.get("symbol"))
+    quantity = trade.get("quantity")
+    target_quantity = trade.get("desired_target_shares")
+
+    if quantity is not None and quantity != "":
+        return (side, symbol, "quantity", _format_value(quantity))
+    if target_quantity is not None and target_quantity != "":
+        return (side, symbol, "target", _format_value(target_quantity))
+    return (side, symbol, "quantity", "-")
+
+
+def _trade_intent_signature(identity: tuple[str, str, str, str]) -> str:
+    side, symbol, quantity_kind, quantity_value = identity
+    if quantity_value == "-":
+        return " ".join(part for part in (side, symbol) if part and part != "-") or "-"
+    if quantity_kind == "target":
+        return " ".join(part for part in (side, "target", quantity_value, symbol) if part and part != "-")
+    return " ".join(part for part in (side, quantity_value, symbol) if part and part != "-")
 
 
 def _review_artifact_paths(run: ReviewRun) -> dict[str, Path]:
