@@ -11,6 +11,7 @@ from trading_codex.run_archive import recent_runs, resolve_archive_root, resolve
 SUMMARY_FIELDS: tuple[tuple[str, str], ...] = (
     ("run_kind", "run_kind"),
     ("mode", "mode"),
+    ("source_label", "source_label"),
     ("strategy", "strategy"),
     ("action", "action"),
     ("symbol", "symbol"),
@@ -24,6 +25,30 @@ SUMMARY_FIELDS: tuple[tuple[str, str], ...] = (
     ("plan_sha256", "plan_sha256"),
     ("event_id", "event_id"),
 )
+
+REVIEW_ARTIFACT_PRIORITY: tuple[str, ...] = (
+    "execution_plan_markdown",
+    "review_markdown",
+    "manual_order_checklist_path",
+)
+
+PRIMARY_ACTIVITY_ARTIFACT_PRIORITY: tuple[str, ...] = (
+    *REVIEW_ARTIFACT_PRIORITY,
+    "manual_ticket_csv_path",
+    "simulated_order_requests_path",
+    "order_intents_json_path",
+    "execution_plan_json",
+    "signal_payload",
+    "next_action_payload",
+)
+
+NEEDS_REVIEW_PRIORITIES: dict[str, int] = {
+    "blockers": 500,
+    "warnings": 400,
+    "missing_review": 300,
+    "trade_change": 250,
+    "capital_change": 200,
+}
 
 
 @dataclass(frozen=True)
@@ -150,12 +175,20 @@ def summarize_run(run: ReviewRun) -> dict[str, Any]:
     live_preview = _as_dict(execution_plan.get("live_submission_preview")) or _as_dict(
         order_intents.get("live_submission_preview")
     )
+    manifest_source = _as_dict(run.manifest.get("source"))
+    execution_source = _as_dict(execution_plan.get("source"))
+    order_source = _as_dict(order_intents.get("source"))
 
     return {
         "run_id": run.run_id,
         "timestamp": _first_present(run.manifest.get("timestamp"), execution_plan.get("generated_at_chicago")),
         "run_kind": _first_present(run.manifest.get("run_kind")),
         "mode": _first_present(run.manifest.get("mode")),
+        "source_label": _first_present(
+            manifest_source.get("label"),
+            execution_source.get("label"),
+            order_source.get("label"),
+        ),
         "strategy": _first_present(run.manifest.get("strategy"), signal.get("strategy"), live_preview.get("strategy")),
         "action": _first_present(run.manifest.get("action"), signal.get("action")),
         "symbol": _first_present(run.manifest.get("symbol"), signal.get("symbol")),
@@ -209,6 +242,7 @@ def build_run_history_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
                 "timestamp": summary.get("timestamp"),
                 "run_kind": summary.get("run_kind"),
                 "mode": summary.get("mode"),
+                "source_label": summary.get("source_label"),
                 "strategy": summary.get("strategy"),
                 "action": summary.get("action"),
                 "symbol": summary.get("symbol"),
@@ -262,6 +296,121 @@ def build_artifact_rows(run: ReviewRun) -> list[dict[str, str]]:
     for key, path in sorted(run.resolved_artifact_paths().items()):
         rows.append({"artifact": key, "path": str(path)})
     return rows
+
+
+def build_needs_review_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, run in enumerate(runs):
+        summary = summarize_run(run)
+        prior = _find_prior_comparable_run(run, runs[index + 1 :])
+        warnings = run.warnings()
+        blockers = run.blockers()
+
+        if blockers:
+            rows.append(
+                _build_needs_review_row(
+                    priority_key="blockers",
+                    run=run,
+                    summary=summary,
+                    headline="Archived run contains blockers",
+                    detail=f"{len(blockers)} blocker(s): " + "; ".join(blockers),
+                    path=_preferred_review_path(run),
+                )
+            )
+
+        if warnings:
+            rows.append(
+                _build_needs_review_row(
+                    priority_key="warnings",
+                    run=run,
+                    summary=summary,
+                    headline="Archived run contains warnings",
+                    detail=f"{len(warnings)} warning(s): " + "; ".join(warnings),
+                    path=_preferred_review_path(run),
+                )
+            )
+
+        if _has_plan_artifact(run) and not _review_artifact_paths(run):
+            rows.append(
+                _build_needs_review_row(
+                    priority_key="missing_review",
+                    run=run,
+                    summary=summary,
+                    headline="New plan found; no review artifact detected",
+                    detail="Plan/order artifacts exist in the archive, but no markdown/checklist review artifact was found.",
+                    path=_preferred_plan_path(run),
+                )
+            )
+
+        if prior is None:
+            continue
+
+        current_trade_signatures = _trade_signatures(run.proposed_trades())
+        previous_trade_signatures = _trade_signatures(prior.proposed_trades())
+        if current_trade_signatures != previous_trade_signatures:
+            rows.append(
+                _build_needs_review_row(
+                    priority_key="trade_change",
+                    run=run,
+                    summary=summary,
+                    headline="New execution plan with trade changes vs prior comparable run",
+                    detail=_build_trade_change_detail(
+                        current_trade_signatures=current_trade_signatures,
+                        previous_trade_signatures=previous_trade_signatures,
+                    ),
+                    path=_preferred_plan_path(run),
+                    compare_to_run=prior,
+                    compare_to_path=_preferred_plan_path(prior),
+                )
+            )
+
+        capital_detail = _build_capital_change_detail(run=run, previous=prior)
+        if capital_detail is not None:
+            rows.append(
+                _build_needs_review_row(
+                    priority_key="capital_change",
+                    run=run,
+                    summary=summary,
+                    headline="Capital allocation changed from prior comparable run",
+                    detail=capital_detail,
+                    path=_preferred_plan_path(run),
+                    compare_to_run=prior,
+                    compare_to_path=_preferred_plan_path(prior),
+                )
+            )
+
+    rows.sort(
+        key=lambda row: (
+            int(row.get("_priority", 0)),
+            str(row.get("timestamp") or ""),
+            str(row.get("run_id") or ""),
+        ),
+        reverse=True,
+    )
+    for row in rows:
+        row.pop("_priority", None)
+    return rows
+
+
+def build_recent_activity_rows(runs: list[ReviewRun], *, limit: int = 25) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, run in enumerate(runs):
+        summary = summarize_run(run)
+        prior = _find_prior_comparable_run(run, runs[index + 1 :])
+        artifact_type, path = _primary_activity_artifact(run)
+        related_paths = _related_activity_paths(run=run, primary_path=path)
+        rows.append(
+            {
+                "timestamp": summary.get("timestamp"),
+                "label": _run_label(summary),
+                "artifact_type": artifact_type,
+                "status": _recent_activity_status(run=run, prior=prior),
+                "run_id": run.run_id,
+                "path": str(path) if path is not None else "-",
+                "related_paths": "; ".join(related_paths) if related_paths else "-",
+            }
+        )
+    return rows[: max(int(limit), 0)]
 
 
 def _load_review_run_from_entry(root_dir: Path, entry: Mapping[str, Any]) -> ReviewRun | None:
@@ -395,6 +544,210 @@ def _trade_signatures(trades: list[dict[str, Any]]) -> list[str]:
     return signatures
 
 
+def _review_artifact_paths(run: ReviewRun) -> dict[str, Path]:
+    resolved = run.resolved_artifact_paths()
+    review_paths: dict[str, Path] = {}
+    for key, path in resolved.items():
+        if key in REVIEW_ARTIFACT_PRIORITY or key.endswith("_markdown") or "checklist" in key or "review" in key:
+            review_paths[key] = path
+    return review_paths
+
+
+def _has_plan_artifact(run: ReviewRun) -> bool:
+    resolved = run.resolved_artifact_paths()
+    return "execution_plan_json" in resolved or "order_intents_json_path" in resolved
+
+
+def _preferred_review_path(run: ReviewRun) -> Path | None:
+    review_paths = _review_artifact_paths(run)
+    for key in REVIEW_ARTIFACT_PRIORITY:
+        path = review_paths.get(key)
+        if path is not None:
+            return path
+    return _preferred_plan_path(run)
+
+
+def _preferred_plan_path(run: ReviewRun) -> Path | None:
+    resolved = run.resolved_artifact_paths()
+    for key in ("execution_plan_json", "order_intents_json_path", "signal_payload", "next_action_payload"):
+        path = resolved.get(key)
+        if path is not None:
+            return path
+    return run.manifest_path
+
+
+def _primary_activity_artifact(run: ReviewRun) -> tuple[str, Path | None]:
+    resolved = run.resolved_artifact_paths()
+    for key in PRIMARY_ACTIVITY_ARTIFACT_PRIORITY:
+        path = resolved.get(key)
+        if path is not None:
+            return key, path
+    return "manifest", run.manifest_path
+
+
+def _related_activity_paths(*, run: ReviewRun, primary_path: Path | None) -> list[str]:
+    candidates: list[str] = []
+    for path in list(_review_artifact_paths(run).values()) + list(run.resolved_artifact_paths().values()):
+        if primary_path is not None and path == primary_path:
+            continue
+        candidates.append(str(path))
+    if run.manifest_path is not None and (primary_path is None or run.manifest_path != primary_path):
+        candidates.append(str(run.manifest_path))
+    return _dedupe_preserve_order(candidates)
+
+
+def _find_prior_comparable_run(current: ReviewRun, previous_runs: list[ReviewRun]) -> ReviewRun | None:
+    target_key = _comparison_key(current)
+    if target_key is None:
+        return None
+    for candidate in previous_runs:
+        if _comparison_key(candidate) == target_key:
+            return candidate
+    return None
+
+
+def _comparison_key(run: ReviewRun) -> tuple[str, str, str, str, str, str] | None:
+    summary = summarize_run(run)
+    source_label = summary.get("source_label")
+    strategy = summary.get("strategy")
+    symbol = summary.get("symbol")
+    if all(_is_blank(value) for value in (source_label, strategy, symbol)):
+        return None
+    return (
+        str(summary.get("run_kind") or "-"),
+        str(summary.get("mode") or "-"),
+        str(source_label or "-"),
+        str(strategy or "-"),
+        str(symbol or "-"),
+        str(summary.get("broker_account_id") or "-"),
+    )
+
+
+def _recent_activity_status(*, run: ReviewRun, prior: ReviewRun | None) -> str:
+    blockers = run.blockers()
+    if blockers:
+        return "Archived run contains blockers"
+    warnings = run.warnings()
+    if warnings:
+        return "Archived run contains warnings"
+    if _has_plan_artifact(run) and not _review_artifact_paths(run):
+        return "New plan found; no review artifact detected"
+    if prior is not None:
+        current_trade_signatures = _trade_signatures(run.proposed_trades())
+        previous_trade_signatures = _trade_signatures(prior.proposed_trades())
+        if current_trade_signatures != previous_trade_signatures:
+            return "New execution plan with trade changes vs prior plan"
+        if _build_capital_change_detail(run=run, previous=prior) is not None:
+            return "Capital allocation changed from prior comparable run"
+    trade_count = len(run.proposed_trades())
+    if trade_count == 1:
+        return "Archived run with 1 proposed trade"
+    if trade_count > 1:
+        return f"Archived run with {trade_count} proposed trades"
+    return "Archived run available for review"
+
+
+def _build_needs_review_row(
+    *,
+    priority_key: str,
+    run: ReviewRun,
+    summary: dict[str, Any],
+    headline: str,
+    detail: str,
+    path: Path | None,
+    compare_to_run: ReviewRun | None = None,
+    compare_to_path: Path | None = None,
+) -> dict[str, Any]:
+    return {
+        "_priority": NEEDS_REVIEW_PRIORITIES[priority_key],
+        "priority": _priority_label(priority_key),
+        "timestamp": summary.get("timestamp"),
+        "label": _run_label(summary),
+        "headline": headline,
+        "detail": detail,
+        "run_id": run.run_id,
+        "path": str(path) if path is not None else "-",
+        "compare_to_run_id": compare_to_run.run_id if compare_to_run is not None else "-",
+        "compare_to_path": str(compare_to_path) if compare_to_path is not None else "-",
+    }
+
+
+def _run_label(summary: Mapping[str, Any]) -> str:
+    return _format_value(
+        _first_present(
+            summary.get("source_label"),
+            summary.get("strategy"),
+            summary.get("symbol"),
+            summary.get("run_kind"),
+            summary.get("run_id"),
+        )
+    )
+
+
+def _priority_label(priority_key: str) -> str:
+    if priority_key == "blockers":
+        return "high"
+    if priority_key in {"warnings", "missing_review"}:
+        return "medium"
+    return "low"
+
+
+def _build_trade_change_detail(
+    *,
+    current_trade_signatures: list[str],
+    previous_trade_signatures: list[str],
+) -> str:
+    current_text = "; ".join(current_trade_signatures) or "no proposed trades"
+    previous_text = "; ".join(previous_trade_signatures) or "no proposed trades"
+    return f"Current: {current_text}. Previous: {previous_text}."
+
+
+def _build_capital_change_detail(*, run: ReviewRun, previous: ReviewRun) -> str | None:
+    current_summary = summarize_run(run)
+    previous_summary = summarize_run(previous)
+    changes: list[str] = []
+    for key, label in (
+        ("effective_capital", "effective_capital"),
+        ("buying_power_available", "buying_power_available"),
+    ):
+        current_value = current_summary.get(key)
+        previous_value = previous_summary.get(key)
+        if _normalize_for_compare(current_value) == _normalize_for_compare(previous_value):
+            continue
+        changes.append(f"{label}: {_format_value(previous_value)} -> {_format_value(current_value)}")
+
+    current_notional = _estimated_notional_total(run)
+    previous_notional = _estimated_notional_total(previous)
+    if _normalize_for_compare(current_notional) != _normalize_for_compare(previous_notional):
+        changes.append(f"estimated_notional: {_format_value(previous_notional)} -> {_format_value(current_notional)}")
+
+    if not changes:
+        return None
+    return "; ".join(changes)
+
+
+def _estimated_notional_total(run: ReviewRun) -> float | None:
+    execution_totals = _as_dict(run.execution_plan().get("totals"))
+    value = _first_present(
+        execution_totals.get("net_notional"),
+        execution_totals.get("buy_notional"),
+    )
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    total = 0.0
+    found = False
+    for trade in run.proposed_trades():
+        estimated = trade.get("estimated_notional")
+        if not isinstance(estimated, (int, float)):
+            continue
+        total += float(estimated)
+        found = True
+    if found:
+        return round(total, 8)
+    return None
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -430,6 +783,10 @@ def _first_present(*values: Any) -> Any:
             continue
         return value
     return None
+
+
+def _is_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
 
 
 def _normalize_for_compare(value: Any) -> Any:

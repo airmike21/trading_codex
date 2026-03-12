@@ -14,6 +14,8 @@ import streamlit as st
 
 from trading_codex.review_dashboard_data import (
     build_artifact_rows,
+    build_needs_review_rows,
+    build_recent_activity_rows,
     build_run_comparison_rows,
     build_run_history_rows,
     load_review_runs,
@@ -73,10 +75,22 @@ def main() -> None:
     metric_cols[2].metric("Warnings", str(len(latest.warnings())))
     metric_cols[3].metric("Blockers", str(len(latest.blockers())))
 
+    st.subheader("Needs Review Now")
+    needs_review_rows = build_needs_review_rows(runs)
+    if needs_review_rows:
+        st.dataframe(_frame(needs_review_rows), use_container_width=True)
+    else:
+        st.success("No loaded archived runs currently trigger review heuristics.")
+
+    st.subheader("Recent Activity")
+    recent_activity_rows = build_recent_activity_rows(runs, limit=max(limit * 2, 10))
+    st.dataframe(_frame(recent_activity_rows), use_container_width=True)
+
     st.subheader("Latest Run Summary")
     summary_rows = [
         {"field": "timestamp", "value": _format_value(latest_summary.get("timestamp"))},
         {"field": "run_id", "value": latest.run_id},
+        {"field": "source_label", "value": _format_value(latest_summary.get("source_label"))},
         {"field": "broker_account_id", "value": _format_value(latest_summary.get("broker_account_id"))},
         {"field": "strategy", "value": _format_value(latest_summary.get("strategy"))},
         {"field": "action", "value": _format_value(latest_summary.get("action"))},
