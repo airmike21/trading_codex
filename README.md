@@ -12,6 +12,41 @@ pytest
 python scripts/run_backtest.py
 ```
 
+## Review Dashboard Launcher
+
+The read-only Streamlit review dashboard can be launched from Windows while still
+running inside a dedicated clean WSL workspace.
+
+Recommended workspace:
+- `~/.codex-workspaces/trading-review`
+
+Do not point the launcher at `~/trading_codex`. The PowerShell wrapper refuses that path.
+
+One-time setup inside the clean review workspace:
+
+```bash
+cd ~/.codex-workspaces/trading-review
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .[dashboard]
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$PWD/scripts/windows/install_review_dashboard_shortcut.ps1")"
+```
+
+Daily use:
+- Double-click the Windows desktop shortcut `Trading Codex Review Hub`.
+
+Direct launcher command:
+
+```bash
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$PWD/scripts/windows/trading_codex_review_dashboard.ps1")"
+```
+
+Behavior:
+- Runs `scripts/review_dashboard.py` from the clean WSL review workspace.
+- Binds Streamlit only to `127.0.0.1` on port `8501` by default.
+- Reuses an already-running healthy dashboard on that port instead of starting a duplicate.
+- Fails clearly if the configured workspace is missing, dirty, or points at `~/trading_codex`.
+
 ## Workflow
 
 Fetch -> cache -> backtest:
