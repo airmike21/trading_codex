@@ -298,6 +298,57 @@ def build_artifact_rows(run: ReviewRun) -> list[dict[str, str]]:
     return rows
 
 
+def build_baseline_option_rows(runs: list[ReviewRun]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for run in runs:
+        summary = summarize_run(run)
+        rows.append(
+            {
+                "run_id": run.run_id,
+                "timestamp": _format_value(summary.get("timestamp")),
+                "label": _baseline_option_label(run=run, summary=summary),
+            }
+        )
+    return rows
+
+
+def filter_runs_newer_than_baseline(runs: list[ReviewRun], baseline_run_id: str | None) -> list[ReviewRun]:
+    if _is_blank(baseline_run_id):
+        return []
+    for index, run in enumerate(runs):
+        if run.run_id == baseline_run_id:
+            return runs[:index]
+    return []
+
+
+def filter_rows_for_runs(rows: list[dict[str, Any]], runs: list[ReviewRun]) -> list[dict[str, Any]]:
+    run_ids = {run.run_id for run in runs}
+    if not run_ids:
+        return []
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("run_id") or "") in run_ids:
+            filtered.append(row)
+    return filtered
+
+
+def summarize_new_since_baseline(
+    *,
+    newer_runs: list[ReviewRun],
+    newer_needs_review_rows: list[dict[str, Any]],
+    newer_recent_activity_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    newest_timestamp = None
+    if newer_runs:
+        newest_timestamp = summarize_run(newer_runs[0]).get("timestamp")
+    return {
+        "new_run_count": len(newer_runs),
+        "new_needs_review_count": len(newer_needs_review_rows),
+        "new_recent_activity_count": len(newer_recent_activity_rows),
+        "newest_timestamp": newest_timestamp,
+    }
+
+
 def build_needs_review_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, run in enumerate(runs):
@@ -692,6 +743,17 @@ def _run_label(summary: Mapping[str, Any]) -> str:
             summary.get("symbol"),
             summary.get("run_kind"),
             summary.get("run_id"),
+        )
+    )
+
+
+def _baseline_option_label(*, run: ReviewRun, summary: Mapping[str, Any]) -> str:
+    return " | ".join(
+        (
+            _format_value(summary.get("timestamp")),
+            _run_label(summary),
+            _format_value(summary.get("run_kind")),
+            run.run_id,
         )
     )
 

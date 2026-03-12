@@ -5,11 +5,15 @@ from pathlib import Path
 
 from trading_codex.review_dashboard_data import (
     build_artifact_rows,
+    build_baseline_option_rows,
     build_needs_review_rows,
     build_recent_activity_rows,
     build_run_comparison_rows,
     build_run_history_rows,
+    filter_rows_for_runs,
+    filter_runs_newer_than_baseline,
     load_review_runs,
+    summarize_new_since_baseline,
     summarize_run,
 )
 from trading_codex.run_archive import write_run_archive
@@ -515,3 +519,121 @@ def test_trade_change_ignores_estimated_notional_only_changes(tmp_path: Path) ->
     assert "proposed_trades" not in changed_fields
     assert "New execution plan with trade changes vs prior comparable run" not in headlines
     assert "Capital allocation changed from prior comparable run" in headlines
+
+
+def test_baseline_option_rows_and_new_since_baseline_summary_filter_to_newer_runs(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-oldest",
+        execution_plan=_execution_plan_payload(source_label="dual_mom_old", warnings=[], trade_warnings=[]),
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:48:32-05:00",
+        identity="plan-baseline",
+        execution_plan=_execution_plan_payload(source_label="dual_mom_base", warnings=[], trade_warnings=[]),
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:49:32-05:00",
+        identity="plan-newest",
+        execution_plan=_execution_plan_payload(
+            source_label="dual_mom_new",
+            warnings=["warning_new"],
+            trade_warnings=[],
+        ),
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    baseline_options = build_baseline_option_rows(runs)
+    newer_runs = filter_runs_newer_than_baseline(runs, runs[1].run_id)
+    needs_review_rows = build_needs_review_rows(runs)
+    recent_activity_rows = build_recent_activity_rows(runs, limit=10)
+    newer_needs_review_rows = filter_rows_for_runs(needs_review_rows, newer_runs)
+    newer_recent_activity_rows = filter_rows_for_runs(recent_activity_rows, newer_runs)
+    summary = summarize_new_since_baseline(
+        newer_runs=newer_runs,
+        newer_needs_review_rows=newer_needs_review_rows,
+        newer_recent_activity_rows=newer_recent_activity_rows,
+    )
+
+    assert [row["run_id"] for row in baseline_options] == [run.run_id for run in runs]
+    assert baseline_options[0]["label"].startswith("2026-03-11T15:49:32-05:00 | dual_mom_new | execution_plan | ")
+    assert [run.run_id for run in newer_runs] == [runs[0].run_id]
+    assert [row["run_id"] for row in newer_needs_review_rows] == [runs[0].run_id]
+    assert [row["run_id"] for row in newer_recent_activity_rows] == [runs[0].run_id]
+    assert summary == {
+        "new_run_count": 1,
+        "new_needs_review_count": 1,
+        "new_recent_activity_count": 1,
+        "newest_timestamp": "2026-03-11T15:49:32-05:00",
+    }
+
+
+def test_filter_runs_newer_than_baseline_handles_missing_selection_conservatively(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-only",
+        execution_plan=_execution_plan_payload(source_label="dual_mom_only", warnings=[], trade_warnings=[]),
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    needs_review_rows = build_needs_review_rows(runs)
+    recent_activity_rows = build_recent_activity_rows(runs, limit=10)
+
+    assert filter_runs_newer_than_baseline(runs, None) == []
+    assert filter_runs_newer_than_baseline(runs, "missing-run-id") == []
+    assert filter_rows_for_runs(needs_review_rows, []) == []
+    assert filter_rows_for_runs(recent_activity_rows, []) == []
+    assert summarize_new_since_baseline(
+        newer_runs=[],
+        newer_needs_review_rows=[],
+        newer_recent_activity_rows=[],
+    ) == {
+        "new_run_count": 0,
+        "new_needs_review_count": 0,
+        "new_recent_activity_count": 0,
+        "newest_timestamp": None,
+    }
+
+
+def test_filter_runs_newer_than_baseline_uses_loaded_order_for_timestamp_ties(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    shared_timestamp = "2026-03-11T15:47:32-05:00"
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp=shared_timestamp,
+        identity="plan-first",
+        execution_plan=_execution_plan_payload(source_label="dual_mom_first", warnings=[], trade_warnings=[]),
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp=shared_timestamp,
+        identity="plan-second",
+        execution_plan=_execution_plan_payload(source_label="dual_mom_second", warnings=[], trade_warnings=[]),
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    newer_runs = filter_runs_newer_than_baseline(runs, runs[1].run_id)
+
+    assert len(runs) == 2
+    assert [run.run_id for run in newer_runs] == [runs[0].run_id]

@@ -14,11 +14,15 @@ import streamlit as st
 
 from trading_codex.review_dashboard_data import (
     build_artifact_rows,
+    build_baseline_option_rows,
     build_needs_review_rows,
     build_recent_activity_rows,
     build_run_comparison_rows,
     build_run_history_rows,
+    filter_rows_for_runs,
+    filter_runs_newer_than_baseline,
     load_review_runs,
+    summarize_new_since_baseline,
     summarize_run,
 )
 
@@ -68,6 +72,31 @@ def main() -> None:
     previous = runs[1] if len(runs) > 1 else None
     latest_summary = summarize_run(latest)
     latest_trades = latest.proposed_trades()
+    needs_review_rows = build_needs_review_rows(runs)
+    recent_activity_rows = build_recent_activity_rows(runs, limit=max(limit * 2, 10))
+    baseline_option_rows = build_baseline_option_rows(runs)
+
+    selected_baseline_run_id: str | None = None
+    st.sidebar.caption("Baseline comparison is session-only and does not write review state.")
+    if len(baseline_option_rows) > 1:
+        baseline_ids = [row["run_id"] for row in baseline_option_rows]
+        baseline_labels = {row["run_id"]: row["label"] for row in baseline_option_rows}
+        selected_baseline_run_id = st.sidebar.selectbox(
+            "Baseline run",
+            options=baseline_ids,
+            index=1,
+            format_func=lambda run_id: baseline_labels.get(run_id, run_id),
+            help="Show only archive items newer than the selected baseline run.",
+        )
+
+    newer_runs = filter_runs_newer_than_baseline(runs, selected_baseline_run_id)
+    newer_needs_review_rows = filter_rows_for_runs(needs_review_rows, newer_runs)
+    newer_recent_activity_rows = filter_rows_for_runs(recent_activity_rows, newer_runs)
+    baseline_summary = summarize_new_since_baseline(
+        newer_runs=newer_runs,
+        newer_needs_review_rows=newer_needs_review_rows,
+        newer_recent_activity_rows=newer_recent_activity_rows,
+    )
 
     metric_cols = st.columns(4)
     metric_cols[0].metric("Latest Run Kind", _format_value(latest_summary.get("run_kind")))
@@ -75,15 +104,39 @@ def main() -> None:
     metric_cols[2].metric("Warnings", str(len(latest.warnings())))
     metric_cols[3].metric("Blockers", str(len(latest.blockers())))
 
+    st.subheader("What’s New Since Baseline")
+    if len(baseline_option_rows) <= 1:
+        st.info("Need at least two archived runs before a baseline comparison is available.")
+    else:
+        baseline_metric_cols = st.columns(3)
+        baseline_metric_cols[0].metric("New Runs", str(baseline_summary.get("new_run_count")))
+        baseline_metric_cols[1].metric("New Review Items", str(baseline_summary.get("new_needs_review_count")))
+        baseline_metric_cols[2].metric("Newest In Scope", _format_value(baseline_summary.get("newest_timestamp")))
+
+        if not newer_runs:
+            st.info("No newer archive items found after selected baseline.")
+        else:
+            st.caption(f"{baseline_summary.get('new_run_count')} new runs since selected baseline.")
+
+            st.markdown("**Needs Review Since Baseline**")
+            if newer_needs_review_rows:
+                st.dataframe(_frame(newer_needs_review_rows), use_container_width=True)
+            else:
+                st.success("No needs-review items were found after the selected baseline.")
+
+            st.markdown("**Recent Activity Since Baseline**")
+            if newer_recent_activity_rows:
+                st.dataframe(_frame(newer_recent_activity_rows), use_container_width=True)
+            else:
+                st.info("No newer recent-activity rows were found after the selected baseline.")
+
     st.subheader("Needs Review Now")
-    needs_review_rows = build_needs_review_rows(runs)
     if needs_review_rows:
         st.dataframe(_frame(needs_review_rows), use_container_width=True)
     else:
         st.success("No loaded archived runs currently trigger review heuristics.")
 
     st.subheader("Recent Activity")
-    recent_activity_rows = build_recent_activity_rows(runs, limit=max(limit * 2, 10))
     st.dataframe(_frame(recent_activity_rows), use_container_width=True)
 
     st.subheader("Latest Run Summary")
