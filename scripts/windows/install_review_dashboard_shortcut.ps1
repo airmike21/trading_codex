@@ -21,6 +21,10 @@ WSL distro name. Default: `Ubuntu`.
 Dedicated clean WSL review workspace used to run the dashboard.
 Default: `~/.codex-workspaces/trading-review`.
 
+.PARAMETER CacheDir
+Optional WSL cache directory forwarded to the launcher. Defaults to the
+launcher's built-in cache path when omitted.
+
 .PARAMETER Port
 Local dashboard port. Default: `8501`.
 
@@ -42,6 +46,7 @@ param(
   [string]$DesktopPath = [Environment]::GetFolderPath("Desktop"),
   [string]$WslDistro = "Ubuntu",
   [string]$WslRepoPath = "~/.codex-workspaces/trading-review",
+  [string]$CacheDir,
   [ValidateRange(1, 65535)]
   [int]$Port = 8501,
   [switch]$PrintOnly,
@@ -173,6 +178,9 @@ $arguments = @(
   "-Port",
   [string]$Port
 )
+if (-not [string]::IsNullOrWhiteSpace($CacheDir)) {
+  $arguments += @("-CacheDir", $CacheDir)
+}
 $argumentLine = Join-WindowsCommandLine -Values $arguments
 
 if ($PrintOnly) {
@@ -189,7 +197,11 @@ if (-not (Test-Path -LiteralPath $DesktopPath)) {
   throw "Desktop destination not found: $DesktopPath"
 }
 
-& $powershellExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $launcherWindowsPath -ValidateOnly -WslDistro $WslDistro -WslRepoPath $WslRepoPath -Port $Port
+if (-not [string]::IsNullOrWhiteSpace($CacheDir)) {
+  & $powershellExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $launcherWindowsPath -ValidateOnly -WslDistro $WslDistro -WslRepoPath $WslRepoPath -Port $Port -CacheDir $CacheDir
+} else {
+  & $powershellExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $launcherWindowsPath -ValidateOnly -WslDistro $WslDistro -WslRepoPath $WslRepoPath -Port $Port
+}
 if ($LASTEXITCODE -ne 0) {
   throw "Launcher validation failed for $resolvedRepoPath"
 }

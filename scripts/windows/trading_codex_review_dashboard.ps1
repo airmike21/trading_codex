@@ -170,6 +170,31 @@ function Resolve-WslPath {
   return Invoke-WslCapture -Distro $Distro -Command @("wslpath", "-a", $candidate)
 }
 
+function Resolve-WslPathLexical {
+  param(
+    [string]$PathValue,
+    [string]$Distro
+  )
+  if ([string]::IsNullOrWhiteSpace($PathValue)) {
+    return $null
+  }
+
+  if ($PathValue -like "~*" -or $PathValue.StartsWith("/")) {
+    return Invoke-WslCapture -Distro $Distro -Command @(
+      "python3",
+      "-c",
+      "import os, sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))",
+      $PathValue
+    )
+  }
+
+  $candidate = $PathValue
+  if (Test-Path -LiteralPath $PathValue) {
+    $candidate = (Resolve-Path -LiteralPath $PathValue).Path
+  }
+  return Invoke-WslCapture -Distro $Distro -Command @("wslpath", "-a", $candidate)
+}
+
 function Convert-WslPathToWindowsPath {
   param(
     [string]$Distro,
@@ -420,32 +445,70 @@ function Join-BashCommand {
   return [string]::Join(" ", $Values)
 }
 
+function Get-WslParentPath {
+  param(
+    [string]$PathValue
+  )
+  if ([string]::IsNullOrWhiteSpace($PathValue)) {
+    return $null
+  }
+  if ($PathValue -match "/") {
+    return ($PathValue -replace "/[^/]+$", "")
+  }
+  return Split-Path -Path $PathValue -Parent
+}
+
 function Build-LaunchCommand {
   param(
     [string]$RepoPath,
     [string]$PythonPath,
+    [string]$LauncherHelperPath,
     [string]$DashboardScriptPath,
     [string]$LogPath,
     [int]$PortNumber
   )
-  $logDirectory = Split-Path -Path $LogPath -Parent
-  $streamlitParts = @(
+  $logDirectory = Get-WslParentPath -PathValue $LogPath
+  $pythonLaunch = Join-BashCommand -Values @(
     (ConvertTo-BashArg -Value $PythonPath),
-    "-m",
-    "streamlit",
-    "run",
+    (ConvertTo-BashArg -Value $LauncherHelperPath),
+    "--log-path",
+    (ConvertTo-BashArg -Value $LogPath),
+    "--python-path",
+    (ConvertTo-BashArg -Value $PythonPath),
+    "--dashboard-script",
     (ConvertTo-BashArg -Value $DashboardScriptPath),
-    "--server.address",
-    $DashboardHost,
-    "--server.port",
-    [string]$PortNumber,
-    "--server.headless",
-    "true",
-    "--browser.gatherUsageStats",
-    "false"
+    "--repo-path",
+    (ConvertTo-BashArg -Value $RepoPath),
+    "--port",
+    [string]$PortNumber
   )
-  $streamlitCommand = Join-BashCommand -Values $streamlitParts
-  return "mkdir -p $(ConvertTo-BashArg -Value $logDirectory) && cd $(ConvertTo-BashArg -Value $RepoPath) && nohup $streamlitCommand > $(ConvertTo-BashArg -Value $LogPath) 2>&1 < /dev/null & printf '%s' " + '$!'
+  return "mkdir -p $(ConvertTo-BashArg -Value $logDirectory) && $pythonLaunch"
+}
+
+function Start-ReviewDashboardProcess {
+  param(
+    [string]$Distro,
+    [string]$RepoPath,
+    [string]$PythonPath,
+    [string]$LauncherHelperPath,
+    [string]$DashboardScriptPath,
+    [string]$LogPath,
+    [int]$PortNumber
+  )
+  return Invoke-WslStdout -Distro $Distro -Command @(
+    $PythonPath,
+    $LauncherHelperPath,
+    "--log-path",
+    $LogPath,
+    "--python-path",
+    $PythonPath,
+    "--dashboard-script",
+    $DashboardScriptPath,
+    "--repo-path",
+    $RepoPath,
+    "--port",
+    [string]$PortNumber
+  )
 }
 
 function Assert-SafeReviewWorkspace {
@@ -467,6 +530,7 @@ function Assert-SafeReviewWorkspace {
   $requiredFiles = @(
     "$RepoPath/pyproject.toml",
     "$RepoPath/scripts/review_dashboard.py",
+    "$RepoPath/scripts/review_dashboard_detached.py",
     "$RepoPath/src/trading_codex/review_dashboard_data.py"
   )
   foreach ($pathValue in $requiredFiles) {
@@ -520,9 +584,10 @@ try {
   }
 
   $resolvedRepoPath = Resolve-WslPath -PathValue $WslRepoPath -Distro $WslDistro
-  $resolvedPythonPath = Resolve-WslPath -PathValue $WslPython -Distro $WslDistro
+  $resolvedPythonPath = Resolve-WslPathLexical -PathValue $WslPython -Distro $WslDistro
   $resolvedCacheDir = Resolve-WslPath -PathValue $CacheDir -Distro $WslDistro
   $resolvedDashboardScriptPath = Resolve-WslPath -PathValue "$($resolvedRepoPath.TrimEnd('/'))/scripts/review_dashboard.py" -Distro $WslDistro
+  $resolvedLauncherHelperPath = Resolve-WslPath -PathValue "$($resolvedRepoPath.TrimEnd('/'))/scripts/review_dashboard_detached.py" -Distro $WslDistro
   $resolvedLogPath = Resolve-WslPath -PathValue "$($resolvedCacheDir.TrimEnd('/'))/streamlit-$Port.log" -Distro $WslDistro
   $resolvedMetadataPath = Resolve-WslPath -PathValue "$($resolvedCacheDir.TrimEnd('/'))/instance-$Port.json" -Distro $WslDistro
   $metadataWindowsPath = Convert-WslPathToWindowsPath -Distro $WslDistro -PathValue $resolvedMetadataPath
@@ -531,7 +596,7 @@ try {
   Assert-SafeReviewWorkspace -Distro $WslDistro -RepoPath $resolvedRepoPath -PythonPath $resolvedPythonPath
 
   if ($PrintOnly) {
-    $launchCommand = Build-LaunchCommand -RepoPath $resolvedRepoPath -PythonPath $resolvedPythonPath -DashboardScriptPath $resolvedDashboardScriptPath -LogPath $resolvedLogPath -PortNumber $Port
+    $launchCommand = Build-LaunchCommand -RepoPath $resolvedRepoPath -PythonPath $resolvedPythonPath -LauncherHelperPath $resolvedLauncherHelperPath -DashboardScriptPath $resolvedDashboardScriptPath -LogPath $resolvedLogPath -PortNumber $Port
     Write-Output "# review_dashboard_launcher"
     Write-Output "url=$dashboardUrl"
     Write-Output "wsl_distro=$WslDistro"
@@ -572,8 +637,7 @@ try {
     Remove-FileIfExists -PathValue $metadataWindowsPath
   }
 
-  $bashCommand = Build-LaunchCommand -RepoPath $resolvedRepoPath -PythonPath $resolvedPythonPath -DashboardScriptPath $resolvedDashboardScriptPath -LogPath $resolvedLogPath -PortNumber $Port
-  $launchOutput = Invoke-WslStdout -Distro $WslDistro -Command @("sh", "-lc", $bashCommand)
+  $launchOutput = Start-ReviewDashboardProcess -Distro $WslDistro -RepoPath $resolvedRepoPath -PythonPath $resolvedPythonPath -LauncherHelperPath $resolvedLauncherHelperPath -DashboardScriptPath $resolvedDashboardScriptPath -LogPath $resolvedLogPath -PortNumber $Port
   $launchLines = @($launchOutput -split "\r?\n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
   $launchPidText = if ($launchLines.Count -gt 0) { $launchLines[$launchLines.Count - 1].Trim() } else { "" }
   $launchedProcessId = 0
