@@ -44,7 +44,8 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$
 Behavior:
 - Runs `scripts/review_dashboard.py` from the clean WSL review workspace.
 - Binds Streamlit only to `127.0.0.1` on port `8501` by default.
-- Reuses an already-running healthy dashboard on that port instead of starting a duplicate.
+- Reuses only a launcher-owned dashboard instance for the same repo and port.
+- Refuses to reuse a different app already occupying that port, even if it is another healthy Streamlit server.
 - Fails clearly if the configured workspace is missing, dirty, or points at `~/trading_codex`.
 
 ## Workflow
