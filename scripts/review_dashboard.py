@@ -77,16 +77,21 @@ def main() -> None:
     baseline_option_rows = build_baseline_option_rows(runs)
 
     selected_baseline_run_id: str | None = None
-    st.sidebar.caption("Baseline comparison is session-only and does not write review state.")
+    st.sidebar.caption(
+        "Baseline comparison is session-only and applies only to the What's New Since Baseline panel."
+    )
     if len(baseline_option_rows) > 1:
         baseline_ids = [row["run_id"] for row in baseline_option_rows]
         baseline_labels = {row["run_id"]: row["label"] for row in baseline_option_rows}
         selected_baseline_run_id = st.sidebar.selectbox(
-            "Baseline run",
+            "Baseline run for What's New",
             options=baseline_ids,
             index=1,
             format_func=lambda run_id: baseline_labels.get(run_id, run_id),
-            help="Show only archive items newer than the selected baseline run.",
+            help=(
+                "Scopes only the What's New Since Baseline panel. "
+                "The full Needs Review Now and Recent Activity sections below still show all loaded archive items."
+            ),
         )
 
     newer_runs = filter_runs_newer_than_baseline(runs, selected_baseline_run_id)
@@ -108,6 +113,10 @@ def main() -> None:
     if len(baseline_option_rows) <= 1:
         st.info("Need at least two archived runs before a baseline comparison is available.")
     else:
+        st.caption(
+            "This panel is filtered by the selected baseline. "
+            "The full Needs Review Now and Recent Activity sections below still show all loaded archive items."
+        )
         baseline_metric_cols = st.columns(3)
         baseline_metric_cols[0].metric("New Runs", str(baseline_summary.get("new_run_count")))
         baseline_metric_cols[1].metric("New Review Items", str(baseline_summary.get("new_needs_review_count")))
