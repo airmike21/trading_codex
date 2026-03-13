@@ -370,6 +370,56 @@ def test_build_needs_review_rows_flags_trade_and_capital_changes_vs_prior_compar
     assert "estimated_notional: 2,379.84 -> 991.6" in capital_row["detail"]
 
 
+def test_build_recent_activity_rows_uses_archived_run_copy_for_warning_blocker_and_missing_review_states(
+    tmp_path: Path,
+) -> None:
+    archive_root = tmp_path / "archive"
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-missing-review",
+        execution_plan=_execution_plan_payload(warnings=[], trade_warnings=[]),
+        include_review_markdown=False,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:48:32-05:00",
+        identity="plan-warning",
+        execution_plan=_execution_plan_payload(
+            warnings=["warning_from_plan"],
+            blockers=[],
+            trade_warnings=[],
+            trade_blockers=[],
+        ),
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:49:32-05:00",
+        identity="plan-blocker",
+        execution_plan=_execution_plan_payload(
+            warnings=[],
+            blockers=["blocker_from_plan"],
+            trade_warnings=[],
+            trade_blockers=[],
+        ),
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    rows = build_recent_activity_rows(runs, limit=10)
+    status_by_run_id = {row["run_id"]: row["status"] for row in rows}
+
+    assert all("Review contains" not in status for status in status_by_run_id.values())
+    assert status_by_run_id[runs[0].run_id] == "Archived run contains blockers"
+    assert status_by_run_id[runs[1].run_id] == "Archived run contains warnings"
+    assert status_by_run_id[runs[2].run_id] == "New plan found; no review artifact detected"
+
+
 def test_build_recent_activity_rows_orders_newest_first_and_includes_paths(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     older_plan = _execution_plan_payload(source_label="dual_mom_core")
