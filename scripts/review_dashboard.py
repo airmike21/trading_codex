@@ -41,6 +41,82 @@ def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _render_needs_review_table(rows: list[dict[str, object]]) -> None:
+    st.dataframe(
+        _frame(rows),
+        use_container_width=True,
+        hide_index=True,
+        column_order=[
+            "timestamp",
+            "label",
+            "headline",
+            "detail",
+            "review_markdown_path",
+            "plan_json_path",
+            "run_folder_path",
+            "compare_to_run_id",
+        ],
+        column_config={
+            "timestamp": st.column_config.TextColumn("Timestamp"),
+            "label": st.column_config.TextColumn("Label"),
+            "headline": st.column_config.TextColumn("Needs Review"),
+            "detail": st.column_config.TextColumn("Detail", width="large"),
+            "review_markdown_path": st.column_config.TextColumn(
+                "Review MD",
+                help="Absolute local path to the archived review markdown or checklist.",
+                width="large",
+            ),
+            "plan_json_path": st.column_config.TextColumn(
+                "Plan JSON",
+                help="Absolute local path to the archived execution-plan JSON when available.",
+                width="large",
+            ),
+            "run_folder_path": st.column_config.TextColumn(
+                "Folder",
+                help="Absolute local path to the archived run folder.",
+                width="large",
+            ),
+            "compare_to_run_id": st.column_config.TextColumn("Compare To"),
+        },
+    )
+
+
+def _render_recent_activity_table(rows: list[dict[str, object]]) -> None:
+    st.dataframe(
+        _frame(rows),
+        use_container_width=True,
+        hide_index=True,
+        column_order=[
+            "timestamp",
+            "label",
+            "status",
+            "review_markdown_path",
+            "plan_json_path",
+            "run_folder_path",
+        ],
+        column_config={
+            "timestamp": st.column_config.TextColumn("Timestamp"),
+            "label": st.column_config.TextColumn("Label"),
+            "status": st.column_config.TextColumn("Status", width="medium"),
+            "review_markdown_path": st.column_config.TextColumn(
+                "Review MD",
+                help="Absolute local path to the archived review markdown or checklist.",
+                width="large",
+            ),
+            "plan_json_path": st.column_config.TextColumn(
+                "Plan JSON",
+                help="Absolute local path to the archived execution-plan JSON when available.",
+                width="large",
+            ),
+            "run_folder_path": st.column_config.TextColumn(
+                "Folder",
+                help="Absolute local path to the archived run folder.",
+                width="large",
+            ),
+        },
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="Trading Codex Review Dashboard", layout="wide")
     st.title("Trading Codex Review Dashboard")
@@ -129,24 +205,24 @@ def main() -> None:
 
             st.markdown("**Needs Review Since Baseline**")
             if newer_needs_review_rows:
-                st.dataframe(_frame(newer_needs_review_rows), use_container_width=True)
+                _render_needs_review_table(newer_needs_review_rows)
             else:
                 st.success("No needs-review items were found after the selected baseline.")
 
             st.markdown("**Recent Activity Since Baseline**")
             if newer_recent_activity_rows:
-                st.dataframe(_frame(newer_recent_activity_rows), use_container_width=True)
+                _render_recent_activity_table(newer_recent_activity_rows)
             else:
                 st.info("No newer recent-activity rows were found after the selected baseline.")
 
     st.subheader("Needs Review Now")
     if needs_review_rows:
-        st.dataframe(_frame(needs_review_rows), use_container_width=True)
+        _render_needs_review_table(needs_review_rows)
     else:
         st.success("No loaded archived runs currently trigger review heuristics.")
 
     st.subheader("Recent Activity")
-    st.dataframe(_frame(recent_activity_rows), use_container_width=True)
+    _render_recent_activity_table(recent_activity_rows)
 
     st.subheader("Latest Run Summary")
     summary_rows = [

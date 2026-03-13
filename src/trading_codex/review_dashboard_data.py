@@ -50,6 +50,12 @@ NEEDS_REVIEW_PRIORITIES: dict[str, int] = {
     "capital_change": 200,
 }
 
+ARTIFACT_UNAVAILABLE_LABELS: dict[str, str] = {
+    "review_markdown_path": "review markdown unavailable",
+    "plan_json_path": "plan JSON unavailable",
+    "run_folder_path": "run folder unavailable",
+}
+
 
 @dataclass(frozen=True)
 class ReviewRun:
@@ -450,17 +456,17 @@ def build_recent_activity_rows(runs: list[ReviewRun], *, limit: int = 25) -> lis
         prior = _find_prior_comparable_run(run, runs[index + 1 :])
         artifact_type, path = _primary_activity_artifact(run)
         related_paths = _related_activity_paths(run=run, primary_path=path)
-        rows.append(
-            {
-                "timestamp": summary.get("timestamp"),
-                "label": _run_label(summary),
-                "artifact_type": artifact_type,
-                "status": _recent_activity_status(run=run, prior=prior),
-                "run_id": run.run_id,
-                "path": str(path) if path is not None else "-",
-                "related_paths": "; ".join(related_paths) if related_paths else "-",
-            }
-        )
+        row = {
+            "timestamp": summary.get("timestamp"),
+            "label": _run_label(summary),
+            "artifact_type": artifact_type,
+            "status": _recent_activity_status(run=run, prior=prior),
+            "run_id": run.run_id,
+            "path": str(path) if path is not None else "-",
+            "related_paths": "; ".join(related_paths) if related_paths else "-",
+        }
+        row.update(_artifact_quick_access_fields(run))
+        rows.append(row)
     return rows[: max(int(limit), 0)]
 
 
@@ -622,12 +628,30 @@ def _has_plan_artifact(run: ReviewRun) -> bool:
 
 
 def _preferred_review_path(run: ReviewRun) -> Path | None:
+    review_path = _preferred_review_markdown_path(run)
+    if review_path is not None:
+        return review_path
+    return _preferred_plan_path(run)
+
+
+def _preferred_review_markdown_path(run: ReviewRun) -> Path | None:
     review_paths = _review_artifact_paths(run)
     for key in REVIEW_ARTIFACT_PRIORITY:
         path = review_paths.get(key)
         if path is not None:
             return path
-    return _preferred_plan_path(run)
+    for path in review_paths.values():
+        return path
+    return None
+
+
+def _preferred_plan_json_path(run: ReviewRun) -> Path | None:
+    resolved = run.resolved_artifact_paths()
+    for key in ("execution_plan_json", "order_intents_json_path"):
+        path = resolved.get(key)
+        if path is not None:
+            return path
+    return None
 
 
 def _preferred_plan_path(run: ReviewRun) -> Path | None:
@@ -637,6 +661,29 @@ def _preferred_plan_path(run: ReviewRun) -> Path | None:
         if path is not None:
             return path
     return run.manifest_path
+
+
+def _run_folder_path(run: ReviewRun) -> Path | None:
+    if run.manifest_path is not None:
+        return run.manifest_path.parent
+    for path in run.resolved_artifact_paths().values():
+        if path.parent.name == "artifacts":
+            return path.parent.parent
+        return path.parent
+    return None
+
+
+def _artifact_quick_access_fields(run: ReviewRun) -> dict[str, str]:
+    review_path = _preferred_review_markdown_path(run)
+    plan_path = _preferred_plan_json_path(run)
+    run_folder = _run_folder_path(run)
+    return {
+        "review_markdown_path": str(review_path)
+        if review_path is not None
+        else ARTIFACT_UNAVAILABLE_LABELS["review_markdown_path"],
+        "plan_json_path": str(plan_path) if plan_path is not None else ARTIFACT_UNAVAILABLE_LABELS["plan_json_path"],
+        "run_folder_path": str(run_folder) if run_folder is not None else ARTIFACT_UNAVAILABLE_LABELS["run_folder_path"],
+    }
 
 
 def _primary_activity_artifact(run: ReviewRun) -> tuple[str, Path | None]:
@@ -721,7 +768,7 @@ def _build_needs_review_row(
     compare_to_run: ReviewRun | None = None,
     compare_to_path: Path | None = None,
 ) -> dict[str, Any]:
-    return {
+    row = {
         "_priority": NEEDS_REVIEW_PRIORITIES[priority_key],
         "priority": _priority_label(priority_key),
         "timestamp": summary.get("timestamp"),
@@ -733,6 +780,8 @@ def _build_needs_review_row(
         "compare_to_run_id": compare_to_run.run_id if compare_to_run is not None else "-",
         "compare_to_path": str(compare_to_path) if compare_to_path is not None else "-",
     }
+    row.update(_artifact_quick_access_fields(run))
+    return row
 
 
 def _run_label(summary: Mapping[str, Any]) -> str:

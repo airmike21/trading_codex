@@ -8,7 +8,22 @@ from streamlit.testing.v1 import AppTest
 from trading_codex.run_archive import write_run_archive
 
 
-def _archive_review_run(*, archive_root: Path, timestamp: str, identity: str, source_label: str) -> None:
+def _archive_review_run(
+    *,
+    archive_root: Path,
+    timestamp: str,
+    identity: str,
+    source_label: str,
+    warnings: list[str] | None = None,
+    include_review_markdown: bool = False,
+) -> None:
+    source_artifacts: dict[str, Path] = {}
+    if include_review_markdown:
+        review_markdown = archive_root / f"{identity}_execution_plan.md"
+        review_markdown.parent.mkdir(parents=True, exist_ok=True)
+        review_markdown.write_text(f"# Review for {identity}\n", encoding="utf-8")
+        source_artifacts["execution_plan_markdown"] = review_markdown
+
     write_run_archive(
         timestamp=timestamp,
         run_kind="execution_plan",
@@ -28,6 +43,7 @@ def _archive_review_run(*, archive_root: Path, timestamp: str, identity: str, so
         json_artifacts={
             "execution_plan_json": {
                 "generated_at_chicago": timestamp,
+                "warnings": [] if warnings is None else list(warnings),
                 "signal": {
                     "strategy": "dual_mom",
                     "action": "BUY",
@@ -59,6 +75,7 @@ def _archive_review_run(*, archive_root: Path, timestamp: str, identity: str, so
                 },
             }
         },
+        source_artifacts=source_artifacts,
         preferred_root=archive_root,
     )
 
@@ -101,3 +118,30 @@ def test_baseline_selector_wording_is_scoped_to_whats_new_panel(tmp_path: Path) 
         "Needs Review Now",
         "Recent Activity",
     ]
+
+
+def test_dashboard_tables_include_direct_artifact_paths(tmp_path: Path) -> None:
+    archive_root = Path(os.environ["TRADING_CODEX_ARCHIVE_ROOT"])
+
+    _archive_review_run(
+        archive_root=archive_root,
+        timestamp="2026-03-11T15:49:32-05:00",
+        identity="plan-warning",
+        source_label="dual_mom_core",
+        warnings=["warning_from_plan"],
+        include_review_markdown=True,
+    )
+
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "scripts" / "review_dashboard.py"))
+    app.run(timeout=30)
+
+    needs_review_df = app.dataframe[0].value
+    recent_activity_df = app.dataframe[1].value
+
+    for frame in (needs_review_df, recent_activity_df):
+        assert "review_markdown_path" in frame.columns
+        assert "plan_json_path" in frame.columns
+        assert "run_folder_path" in frame.columns
+        assert Path(str(frame.iloc[0]["review_markdown_path"])).exists()
+        assert Path(str(frame.iloc[0]["plan_json_path"])).exists()
+        assert Path(str(frame.iloc[0]["run_folder_path"])).is_dir()

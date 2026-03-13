@@ -328,7 +328,13 @@ def test_build_needs_review_rows_flags_warnings_blockers_and_missing_review(tmp_
     assert "blocker_from_manifest" in rows[0]["detail"]
     assert "blocker_from_trade" in rows[0]["detail"]
     assert "warning_from_manifest" in rows[1]["detail"]
+    assert rows[0]["review_markdown_path"] == "review markdown unavailable"
+    assert rows[0]["plan_json_path"].endswith("execution_plan_json.json")
+    assert rows[0]["run_folder_path"].endswith(runs[0].run_id)
     assert rows[2]["path"].endswith("execution_plan_json.json")
+    assert rows[2]["review_markdown_path"] == "review markdown unavailable"
+    assert rows[2]["plan_json_path"].endswith("execution_plan_json.json")
+    assert rows[2]["run_folder_path"].endswith(runs[0].run_id)
     assert rows[2]["compare_to_path"] == "-"
 
 
@@ -363,9 +369,15 @@ def test_build_needs_review_rows_flags_trade_and_capital_changes_vs_prior_compar
     trade_row = next(row for row in rows if row["headline"] == "New execution plan with trade changes vs prior comparable run")
     capital_row = next(row for row in rows if row["headline"] == "Capital allocation changed from prior comparable run")
     assert trade_row["compare_to_run_id"] == runs[1].run_id
+    assert trade_row["review_markdown_path"].endswith("execution_plan_markdown__plan-newer_execution_plan.md")
+    assert trade_row["plan_json_path"].endswith("execution_plan_json.json")
+    assert trade_row["run_folder_path"].endswith(runs[0].run_id)
     assert "BUY 10 EFA" in trade_row["detail"]
     assert "BUY 24 EFA" in trade_row["detail"]
     assert capital_row["compare_to_path"].endswith("execution_plan_json.json")
+    assert capital_row["review_markdown_path"].endswith("execution_plan_markdown__plan-newer_execution_plan.md")
+    assert capital_row["plan_json_path"].endswith("execution_plan_json.json")
+    assert capital_row["run_folder_path"].endswith(runs[0].run_id)
     assert "effective_capital: 2,455.99 -> 1,000" in capital_row["detail"]
     assert "estimated_notional: 2,379.84 -> 991.6" in capital_row["detail"]
 
@@ -418,6 +430,12 @@ def test_build_recent_activity_rows_uses_archived_run_copy_for_warning_blocker_a
     assert status_by_run_id[runs[0].run_id] == "Archived run contains blockers"
     assert status_by_run_id[runs[1].run_id] == "Archived run contains warnings"
     assert status_by_run_id[runs[2].run_id] == "New plan found; no review artifact detected"
+    assert rows[0]["review_markdown_path"].endswith("execution_plan_markdown__plan-blocker_execution_plan.md")
+    assert rows[0]["plan_json_path"].endswith("execution_plan_json.json")
+    assert rows[0]["run_folder_path"].endswith(runs[0].run_id)
+    assert rows[2]["review_markdown_path"] == "review markdown unavailable"
+    assert rows[2]["plan_json_path"].endswith("execution_plan_json.json")
+    assert rows[2]["run_folder_path"].endswith(runs[2].run_id)
 
 
 def test_build_recent_activity_rows_orders_newest_first_and_includes_paths(tmp_path: Path) -> None:
@@ -449,6 +467,9 @@ def test_build_recent_activity_rows_orders_newest_first_and_includes_paths(tmp_p
     assert rows[0]["artifact_type"] == "execution_plan_markdown"
     assert rows[0]["path"].endswith("execution_plan_markdown__plan-newer_execution_plan.md")
     assert "execution_plan_json.json" in rows[0]["related_paths"]
+    assert rows[0]["review_markdown_path"].endswith("execution_plan_markdown__plan-newer_execution_plan.md")
+    assert rows[0]["plan_json_path"].endswith("execution_plan_json.json")
+    assert rows[0]["run_folder_path"].endswith(runs[0].run_id)
     assert rows[0]["status"] == "Archived run with 1 proposed trade"
 
 
