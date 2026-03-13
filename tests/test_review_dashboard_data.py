@@ -22,6 +22,7 @@ from trading_codex.review_dashboard_data import (
     filter_runs_newer_than_baseline,
     filter_triage_rows,
     load_review_runs,
+    recent_activity_row_is_high_priority,
     summarize_new_since_baseline,
     summarize_run,
 )
@@ -543,6 +544,30 @@ def test_filter_triage_rows_leaves_rows_unchanged_when_no_toggles_are_enabled(tm
 
     assert filter_triage_rows(needs_review_rows) == needs_review_rows
     assert filter_triage_rows(recent_activity_rows) == recent_activity_rows
+
+
+def test_recent_activity_row_is_high_priority_reuses_existing_triage_signals() -> None:
+    missing_review_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_ARCHIVED_RUN,
+        "review_markdown_path": ARTIFACT_UNAVAILABLE_LABELS["review_markdown_path"],
+    }
+    warning_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_WARNINGS,
+        "review_markdown_path": "/tmp/review.md",
+    }
+    trade_change_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_TRADE_CHANGE,
+        "review_markdown_path": "/tmp/review.md",
+    }
+    low_priority_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_ARCHIVED_RUN,
+        "review_markdown_path": "/tmp/review.md",
+    }
+
+    assert recent_activity_row_is_high_priority(missing_review_row) is True
+    assert recent_activity_row_is_high_priority(warning_row) is True
+    assert recent_activity_row_is_high_priority(trade_change_row) is True
+    assert recent_activity_row_is_high_priority(low_priority_row) is False
 
 
 def test_filter_triage_rows_filters_missing_review_markdown_rows(tmp_path: Path) -> None:

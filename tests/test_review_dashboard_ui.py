@@ -211,6 +211,7 @@ def test_dashboard_sidebar_exposes_triage_filter_checkboxes(tmp_path: Path) -> N
         "Only rows missing review markdown",
         "Only warnings or blockers",
         "Only trade changes",
+        "Hide low-priority / no-major-delta rows",
     ]
     assert all(checkbox.value is False for checkbox in app.checkbox)
 
@@ -277,3 +278,35 @@ def test_warning_checkbox_narrows_only_main_triage_tables_and_preserves_baseline
     ]
     assert list(after_needs_review_df["headline"]) == ["Archived run contains warnings"]
     assert list(after_recent_activity_df["status"]) == ["Archived run contains warnings"]
+
+
+def test_recent_activity_low_priority_toggle_hides_only_low_priority_rows_in_recent_activity(tmp_path: Path) -> None:
+    archive_root = Path(os.environ["TRADING_CODEX_ARCHIVE_ROOT"])
+    _seed_triage_filter_runs(archive_root)
+
+    app = AppTest.from_file(_app_dashboard_path())
+    app.run(timeout=30)
+
+    before_baseline_needs_review_df, before_baseline_recent_activity_df, before_needs_review_df, before_recent_activity_df = (
+        _triage_frames_with_baseline(app)
+    )
+    low_priority_checkbox = next(
+        checkbox for checkbox in app.checkbox if checkbox.label == "Hide low-priority / no-major-delta rows"
+    )
+    app = low_priority_checkbox.check().run(timeout=30)
+    after_baseline_needs_review_df, after_baseline_recent_activity_df, after_needs_review_df, after_recent_activity_df = (
+        _triage_frames_with_baseline(app)
+    )
+
+    assert list(before_baseline_needs_review_df["headline"]) == list(after_baseline_needs_review_df["headline"])
+    assert list(before_baseline_recent_activity_df["status"]) == list(after_baseline_recent_activity_df["status"])
+    assert list(before_needs_review_df["headline"]) == list(after_needs_review_df["headline"])
+    assert list(before_recent_activity_df["status"]) == [
+        "New execution plan with trade changes vs prior plan",
+        "Archived run contains warnings",
+        "Archived run with 1 proposed trade",
+    ]
+    assert list(after_recent_activity_df["status"]) == [
+        "New execution plan with trade changes vs prior plan",
+        "Archived run contains warnings",
+    ]

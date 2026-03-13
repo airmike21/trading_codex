@@ -23,6 +23,7 @@ from trading_codex.review_dashboard_data import (
     filter_runs_newer_than_baseline,
     filter_triage_rows,
     load_review_runs,
+    recent_activity_row_is_high_priority,
     summarize_new_since_baseline,
     summarize_run,
 )
@@ -147,6 +148,14 @@ def main() -> None:
         help="Show only triage rows that highlight trade deltas versus a prior comparable run.",
     )
     st.sidebar.caption("These filters apply only to Needs Review Now and Recent Activity.")
+    hide_low_priority_recent_activity_rows = st.sidebar.checkbox(
+        "Hide low-priority / no-major-delta rows",
+        value=False,
+        help=(
+            "Applies only to Recent Activity. Hide rows unless they are missing review markdown, "
+            "surface warnings or blockers, or highlight trade changes."
+        ),
+    )
 
     if not archive_root.exists():
         st.info(
@@ -180,6 +189,10 @@ def main() -> None:
         only_warnings_or_blockers=only_warnings_or_blockers,
         only_trade_changes=only_trade_changes,
     )
+    if hide_low_priority_recent_activity_rows:
+        filtered_recent_activity_rows = [
+            row for row in filtered_recent_activity_rows if recent_activity_row_is_high_priority(row)
+        ]
     baseline_option_rows = build_baseline_option_rows(runs)
 
     selected_baseline_run_id: str | None = None
@@ -258,7 +271,7 @@ def main() -> None:
     if filtered_recent_activity_rows:
         _render_recent_activity_table(filtered_recent_activity_rows)
     else:
-        st.info("No recent-activity rows matched the selected triage filters.")
+        st.info("No recent-activity rows matched the selected filters.")
 
     st.subheader("Latest Run Summary")
     summary_rows = [

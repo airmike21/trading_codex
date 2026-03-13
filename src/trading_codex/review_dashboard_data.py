@@ -377,6 +377,16 @@ def filter_triage_rows(
     return filtered
 
 
+def recent_activity_row_is_high_priority(row: Mapping[str, Any]) -> bool:
+    return any(
+        (
+            _row_has_missing_review_markdown(row),
+            _row_has_warnings_or_blockers(row),
+            _row_has_trade_changes(row),
+        )
+    )
+
+
 def summarize_new_since_baseline(
     *,
     newer_runs: list[ReviewRun],
