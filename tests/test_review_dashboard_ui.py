@@ -145,3 +145,30 @@ def test_dashboard_tables_include_direct_artifact_paths(tmp_path: Path) -> None:
         assert Path(str(frame.iloc[0]["review_markdown_path"])).exists()
         assert Path(str(frame.iloc[0]["plan_json_path"])).exists()
         assert Path(str(frame.iloc[0]["run_folder_path"])).is_dir()
+
+
+def test_dashboard_sidebar_exposes_triage_filter_checkboxes(tmp_path: Path) -> None:
+    archive_root = Path(os.environ["TRADING_CODEX_ARCHIVE_ROOT"])
+
+    _archive_review_run(
+        archive_root=archive_root,
+        timestamp="2026-03-11T15:49:32-05:00",
+        identity="plan-warning",
+        source_label="dual_mom_core",
+        warnings=["warning_from_plan"],
+        include_review_markdown=False,
+    )
+
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "scripts" / "review_dashboard.py"))
+    app.run(timeout=30)
+
+    labels = [checkbox.label for checkbox in app.checkbox]
+    assert labels == [
+        "Only rows missing review markdown",
+        "Only warnings or blockers",
+        "Only trade changes",
+    ]
+    assert all(checkbox.value is False for checkbox in app.checkbox)
+
+    captions = [caption.value for caption in app.caption]
+    assert "These filters apply only to Needs Review Now and Recent Activity." in captions

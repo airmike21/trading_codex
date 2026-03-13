@@ -56,6 +56,20 @@ ARTIFACT_UNAVAILABLE_LABELS: dict[str, str] = {
     "run_folder_path": "run folder unavailable",
 }
 
+WARNING_OR_BLOCKER_TRIAGE_TEXT: frozenset[str] = frozenset(
+    {
+        "Archived run contains blockers",
+        "Archived run contains warnings",
+    }
+)
+
+TRADE_CHANGE_TRIAGE_TEXT: frozenset[str] = frozenset(
+    {
+        "New execution plan with trade changes vs prior comparable run",
+        "New execution plan with trade changes vs prior plan",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ReviewRun:
@@ -335,6 +349,28 @@ def filter_rows_for_runs(rows: list[dict[str, Any]], runs: list[ReviewRun]) -> l
     for row in rows:
         if str(row.get("run_id") or "") in run_ids:
             filtered.append(row)
+    return filtered
+
+
+def filter_triage_rows(
+    rows: list[dict[str, Any]],
+    *,
+    only_missing_review_markdown: bool = False,
+    only_warnings_or_blockers: bool = False,
+    only_trade_changes: bool = False,
+) -> list[dict[str, Any]]:
+    if not any((only_missing_review_markdown, only_warnings_or_blockers, only_trade_changes)):
+        return list(rows)
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if only_missing_review_markdown and not _row_has_missing_review_markdown(row):
+            continue
+        if only_warnings_or_blockers and not _row_has_warnings_or_blockers(row):
+            continue
+        if only_trade_changes and not _row_has_trade_changes(row):
+            continue
+        filtered.append(row)
     return filtered
 
 
@@ -755,6 +791,22 @@ def _recent_activity_status(*, run: ReviewRun, prior: ReviewRun | None) -> str:
     if trade_count > 1:
         return f"Archived run with {trade_count} proposed trades"
     return "Archived run available for review"
+
+
+def _row_has_missing_review_markdown(row: Mapping[str, Any]) -> bool:
+    return str(row.get("review_markdown_path") or "") == ARTIFACT_UNAVAILABLE_LABELS["review_markdown_path"]
+
+
+def _row_has_warnings_or_blockers(row: Mapping[str, Any]) -> bool:
+    return _triage_row_text(row) in WARNING_OR_BLOCKER_TRIAGE_TEXT
+
+
+def _row_has_trade_changes(row: Mapping[str, Any]) -> bool:
+    return _triage_row_text(row) in TRADE_CHANGE_TRIAGE_TEXT
+
+
+def _triage_row_text(row: Mapping[str, Any]) -> str:
+    return str(_first_present(row.get("headline"), row.get("status")) or "")
 
 
 def _build_needs_review_row(

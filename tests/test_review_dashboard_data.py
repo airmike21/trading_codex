@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from trading_codex.review_dashboard_data import (
+    ARTIFACT_UNAVAILABLE_LABELS,
     build_artifact_rows,
     build_baseline_option_rows,
     build_needs_review_rows,
@@ -12,6 +13,7 @@ from trading_codex.review_dashboard_data import (
     build_run_history_rows,
     filter_rows_for_runs,
     filter_runs_newer_than_baseline,
+    filter_triage_rows,
     load_review_runs,
     summarize_new_since_baseline,
     summarize_run,
@@ -158,6 +160,51 @@ def _archive_review_run(
         json_artifacts={"execution_plan_json": execution_plan},
         preferred_root=archive_root,
     )
+
+
+def _build_triage_filter_fixture_rows(tmp_path: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    archive_root = tmp_path / "archive"
+
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-older",
+        execution_plan=_execution_plan_payload(warnings=[], trade_warnings=[]),
+        include_review_markdown=True,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:48:32-05:00",
+        identity="plan-warning-missing-review",
+        execution_plan=_execution_plan_payload(
+            warnings=["warning_from_plan"],
+            blockers=[],
+            trade_warnings=[],
+            trade_blockers=[],
+        ),
+        include_review_markdown=False,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        temp_root=tmp_path,
+        timestamp="2026-03-11T15:49:32-05:00",
+        identity="plan-trade-change",
+        execution_plan=_execution_plan_payload(
+            quantity=10,
+            effective_capital=1000.0,
+            buying_power=1000.0,
+            warnings=[],
+            blockers=[],
+            trade_warnings=[],
+            trade_blockers=[],
+        ),
+        include_review_markdown=True,
+    )
+
+    _, runs = load_review_runs(limit=10, root_dir=archive_root)
+    return build_needs_review_rows(runs), build_recent_activity_rows(runs, limit=10)
 
 
 def test_load_review_runs_uses_manifest_scan_and_falls_back_to_artifact_fields(tmp_path: Path) -> None:
@@ -471,6 +518,85 @@ def test_build_recent_activity_rows_orders_newest_first_and_includes_paths(tmp_p
     assert rows[0]["plan_json_path"].endswith("execution_plan_json.json")
     assert rows[0]["run_folder_path"].endswith(runs[0].run_id)
     assert rows[0]["status"] == "Archived run with 1 proposed trade"
+
+
+def test_filter_triage_rows_leaves_rows_unchanged_when_no_toggles_are_enabled(tmp_path: Path) -> None:
+    needs_review_rows, recent_activity_rows = _build_triage_filter_fixture_rows(tmp_path)
+
+    assert filter_triage_rows(needs_review_rows) == needs_review_rows
+    assert filter_triage_rows(recent_activity_rows) == recent_activity_rows
+
+
+def test_filter_triage_rows_filters_missing_review_markdown_rows(tmp_path: Path) -> None:
+    needs_review_rows, recent_activity_rows = _build_triage_filter_fixture_rows(tmp_path)
+
+    filtered_needs_review_rows = filter_triage_rows(
+        needs_review_rows,
+        only_missing_review_markdown=True,
+    )
+    filtered_recent_activity_rows = filter_triage_rows(
+        recent_activity_rows,
+        only_missing_review_markdown=True,
+    )
+
+    assert [row["headline"] for row in filtered_needs_review_rows] == [
+        "Archived run contains warnings",
+        "New plan found; no review artifact detected",
+    ]
+    assert all(
+        row["review_markdown_path"] == ARTIFACT_UNAVAILABLE_LABELS["review_markdown_path"]
+        for row in filtered_needs_review_rows
+    )
+    assert [row["status"] for row in filtered_recent_activity_rows] == ["Archived run contains warnings"]
+    assert filtered_recent_activity_rows[0]["review_markdown_path"] == ARTIFACT_UNAVAILABLE_LABELS["review_markdown_path"]
+
+
+def test_filter_triage_rows_filters_warning_or_blocker_rows(tmp_path: Path) -> None:
+    needs_review_rows, recent_activity_rows = _build_triage_filter_fixture_rows(tmp_path)
+
+    filtered_needs_review_rows = filter_triage_rows(
+        needs_review_rows,
+        only_warnings_or_blockers=True,
+    )
+    filtered_recent_activity_rows = filter_triage_rows(
+        recent_activity_rows,
+        only_warnings_or_blockers=True,
+    )
+
+    assert [row["headline"] for row in filtered_needs_review_rows] == ["Archived run contains warnings"]
+    assert [row["status"] for row in filtered_recent_activity_rows] == ["Archived run contains warnings"]
+
+
+def test_filter_triage_rows_filters_trade_change_rows_and_supports_combinations(tmp_path: Path) -> None:
+    needs_review_rows, recent_activity_rows = _build_triage_filter_fixture_rows(tmp_path)
+
+    filtered_needs_review_rows = filter_triage_rows(
+        needs_review_rows,
+        only_trade_changes=True,
+    )
+    filtered_recent_activity_rows = filter_triage_rows(
+        recent_activity_rows,
+        only_trade_changes=True,
+    )
+    combined_needs_review_rows = filter_triage_rows(
+        needs_review_rows,
+        only_missing_review_markdown=True,
+        only_warnings_or_blockers=True,
+    )
+    combined_recent_activity_rows = filter_triage_rows(
+        recent_activity_rows,
+        only_missing_review_markdown=True,
+        only_warnings_or_blockers=True,
+    )
+
+    assert [row["headline"] for row in filtered_needs_review_rows] == [
+        "New execution plan with trade changes vs prior comparable run"
+    ]
+    assert [row["status"] for row in filtered_recent_activity_rows] == [
+        "New execution plan with trade changes vs prior plan"
+    ]
+    assert [row["headline"] for row in combined_needs_review_rows] == ["Archived run contains warnings"]
+    assert [row["status"] for row in combined_recent_activity_rows] == ["Archived run contains warnings"]
 
 
 def test_trade_change_ignores_price_only_changes(tmp_path: Path) -> None:

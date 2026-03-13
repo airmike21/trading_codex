@@ -21,6 +21,7 @@ from trading_codex.review_dashboard_data import (
     build_run_history_rows,
     filter_rows_for_runs,
     filter_runs_newer_than_baseline,
+    filter_triage_rows,
     load_review_runs,
     summarize_new_since_baseline,
     summarize_run,
@@ -129,6 +130,23 @@ def main() -> None:
     archive_root, runs = load_review_runs(limit=limit)
     st.sidebar.caption("Archive root")
     st.sidebar.code(str(archive_root))
+    st.sidebar.caption("Triage filters")
+    only_missing_review_markdown = st.sidebar.checkbox(
+        "Only rows missing review markdown",
+        value=False,
+        help="Show only triage rows where the archived review markdown path is unavailable.",
+    )
+    only_warnings_or_blockers = st.sidebar.checkbox(
+        "Only warnings or blockers",
+        value=False,
+        help="Show only triage rows that explicitly surface archived warnings or blockers.",
+    )
+    only_trade_changes = st.sidebar.checkbox(
+        "Only trade changes",
+        value=False,
+        help="Show only triage rows that highlight trade deltas versus a prior comparable run.",
+    )
+    st.sidebar.caption("These filters apply only to Needs Review Now and Recent Activity.")
 
     if not archive_root.exists():
         st.info(
@@ -150,6 +168,18 @@ def main() -> None:
     latest_trades = latest.proposed_trades()
     needs_review_rows = build_needs_review_rows(runs)
     recent_activity_rows = build_recent_activity_rows(runs, limit=max(limit * 2, 10))
+    filtered_needs_review_rows = filter_triage_rows(
+        needs_review_rows,
+        only_missing_review_markdown=only_missing_review_markdown,
+        only_warnings_or_blockers=only_warnings_or_blockers,
+        only_trade_changes=only_trade_changes,
+    )
+    filtered_recent_activity_rows = filter_triage_rows(
+        recent_activity_rows,
+        only_missing_review_markdown=only_missing_review_markdown,
+        only_warnings_or_blockers=only_warnings_or_blockers,
+        only_trade_changes=only_trade_changes,
+    )
     baseline_option_rows = build_baseline_option_rows(runs)
 
     selected_baseline_run_id: str | None = None
@@ -216,13 +246,19 @@ def main() -> None:
                 st.info("No newer recent-activity rows were found after the selected baseline.")
 
     st.subheader("Needs Review Now")
-    if needs_review_rows:
-        _render_needs_review_table(needs_review_rows)
+    if filtered_needs_review_rows:
+        _render_needs_review_table(filtered_needs_review_rows)
     else:
-        st.success("No loaded archived runs currently trigger review heuristics.")
+        if any((only_missing_review_markdown, only_warnings_or_blockers, only_trade_changes)):
+            st.info("No needs-review rows matched the selected triage filters.")
+        else:
+            st.success("No loaded archived runs currently trigger review heuristics.")
 
     st.subheader("Recent Activity")
-    _render_recent_activity_table(recent_activity_rows)
+    if filtered_recent_activity_rows:
+        _render_recent_activity_table(filtered_recent_activity_rows)
+    else:
+        st.info("No recent-activity rows matched the selected triage filters.")
 
     st.subheader("Latest Run Summary")
     summary_rows = [
