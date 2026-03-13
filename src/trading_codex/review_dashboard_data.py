@@ -72,6 +72,7 @@ WARNING_OR_BLOCKER_ROW_KINDS: frozenset[str] = frozenset(
 )
 
 TRADE_CHANGE_ROW_KINDS: frozenset[str] = frozenset({TRIAGE_ROW_KIND_TRADE_CHANGE})
+LOW_PRIORITY_RECENT_ACTIVITY_ROW_KINDS: frozenset[str] = frozenset({TRIAGE_ROW_KIND_ARCHIVED_RUN})
 
 
 @dataclass(frozen=True)
@@ -372,6 +373,22 @@ def filter_triage_rows(
         if only_warnings_or_blockers and not _row_has_warnings_or_blockers(row):
             continue
         if only_trade_changes and not _row_has_trade_changes(row):
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def filter_recent_activity_rows(
+    rows: list[dict[str, Any]],
+    *,
+    hide_low_priority_no_major_delta: bool = False,
+) -> list[dict[str, Any]]:
+    if not hide_low_priority_no_major_delta:
+        return list(rows)
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if _row_is_low_priority_recent_activity(row):
             continue
         filtered.append(row)
     return filtered
@@ -808,6 +825,10 @@ def _row_has_warnings_or_blockers(row: Mapping[str, Any]) -> bool:
 
 def _row_has_trade_changes(row: Mapping[str, Any]) -> bool:
     return _triage_row_kind(row) in TRADE_CHANGE_ROW_KINDS
+
+
+def _row_is_low_priority_recent_activity(row: Mapping[str, Any]) -> bool:
+    return _triage_row_kind(row) in LOW_PRIORITY_RECENT_ACTIVITY_ROW_KINDS
 
 
 def _triage_row_kind(row: Mapping[str, Any]) -> str:

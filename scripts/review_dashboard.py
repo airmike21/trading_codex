@@ -19,6 +19,7 @@ from trading_codex.review_dashboard_data import (
     build_recent_activity_rows,
     build_run_comparison_rows,
     build_run_history_rows,
+    filter_recent_activity_rows,
     filter_rows_for_runs,
     filter_runs_newer_than_baseline,
     filter_triage_rows,
@@ -146,6 +147,11 @@ def main() -> None:
         value=False,
         help="Show only triage rows that highlight trade deltas versus a prior comparable run.",
     )
+    hide_low_priority_no_major_delta = st.sidebar.checkbox(
+        "Hide low-priority / no-major-delta rows",
+        value=False,
+        help="Applies only to the main Recent Activity table and hides archived runs without major review deltas.",
+    )
     st.sidebar.caption("These filters apply only to Needs Review Now and Recent Activity.")
 
     if not archive_root.exists():
@@ -174,11 +180,15 @@ def main() -> None:
         only_warnings_or_blockers=only_warnings_or_blockers,
         only_trade_changes=only_trade_changes,
     )
-    filtered_recent_activity_rows = filter_triage_rows(
+    triaged_recent_activity_rows = filter_triage_rows(
         recent_activity_rows,
         only_missing_review_markdown=only_missing_review_markdown,
         only_warnings_or_blockers=only_warnings_or_blockers,
         only_trade_changes=only_trade_changes,
+    )
+    filtered_recent_activity_rows = filter_recent_activity_rows(
+        triaged_recent_activity_rows,
+        hide_low_priority_no_major_delta=hide_low_priority_no_major_delta,
     )
     baseline_option_rows = build_baseline_option_rows(runs)
 

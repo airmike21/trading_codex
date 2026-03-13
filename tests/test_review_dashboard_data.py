@@ -18,6 +18,7 @@ from trading_codex.review_dashboard_data import (
     build_recent_activity_rows,
     build_run_comparison_rows,
     build_run_history_rows,
+    filter_recent_activity_rows,
     filter_rows_for_runs,
     filter_runs_newer_than_baseline,
     filter_triage_rows,
@@ -610,6 +611,40 @@ def test_filter_triage_rows_uses_hidden_row_kind_instead_of_display_copy() -> No
 
     assert filter_triage_rows(rows, only_warnings_or_blockers=True) == [warning_row]
     assert filter_triage_rows(rows, only_trade_changes=True) == [trade_change_row]
+
+
+def test_filter_recent_activity_rows_leaves_rows_unchanged_when_toggle_is_disabled(tmp_path: Path) -> None:
+    _, recent_activity_rows = _build_triage_filter_fixture_rows(tmp_path)
+
+    assert filter_recent_activity_rows(recent_activity_rows) == recent_activity_rows
+
+
+def test_filter_recent_activity_rows_hides_low_priority_archived_run_rows(tmp_path: Path) -> None:
+    _, recent_activity_rows = _build_triage_filter_fixture_rows(tmp_path)
+
+    filtered_recent_activity_rows = filter_recent_activity_rows(
+        recent_activity_rows,
+        hide_low_priority_no_major_delta=True,
+    )
+
+    assert [row["status"] for row in filtered_recent_activity_rows] == [
+        "New execution plan with trade changes vs prior plan",
+        "Archived run contains warnings",
+    ]
+
+
+def test_filter_recent_activity_rows_uses_hidden_row_kind_for_low_priority_semantics() -> None:
+    archived_run_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_ARCHIVED_RUN,
+        "status": "not the promoted archived-run copy",
+    }
+    fake_archived_run_copy_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_CAPITAL_CHANGE,
+        "status": "Archived run with 1 proposed trade",
+    }
+    rows = [archived_run_row, fake_archived_run_copy_row]
+
+    assert filter_recent_activity_rows(rows, hide_low_priority_no_major_delta=True) == [fake_archived_run_copy_row]
 
 
 def test_filter_triage_rows_filters_trade_change_rows_and_supports_combinations(tmp_path: Path) -> None:
