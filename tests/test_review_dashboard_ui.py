@@ -16,6 +16,9 @@ def _archive_review_run(
     source_label: str,
     warnings: list[str] | None = None,
     include_review_markdown: bool = False,
+    quantity: int = 24,
+    effective_capital: float = 2455.99,
+    buying_power: float = 2455.99,
 ) -> None:
     source_artifacts: dict[str, Path] = {}
     if include_review_markdown:
@@ -51,18 +54,18 @@ def _archive_review_run(
                 },
                 "broker_snapshot": {
                     "account_id": "paper-1",
-                    "buying_power": 2455.99,
+                    "buying_power": buying_power,
                 },
                 "sizing": {
-                    "effective_capital_used": 2455.99,
+                    "effective_capital_used": effective_capital,
                     "buying_power_cap_applied": True,
                 },
                 "items": [
                     {
                         "classification": "BUY",
-                        "delta_shares": 24,
+                        "delta_shares": quantity,
                         "reference_price": 99.16,
-                        "estimated_notional": 2379.84,
+                        "estimated_notional": round(quantity * 99.16, 2),
                         "symbol": "EFA",
                         "warnings": [],
                         "blockers": [],
@@ -78,6 +81,47 @@ def _archive_review_run(
         source_artifacts=source_artifacts,
         preferred_root=archive_root,
     )
+
+
+def _seed_triage_filter_runs(archive_root: Path) -> None:
+    _archive_review_run(
+        archive_root=archive_root,
+        timestamp="2026-03-11T15:47:32-05:00",
+        identity="plan-older",
+        source_label="dual_mom_core",
+        include_review_markdown=True,
+        quantity=24,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        timestamp="2026-03-11T15:48:32-05:00",
+        identity="plan-warning",
+        source_label="dual_mom_core",
+        warnings=["warning_from_plan"],
+        include_review_markdown=True,
+        quantity=24,
+    )
+    _archive_review_run(
+        archive_root=archive_root,
+        timestamp="2026-03-11T15:49:32-05:00",
+        identity="plan-trade-change",
+        source_label="dual_mom_core",
+        include_review_markdown=True,
+        quantity=10,
+    )
+
+
+def _app_dashboard_path() -> str:
+    return str(Path(__file__).resolve().parents[1] / "scripts" / "review_dashboard.py")
+
+
+def _triage_frames_with_baseline(app: AppTest):
+    assert len(app.dataframe) >= 4
+    baseline_needs_review_df = app.dataframe[0].value
+    baseline_recent_activity_df = app.dataframe[1].value
+    needs_review_df = app.dataframe[2].value
+    recent_activity_df = app.dataframe[3].value
+    return baseline_needs_review_df, baseline_recent_activity_df, needs_review_df, recent_activity_df
 
 
 def test_baseline_selector_wording_is_scoped_to_whats_new_panel(tmp_path: Path) -> None:
@@ -96,7 +140,7 @@ def test_baseline_selector_wording_is_scoped_to_whats_new_panel(tmp_path: Path) 
         source_label="dual_mom_core",
     )
 
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "scripts" / "review_dashboard.py"))
+    app = AppTest.from_file(_app_dashboard_path())
     app.run(timeout=30)
 
     assert app.selectbox[0].label == "Baseline run for What's New"
@@ -132,7 +176,7 @@ def test_dashboard_tables_include_direct_artifact_paths(tmp_path: Path) -> None:
         include_review_markdown=True,
     )
 
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "scripts" / "review_dashboard.py"))
+    app = AppTest.from_file(_app_dashboard_path())
     app.run(timeout=30)
 
     needs_review_df = app.dataframe[0].value
@@ -159,7 +203,7 @@ def test_dashboard_sidebar_exposes_triage_filter_checkboxes(tmp_path: Path) -> N
         include_review_markdown=False,
     )
 
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "scripts" / "review_dashboard.py"))
+    app = AppTest.from_file(_app_dashboard_path())
     app.run(timeout=30)
 
     labels = [checkbox.label for checkbox in app.checkbox]
@@ -172,3 +216,64 @@ def test_dashboard_sidebar_exposes_triage_filter_checkboxes(tmp_path: Path) -> N
 
     captions = [caption.value for caption in app.caption]
     assert "These filters apply only to Needs Review Now and Recent Activity." in captions
+
+
+def test_triage_checkboxes_off_render_expected_unfiltered_triage_rows(tmp_path: Path) -> None:
+    archive_root = Path(os.environ["TRADING_CODEX_ARCHIVE_ROOT"])
+    _seed_triage_filter_runs(archive_root)
+
+    app = AppTest.from_file(_app_dashboard_path())
+    app.run(timeout=30)
+
+    baseline_needs_review_df, baseline_recent_activity_df, needs_review_df, recent_activity_df = _triage_frames_with_baseline(
+        app
+    )
+
+    assert all(checkbox.value is False for checkbox in app.checkbox)
+    assert list(baseline_needs_review_df["headline"]) == [
+        "New execution plan with trade changes vs prior comparable run",
+        "Capital allocation changed from prior comparable run",
+    ]
+    assert list(baseline_recent_activity_df["status"]) == ["New execution plan with trade changes vs prior plan"]
+    assert list(needs_review_df["headline"]) == [
+        "Archived run contains warnings",
+        "New execution plan with trade changes vs prior comparable run",
+        "Capital allocation changed from prior comparable run",
+    ]
+    assert list(recent_activity_df["status"]) == [
+        "New execution plan with trade changes vs prior plan",
+        "Archived run contains warnings",
+        "Archived run with 1 proposed trade",
+    ]
+
+
+def test_warning_checkbox_narrows_only_main_triage_tables_and_preserves_baseline_panel(tmp_path: Path) -> None:
+    archive_root = Path(os.environ["TRADING_CODEX_ARCHIVE_ROOT"])
+    _seed_triage_filter_runs(archive_root)
+
+    app = AppTest.from_file(_app_dashboard_path())
+    app.run(timeout=30)
+
+    before_baseline_needs_review_df, before_baseline_recent_activity_df, before_needs_review_df, before_recent_activity_df = (
+        _triage_frames_with_baseline(app)
+    )
+    warning_checkbox = next(checkbox for checkbox in app.checkbox if checkbox.label == "Only warnings or blockers")
+    app = warning_checkbox.check().run(timeout=30)
+    after_baseline_needs_review_df, after_baseline_recent_activity_df, after_needs_review_df, after_recent_activity_df = (
+        _triage_frames_with_baseline(app)
+    )
+
+    assert list(before_baseline_needs_review_df["headline"]) == list(after_baseline_needs_review_df["headline"])
+    assert list(before_baseline_recent_activity_df["status"]) == list(after_baseline_recent_activity_df["status"])
+    assert list(before_needs_review_df["headline"]) == [
+        "Archived run contains warnings",
+        "New execution plan with trade changes vs prior comparable run",
+        "Capital allocation changed from prior comparable run",
+    ]
+    assert list(before_recent_activity_df["status"]) == [
+        "New execution plan with trade changes vs prior plan",
+        "Archived run contains warnings",
+        "Archived run with 1 proposed trade",
+    ]
+    assert list(after_needs_review_df["headline"]) == ["Archived run contains warnings"]
+    assert list(after_recent_activity_df["status"]) == ["Archived run contains warnings"]
