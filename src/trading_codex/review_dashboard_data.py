@@ -56,19 +56,22 @@ ARTIFACT_UNAVAILABLE_LABELS: dict[str, str] = {
     "run_folder_path": "run folder unavailable",
 }
 
-WARNING_OR_BLOCKER_TRIAGE_TEXT: frozenset[str] = frozenset(
+TRIAGE_ROW_KIND_KEY = "_triage_row_kind"
+TRIAGE_ROW_KIND_ARCHIVED_RUN = "archived_run"
+TRIAGE_ROW_KIND_BLOCKERS = "blockers"
+TRIAGE_ROW_KIND_WARNINGS = "warnings"
+TRIAGE_ROW_KIND_MISSING_REVIEW = "missing_review"
+TRIAGE_ROW_KIND_TRADE_CHANGE = "trade_change"
+TRIAGE_ROW_KIND_CAPITAL_CHANGE = "capital_change"
+
+WARNING_OR_BLOCKER_ROW_KINDS: frozenset[str] = frozenset(
     {
-        "Archived run contains blockers",
-        "Archived run contains warnings",
+        TRIAGE_ROW_KIND_BLOCKERS,
+        TRIAGE_ROW_KIND_WARNINGS,
     }
 )
 
-TRADE_CHANGE_TRIAGE_TEXT: frozenset[str] = frozenset(
-    {
-        "New execution plan with trade changes vs prior comparable run",
-        "New execution plan with trade changes vs prior plan",
-    }
-)
+TRADE_CHANGE_ROW_KINDS: frozenset[str] = frozenset({TRIAGE_ROW_KIND_TRADE_CHANGE})
 
 
 @dataclass(frozen=True)
@@ -402,7 +405,7 @@ def build_needs_review_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
         if blockers:
             rows.append(
                 _build_needs_review_row(
-                    priority_key="blockers",
+                    priority_key=TRIAGE_ROW_KIND_BLOCKERS,
                     run=run,
                     summary=summary,
                     headline="Archived run contains blockers",
@@ -414,7 +417,7 @@ def build_needs_review_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
         if warnings:
             rows.append(
                 _build_needs_review_row(
-                    priority_key="warnings",
+                    priority_key=TRIAGE_ROW_KIND_WARNINGS,
                     run=run,
                     summary=summary,
                     headline="Archived run contains warnings",
@@ -426,7 +429,7 @@ def build_needs_review_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
         if _has_plan_artifact(run) and not _review_artifact_paths(run):
             rows.append(
                 _build_needs_review_row(
-                    priority_key="missing_review",
+                    priority_key=TRIAGE_ROW_KIND_MISSING_REVIEW,
                     run=run,
                     summary=summary,
                     headline="New plan found; no review artifact detected",
@@ -443,7 +446,7 @@ def build_needs_review_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
         if current_trade_signatures != previous_trade_signatures:
             rows.append(
                 _build_needs_review_row(
-                    priority_key="trade_change",
+                    priority_key=TRIAGE_ROW_KIND_TRADE_CHANGE,
                     run=run,
                     summary=summary,
                     headline="New execution plan with trade changes vs prior comparable run",
@@ -461,7 +464,7 @@ def build_needs_review_rows(runs: list[ReviewRun]) -> list[dict[str, Any]]:
         if capital_detail is not None:
             rows.append(
                 _build_needs_review_row(
-                    priority_key="capital_change",
+                    priority_key=TRIAGE_ROW_KIND_CAPITAL_CHANGE,
                     run=run,
                     summary=summary,
                     headline="Capital allocation changed from prior comparable run",
@@ -490,16 +493,18 @@ def build_recent_activity_rows(runs: list[ReviewRun], *, limit: int = 25) -> lis
     for index, run in enumerate(runs):
         summary = summarize_run(run)
         prior = _find_prior_comparable_run(run, runs[index + 1 :])
+        row_kind, status = _recent_activity_row_kind_and_status(run=run, prior=prior)
         artifact_type, path = _primary_activity_artifact(run)
         related_paths = _related_activity_paths(run=run, primary_path=path)
         row = {
             "timestamp": summary.get("timestamp"),
             "label": _run_label(summary),
             "artifact_type": artifact_type,
-            "status": _recent_activity_status(run=run, prior=prior),
+            "status": status,
             "run_id": run.run_id,
             "path": str(path) if path is not None else "-",
             "related_paths": "; ".join(related_paths) if related_paths else "-",
+            TRIAGE_ROW_KIND_KEY: row_kind,
         }
         row.update(_artifact_quick_access_fields(run))
         rows.append(row)
@@ -769,28 +774,28 @@ def _comparison_key(run: ReviewRun) -> tuple[str, str, str, str, str, str] | Non
     )
 
 
-def _recent_activity_status(*, run: ReviewRun, prior: ReviewRun | None) -> str:
+def _recent_activity_row_kind_and_status(*, run: ReviewRun, prior: ReviewRun | None) -> tuple[str, str]:
     blockers = run.blockers()
     if blockers:
-        return "Archived run contains blockers"
+        return TRIAGE_ROW_KIND_BLOCKERS, "Archived run contains blockers"
     warnings = run.warnings()
     if warnings:
-        return "Archived run contains warnings"
+        return TRIAGE_ROW_KIND_WARNINGS, "Archived run contains warnings"
     if _has_plan_artifact(run) and not _review_artifact_paths(run):
-        return "New plan found; no review artifact detected"
+        return TRIAGE_ROW_KIND_MISSING_REVIEW, "New plan found; no review artifact detected"
     if prior is not None:
         current_trade_signatures = _trade_signatures(run.proposed_trades())
         previous_trade_signatures = _trade_signatures(prior.proposed_trades())
         if current_trade_signatures != previous_trade_signatures:
-            return "New execution plan with trade changes vs prior plan"
+            return TRIAGE_ROW_KIND_TRADE_CHANGE, "New execution plan with trade changes vs prior plan"
         if _build_capital_change_detail(run=run, previous=prior) is not None:
-            return "Capital allocation changed from prior comparable run"
+            return TRIAGE_ROW_KIND_CAPITAL_CHANGE, "Capital allocation changed from prior comparable run"
     trade_count = len(run.proposed_trades())
     if trade_count == 1:
-        return "Archived run with 1 proposed trade"
+        return TRIAGE_ROW_KIND_ARCHIVED_RUN, "Archived run with 1 proposed trade"
     if trade_count > 1:
-        return f"Archived run with {trade_count} proposed trades"
-    return "Archived run available for review"
+        return TRIAGE_ROW_KIND_ARCHIVED_RUN, f"Archived run with {trade_count} proposed trades"
+    return TRIAGE_ROW_KIND_ARCHIVED_RUN, "Archived run available for review"
 
 
 def _row_has_missing_review_markdown(row: Mapping[str, Any]) -> bool:
@@ -798,15 +803,15 @@ def _row_has_missing_review_markdown(row: Mapping[str, Any]) -> bool:
 
 
 def _row_has_warnings_or_blockers(row: Mapping[str, Any]) -> bool:
-    return _triage_row_text(row) in WARNING_OR_BLOCKER_TRIAGE_TEXT
+    return _triage_row_kind(row) in WARNING_OR_BLOCKER_ROW_KINDS
 
 
 def _row_has_trade_changes(row: Mapping[str, Any]) -> bool:
-    return _triage_row_text(row) in TRADE_CHANGE_TRIAGE_TEXT
+    return _triage_row_kind(row) in TRADE_CHANGE_ROW_KINDS
 
 
-def _triage_row_text(row: Mapping[str, Any]) -> str:
-    return str(_first_present(row.get("headline"), row.get("status")) or "")
+def _triage_row_kind(row: Mapping[str, Any]) -> str:
+    return str(row.get(TRIAGE_ROW_KIND_KEY) or "")
 
 
 def _build_needs_review_row(
@@ -822,6 +827,7 @@ def _build_needs_review_row(
 ) -> dict[str, Any]:
     row = {
         "_priority": NEEDS_REVIEW_PRIORITIES[priority_key],
+        TRIAGE_ROW_KIND_KEY: priority_key,
         "priority": _priority_label(priority_key),
         "timestamp": summary.get("timestamp"),
         "label": _run_label(summary),

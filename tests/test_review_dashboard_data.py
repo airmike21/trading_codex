@@ -5,6 +5,13 @@ from pathlib import Path
 
 from trading_codex.review_dashboard_data import (
     ARTIFACT_UNAVAILABLE_LABELS,
+    TRIAGE_ROW_KIND_ARCHIVED_RUN,
+    TRIAGE_ROW_KIND_BLOCKERS,
+    TRIAGE_ROW_KIND_CAPITAL_CHANGE,
+    TRIAGE_ROW_KIND_KEY,
+    TRIAGE_ROW_KIND_MISSING_REVIEW,
+    TRIAGE_ROW_KIND_TRADE_CHANGE,
+    TRIAGE_ROW_KIND_WARNINGS,
     build_artifact_rows,
     build_baseline_option_rows,
     build_needs_review_rows,
@@ -372,6 +379,11 @@ def test_build_needs_review_rows_flags_warnings_blockers_and_missing_review(tmp_
         "Archived run contains warnings",
         "New plan found; no review artifact detected",
     ]
+    assert [row[TRIAGE_ROW_KIND_KEY] for row in rows] == [
+        TRIAGE_ROW_KIND_BLOCKERS,
+        TRIAGE_ROW_KIND_WARNINGS,
+        TRIAGE_ROW_KIND_MISSING_REVIEW,
+    ]
     assert "blocker_from_manifest" in rows[0]["detail"]
     assert "blocker_from_trade" in rows[0]["detail"]
     assert "warning_from_manifest" in rows[1]["detail"]
@@ -415,6 +427,8 @@ def test_build_needs_review_rows_flags_trade_and_capital_changes_vs_prior_compar
     assert "Capital allocation changed from prior comparable run" in headlines
     trade_row = next(row for row in rows if row["headline"] == "New execution plan with trade changes vs prior comparable run")
     capital_row = next(row for row in rows if row["headline"] == "Capital allocation changed from prior comparable run")
+    assert trade_row[TRIAGE_ROW_KIND_KEY] == TRIAGE_ROW_KIND_TRADE_CHANGE
+    assert capital_row[TRIAGE_ROW_KIND_KEY] == TRIAGE_ROW_KIND_CAPITAL_CHANGE
     assert trade_row["compare_to_run_id"] == runs[1].run_id
     assert trade_row["review_markdown_path"].endswith("execution_plan_markdown__plan-newer_execution_plan.md")
     assert trade_row["plan_json_path"].endswith("execution_plan_json.json")
@@ -477,6 +491,9 @@ def test_build_recent_activity_rows_uses_archived_run_copy_for_warning_blocker_a
     assert status_by_run_id[runs[0].run_id] == "Archived run contains blockers"
     assert status_by_run_id[runs[1].run_id] == "Archived run contains warnings"
     assert status_by_run_id[runs[2].run_id] == "New plan found; no review artifact detected"
+    assert rows[0][TRIAGE_ROW_KIND_KEY] == TRIAGE_ROW_KIND_BLOCKERS
+    assert rows[1][TRIAGE_ROW_KIND_KEY] == TRIAGE_ROW_KIND_WARNINGS
+    assert rows[2][TRIAGE_ROW_KIND_KEY] == TRIAGE_ROW_KIND_MISSING_REVIEW
     assert rows[0]["review_markdown_path"].endswith("execution_plan_markdown__plan-blocker_execution_plan.md")
     assert rows[0]["plan_json_path"].endswith("execution_plan_json.json")
     assert rows[0]["run_folder_path"].endswith(runs[0].run_id)
@@ -518,6 +535,7 @@ def test_build_recent_activity_rows_orders_newest_first_and_includes_paths(tmp_p
     assert rows[0]["plan_json_path"].endswith("execution_plan_json.json")
     assert rows[0]["run_folder_path"].endswith(runs[0].run_id)
     assert rows[0]["status"] == "Archived run with 1 proposed trade"
+    assert rows[0][TRIAGE_ROW_KIND_KEY] == TRIAGE_ROW_KIND_ARCHIVED_RUN
 
 
 def test_filter_triage_rows_leaves_rows_unchanged_when_no_toggles_are_enabled(tmp_path: Path) -> None:
@@ -565,6 +583,33 @@ def test_filter_triage_rows_filters_warning_or_blocker_rows(tmp_path: Path) -> N
 
     assert [row["headline"] for row in filtered_needs_review_rows] == ["Archived run contains warnings"]
     assert [row["status"] for row in filtered_recent_activity_rows] == ["Archived run contains warnings"]
+
+
+def test_filter_triage_rows_uses_hidden_row_kind_instead_of_display_copy() -> None:
+    warning_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_WARNINGS,
+        "headline": "not the promoted warning copy",
+        "review_markdown_path": "/tmp/review.md",
+    }
+    fake_warning_copy_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_CAPITAL_CHANGE,
+        "headline": "Archived run contains warnings",
+        "review_markdown_path": "/tmp/review.md",
+    }
+    trade_change_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_TRADE_CHANGE,
+        "status": "not the promoted trade-change copy",
+        "review_markdown_path": "/tmp/plan.md",
+    }
+    fake_trade_copy_row = {
+        TRIAGE_ROW_KIND_KEY: TRIAGE_ROW_KIND_ARCHIVED_RUN,
+        "status": "New execution plan with trade changes vs prior plan",
+        "review_markdown_path": "/tmp/plan.md",
+    }
+    rows = [warning_row, fake_warning_copy_row, trade_change_row, fake_trade_copy_row]
+
+    assert filter_triage_rows(rows, only_warnings_or_blockers=True) == [warning_row]
+    assert filter_triage_rows(rows, only_trade_changes=True) == [trade_change_row]
 
 
 def test_filter_triage_rows_filters_trade_change_rows_and_supports_combinations(tmp_path: Path) -> None:
