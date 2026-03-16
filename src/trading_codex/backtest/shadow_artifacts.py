@@ -18,6 +18,7 @@ _STALE_CALENDAR_DAYS = 5
 
 def _compute_stale_data_warning(as_of_date: str) -> bool:
     """Return True when as_of_date is more than _STALE_CALENDAR_DAYS old."""
+    # NOTE: staleness is measured against local wall-clock time (pd.Timestamp.now()).
     delta = pd.Timestamp.now().normalize() - pd.Timestamp(as_of_date).normalize()
     return delta.days > _STALE_CALENDAR_DAYS
 

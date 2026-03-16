@@ -318,6 +318,159 @@ def test_shadow_bundle_contains_monitoring_fields(tmp_path: Path) -> None:
     assert payload["ready_for_shadow_review"] is False
 
 
+# ---------------------------------------------------------------------------
+# Edge-path tests: missing as_of_date in actions_bars index
+# ---------------------------------------------------------------------------
+
+
+def _make_multiindex_bars(dates: list[str], symbols: list[str]) -> pd.DataFrame:
+    """Return a MultiIndex-columns DataFrame (level-0=symbol, level-1=field).
+
+    Columns are ordered (symbol, field) as produced by the multi-asset backtest path.
+    Close values are filled with a constant 100.0.
+    """
+    idx = pd.DatetimeIndex(dates)
+    arrays = (
+        [s for s in symbols for _ in ("open", "high", "low", "close", "volume")],
+        ["open", "high", "low", "close", "volume"] * len(symbols),
+    )
+    cols = pd.MultiIndex.from_arrays(arrays)
+    data = {col: 100.0 for col in zip(*arrays)}
+    df = pd.DataFrame(data, index=idx)
+    df.columns = cols
+    return df
+
+
+def _symbol_counts_from_bars(
+    bars: pd.DataFrame, as_of: str
+) -> tuple[int | None, int | None]:
+    """Mirror the exact derivation in maybe_write_shadow_artifacts."""
+    expected: int | None = None
+    actual: int | None = None
+    if isinstance(bars.columns, pd.MultiIndex):
+        all_symbols = bars.columns.get_level_values(0).unique().tolist()
+        expected = len(all_symbols)
+        try:
+            last_row = bars.xs("close", axis=1, level=1).loc[as_of]
+            actual = int(last_row.notna().sum())
+        except KeyError:
+            actual = 0
+    return expected, actual
+
+
+class TestSymbolCountMissingDate:
+    """actions_bars has MultiIndex columns but as_of_date is not in the index."""
+
+    _DATES = ["2020-11-27", "2020-11-30", "2020-12-01"]
+    _SYMBOLS = ["SPY", "QQQ"]
+    _MISSING_DATE = "2020-12-02"  # not in _DATES
+
+    def _bars(self) -> pd.DataFrame:
+        return _make_multiindex_bars(self._DATES, self._SYMBOLS)
+
+    def test_missing_date_actual_count_is_zero(self) -> None:
+        """When as_of_date is absent from the index, actual_symbol_count resolves to 0."""
+        bars = self._bars()
+        _, actual = _symbol_counts_from_bars(bars, self._MISSING_DATE)
+        assert actual == 0
+
+    def test_missing_date_with_expected_symbols_triggers_mismatch(self) -> None:
+        """expected=2, actual=0 → mismatch=True, ready_for_shadow_review=False."""
+        bars = self._bars()
+        expected, actual = _symbol_counts_from_bars(bars, self._MISSING_DATE)
+        assert expected == 2
+        assert actual == 0
+        assert _compute_symbol_count_mismatch_warning(expected, actual) is True
+
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = build_shadow_review_bundle(
+            strategy="test",
+            as_of_date=today,
+            next_rebalance=None,
+            actions=[{"action": "BUY", "symbol": "SPY", "price": 450.0}],
+            cost_assumptions={"slippage_bps": 0.0, "commission_per_trade": 0.0, "commission_bps": 0.0},
+            metrics={},
+            expected_symbol_count=expected,
+            actual_symbol_count=actual,
+        )
+        assert bundle["symbol_count_mismatch_warning"] is True
+        assert bundle["ready_for_shadow_review"] is False
+
+    def test_missing_date_zero_expected_no_mismatch(self) -> None:
+        """Edge: expected=0, actual=0 → mismatch=False (counts agree)."""
+        assert _compute_symbol_count_mismatch_warning(0, 0) is False
+
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = build_shadow_review_bundle(
+            strategy="test",
+            as_of_date=today,
+            next_rebalance=None,
+            actions=[{"action": "HOLD", "symbol": "CASH", "price": None}],
+            cost_assumptions={"slippage_bps": 0.0, "commission_per_trade": 0.0, "commission_bps": 0.0},
+            metrics={},
+            expected_symbol_count=0,
+            actual_symbol_count=0,
+        )
+        assert bundle["symbol_count_mismatch_warning"] is False
+
+
+# ---------------------------------------------------------------------------
+# Edge-path tests: non-MultiIndex actions_bars columns
+# ---------------------------------------------------------------------------
+
+
+class TestSymbolCountNonMultiIndex:
+    """actions_bars has a flat (non-MultiIndex) columns Index."""
+
+    def _flat_bars(self, symbols: list[str] | None = None) -> pd.DataFrame:
+        """Return a flat-column OHLCV-style DataFrame (e.g. tsmom single-symbol)."""
+        idx = pd.DatetimeIndex(["2020-11-27", "2020-11-30", "2020-12-01"])
+        if symbols is None:
+            # Single-symbol flat frame as produced by tsmom path
+            return pd.DataFrame(
+                {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000},
+                index=idx,
+            )
+        # Flat multi-column frame (columns are symbol names, not a MultiIndex)
+        data = {s: [100.0, 101.0, 102.0] for s in symbols}
+        return pd.DataFrame(data, index=idx)
+
+    def test_flat_columns_skips_derivation(self) -> None:
+        """Non-MultiIndex columns → both counts stay None → mismatch=False."""
+        bars = self._flat_bars()
+        assert not isinstance(bars.columns, pd.MultiIndex)
+        expected, actual = _symbol_counts_from_bars(bars, "2020-12-01")
+        assert expected is None
+        assert actual is None
+        assert _compute_symbol_count_mismatch_warning(expected, actual) is False
+
+    def test_flat_columns_no_exception(self) -> None:
+        """_symbol_counts_from_bars must not raise on a flat-column DataFrame."""
+        bars = self._flat_bars(symbols=["SPY", "QQQ"])
+        assert not isinstance(bars.columns, pd.MultiIndex)
+        # Should complete without raising KeyError or AttributeError
+        expected, actual = _symbol_counts_from_bars(bars, "2020-12-01")
+        assert expected is None
+        assert actual is None
+
+    def test_single_column_df_no_mismatch(self) -> None:
+        """Single-column tsmom frame → no mismatch warning in the bundle."""
+        bars = self._flat_bars()
+        expected, actual = _symbol_counts_from_bars(bars, "2020-12-01")
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = build_shadow_review_bundle(
+            strategy="test",
+            as_of_date=today,
+            next_rebalance=None,
+            actions=[{"action": "HOLD", "symbol": "SPY", "price": 450.0}],
+            cost_assumptions={"slippage_bps": 0.0, "commission_per_trade": 0.0, "commission_bps": 0.0},
+            metrics={},
+            expected_symbol_count=expected,
+            actual_symbol_count=actual,
+        )
+        assert bundle["symbol_count_mismatch_warning"] is False
+
+
 def test_shadow_bundle_monitoring_fields_do_not_alter_next_action_stdout(tmp_path: Path) -> None:
     """Regression: adding monitoring fields must not change next-action JSON output."""
     repo_root, env = _repo_root_and_env()
