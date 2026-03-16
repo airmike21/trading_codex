@@ -129,6 +129,16 @@ def build_shadow_review_bundle(
         stale_data_warning or missing_price_warning or symbol_count_mismatch_warning
     )
 
+    # Derive reason lists from the computed booleans (never re-run independent logic).
+    warning_reasons: list[str] = []
+    blocking_reasons: list[str] = []
+    if stale_data_warning:
+        warning_reasons.append("stale_data")
+    if missing_price_warning:
+        blocking_reasons.append("missing_price")
+    if symbol_count_mismatch_warning:
+        blocking_reasons.append("symbol_count_mismatch")
+
     return {
         "artifact_type": "shadow_review",
         "artifact_version": 1,
@@ -154,6 +164,8 @@ def build_shadow_review_bundle(
         "missing_price_warning": missing_price_warning,
         "symbol_count_mismatch_warning": symbol_count_mismatch_warning,
         "ready_for_shadow_review": ready_for_shadow_review,
+        "warning_reasons": warning_reasons,
+        "blocking_reasons": blocking_reasons,
     }
 
 

@@ -471,6 +471,152 @@ class TestSymbolCountNonMultiIndex:
         assert bundle["symbol_count_mismatch_warning"] is False
 
 
+# ---------------------------------------------------------------------------
+# Unit tests: warning_reasons and blocking_reasons lists
+# ---------------------------------------------------------------------------
+
+
+class TestReasonLists:
+    """Verify the new additive reason-list fields on the shadow review bundle."""
+
+    def _bundle(
+        self,
+        *,
+        as_of_date: str | None = None,
+        actions: list[dict] | None = None,
+        expected_symbol_count: int | None = None,
+        actual_symbol_count: int | None = None,
+    ) -> dict:
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        return build_shadow_review_bundle(
+            strategy="test",
+            as_of_date=as_of_date or today,
+            next_rebalance=None,
+            actions=actions or [{"action": "BUY", "symbol": "SPY", "price": 450.0}],
+            cost_assumptions={"slippage_bps": 0.0, "commission_per_trade": 0.0, "commission_bps": 0.0},
+            metrics={},
+            expected_symbol_count=expected_symbol_count,
+            actual_symbol_count=actual_symbol_count,
+        )
+
+    def test_no_warnings_both_lists_empty(self) -> None:
+        """All warnings False → both lists are empty."""
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = self._bundle(
+            as_of_date=today,
+            actions=[{"action": "BUY", "symbol": "SPY", "price": 450.0}],
+            expected_symbol_count=1,
+            actual_symbol_count=1,
+        )
+        assert bundle["stale_data_warning"] is False
+        assert bundle["missing_price_warning"] is False
+        assert bundle["symbol_count_mismatch_warning"] is False
+        assert bundle["warning_reasons"] == []
+        assert bundle["blocking_reasons"] == []
+
+    def test_stale_only_warning_reasons(self) -> None:
+        """stale=True, others False → warning_reasons=['stale_data'], blocking_reasons=[]."""
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = self._bundle(
+            as_of_date="2020-01-01",
+            actions=[{"action": "BUY", "symbol": "SPY", "price": 450.0}],
+            expected_symbol_count=1,
+            actual_symbol_count=1,
+        )
+        assert bundle["stale_data_warning"] is True
+        assert bundle["missing_price_warning"] is False
+        assert bundle["symbol_count_mismatch_warning"] is False
+        assert bundle["warning_reasons"] == ["stale_data"]
+        assert bundle["blocking_reasons"] == []
+
+    def test_missing_price_only_blocking_reasons(self) -> None:
+        """missing_price=True, others False → warning_reasons=[], blocking_reasons=['missing_price']."""
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = self._bundle(
+            as_of_date=today,
+            actions=[{"action": "BUY", "symbol": "SPY", "price": None}],
+            expected_symbol_count=1,
+            actual_symbol_count=1,
+        )
+        assert bundle["stale_data_warning"] is False
+        assert bundle["missing_price_warning"] is True
+        assert bundle["symbol_count_mismatch_warning"] is False
+        assert bundle["warning_reasons"] == []
+        assert bundle["blocking_reasons"] == ["missing_price"]
+
+    def test_count_mismatch_only_blocking_reasons(self) -> None:
+        """count_mismatch=True, others False → warning_reasons=[], blocking_reasons=['symbol_count_mismatch']."""
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = self._bundle(
+            as_of_date=today,
+            actions=[{"action": "BUY", "symbol": "SPY", "price": 450.0}],
+            expected_symbol_count=4,
+            actual_symbol_count=3,
+        )
+        assert bundle["stale_data_warning"] is False
+        assert bundle["missing_price_warning"] is False
+        assert bundle["symbol_count_mismatch_warning"] is True
+        assert bundle["warning_reasons"] == []
+        assert bundle["blocking_reasons"] == ["symbol_count_mismatch"]
+
+    def test_combined_deterministic_ordering(self) -> None:
+        """All three True → both lists populated with correct codes in correct order."""
+        bundle = self._bundle(
+            as_of_date="2020-01-01",
+            actions=[{"action": "BUY", "symbol": "SPY", "price": None}],
+            expected_symbol_count=4,
+            actual_symbol_count=3,
+        )
+        assert bundle["stale_data_warning"] is True
+        assert bundle["missing_price_warning"] is True
+        assert bundle["symbol_count_mismatch_warning"] is True
+        assert bundle["warning_reasons"] == ["stale_data"]
+        assert bundle["blocking_reasons"] == ["missing_price", "symbol_count_mismatch"]
+
+    def test_integration_bundle_json_includes_reason_lists(self) -> None:
+        """Smoke: build_shadow_review_bundle returns both new fields in the dict."""
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = build_shadow_review_bundle(
+            strategy="integration_test",
+            as_of_date=today,
+            next_rebalance=None,
+            actions=[{"action": "BUY", "symbol": "SPY", "price": 450.0}],
+            cost_assumptions={"slippage_bps": 5.0, "commission_per_trade": 1.0, "commission_bps": 0.0},
+            metrics={"gross_cagr": 0.12, "net_cagr": 0.10},
+        )
+        assert "warning_reasons" in bundle, "warning_reasons missing from bundle"
+        assert "blocking_reasons" in bundle, "blocking_reasons missing from bundle"
+        assert isinstance(bundle["warning_reasons"], list)
+        assert isinstance(bundle["blocking_reasons"], list)
+
+    def test_existing_booleans_unchanged(self) -> None:
+        """Regression: existing boolean fields and ready_for_shadow_review still present and correct."""
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = self._bundle(
+            as_of_date=today,
+            actions=[{"action": "BUY", "symbol": "SPY", "price": 450.0}],
+            expected_symbol_count=1,
+            actual_symbol_count=1,
+        )
+        # All four original fields must be present
+        assert "stale_data_warning" in bundle
+        assert "missing_price_warning" in bundle
+        assert "symbol_count_mismatch_warning" in bundle
+        assert "ready_for_shadow_review" in bundle
+        # All must be bool
+        assert isinstance(bundle["stale_data_warning"], bool)
+        assert isinstance(bundle["missing_price_warning"], bool)
+        assert isinstance(bundle["symbol_count_mismatch_warning"], bool)
+        assert isinstance(bundle["ready_for_shadow_review"], bool)
+        # Invariant: ready == not any_warning
+        any_warning = (
+            bundle["stale_data_warning"]
+            or bundle["missing_price_warning"]
+            or bundle["symbol_count_mismatch_warning"]
+        )
+        assert bundle["ready_for_shadow_review"] == (not any_warning)
+
+
 def test_shadow_bundle_monitoring_fields_do_not_alter_next_action_stdout(tmp_path: Path) -> None:
     """Regression: adding monitoring fields must not change next-action JSON output."""
     repo_root, env = _repo_root_and_env()
