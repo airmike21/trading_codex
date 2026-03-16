@@ -509,12 +509,18 @@ def compute_extended_metrics(result: BacktestResult) -> dict[str, float]:
 
     turnover_avg = float(result.turnover.mean()) if len(result.turnover) else 0.0
     total_turnover = _weights_turnover_total(result.weights, result.turnover)
+    rebalance_event_count = int((result.turnover > 0).sum()) if len(result.turnover) else 0
+    commission_trade_count = int(result.trade_count.sum()) if result.trade_count is not None else rebalance_event_count
     years = len(net_returns) / 252.0
     if years > 0:
-        trades_per_year = float((result.turnover > 0).sum() / years)
+        trades_per_year = float(rebalance_event_count / years)
+        rebalance_events_per_year = float(rebalance_event_count / years)
+        commission_trade_count_per_year = float(commission_trade_count / years)
         annual_turnover = float(total_turnover / years)
     else:
         trades_per_year = 0.0
+        rebalance_events_per_year = 0.0
+        commission_trade_count_per_year = 0.0
         annual_turnover = 0.0
 
     if result.estimated_costs is not None:
@@ -537,9 +543,14 @@ def compute_extended_metrics(result: BacktestResult) -> dict[str, float]:
         "calmar": calmar_v,
         "exposure_pct": exposure_pct,
         "annual_turnover": annual_turnover,
+        "rebalance_event_count": float(rebalance_event_count),
+        "commission_trade_count": float(commission_trade_count),
+        "rebalance_events_per_year": rebalance_events_per_year,
+        "commission_trade_count_per_year": commission_trade_count_per_year,
         "total_estimated_cost": total_estimated_cost,
         "average_rebalance_cost": average_rebalance_cost,
         "turnover_avg_abs_change": turnover_avg,
+        # Legacy key retained for compatibility; matches rebalance/turnover days, not sleeve-counted commissions.
         "trades_per_year": trades_per_year,
     }
     if result.leverage is not None:
@@ -591,6 +602,7 @@ def maybe_write_metrics_json(
     strategy_name: str,
     summary: dict[str, float],
     benchmark: dict[str, float] | None,
+    cost_assumptions: dict[str, float],
 ) -> None:
     if not out_path:
         return
@@ -599,6 +611,7 @@ def maybe_write_metrics_json(
     payload = {
         "strategy": strategy_name,
         "metrics": summary,
+        "cost_assumptions": cost_assumptions,
         "benchmark_spy": benchmark,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -2110,17 +2123,34 @@ def main() -> None:
     print("Turnover:", round(_weights_turnover_total(result.weights, result.turnover), 4))
 
     extended = compute_extended_metrics(result)
+    cost_assumptions = {
+        "slippage_bps": float(args.slippage_bps),
+        "commission_per_trade": float(args.commission_per_trade),
+        "commission_bps": float(args.commission_bps),
+    }
     print("Gross CAGR:", round(extended["gross_cagr"], 4))
     print("Net CAGR:", round(extended["net_cagr"], 4))
     print("Gross Sharpe:", round(extended["gross_sharpe"], 4))
     print("Net Sharpe:", round(extended["net_sharpe"], 4))
     print("Calmar:", round(extended["calmar"], 4))
     print("Exposure %:", round(extended["exposure_pct"], 2))
+    print(
+        "Cost Assumptions:",
+        f"slippage_bps={cost_assumptions['slippage_bps']:.1f}",
+        f"commission_per_trade={cost_assumptions['commission_per_trade']:.2f}",
+        f"commission_bps={cost_assumptions['commission_bps']:.1f}",
+    )
+    print("Rebalance Events:", int(extended["rebalance_event_count"]))
+    print("Commissioned Sleeve/Order Count:", int(extended["commission_trade_count"]))
+    print("Rebalance Events/Year:", round(extended["rebalance_events_per_year"], 2))
+    print(
+        "Commissioned Sleeve/Orders Per Year:",
+        round(extended["commission_trade_count_per_year"], 2),
+    )
     print("Annual Turnover:", round(extended["annual_turnover"], 4))
     print("Total Estimated Cost:", round(extended["total_estimated_cost"], 4))
     print("Average Rebalance Cost:", round(extended["average_rebalance_cost"], 4))
     print("Turnover Avg:", round(extended["turnover_avg_abs_change"], 4))
-    print("Trades/Year:", round(extended["trades_per_year"], 2))
     if "avg_leverage" in extended:
         print("Avg Leverage:", round(extended["avg_leverage"], 4))
         print("Max Leverage:", round(extended["max_leverage"], 4))
@@ -2146,7 +2176,13 @@ def main() -> None:
     else:
         print("Benchmark SPY: unavailable")
 
-    maybe_write_metrics_json(args.metrics_out, args.strategy, extended, benchmark)
+    maybe_write_metrics_json(
+        args.metrics_out,
+        args.strategy,
+        extended,
+        benchmark,
+        cost_assumptions,
+    )
 
     print_latest_enabled = args.print_latest and (not args.next_action) and (not args.next_action_json)
 

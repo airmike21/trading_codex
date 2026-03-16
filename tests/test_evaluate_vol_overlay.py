@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -117,9 +118,66 @@ def test_evaluate_vol_overlay_writes_csv_and_summary(tmp_path: Path) -> None:
     assert set(df["period"]) == {"full", "recent_1y"}
     assert set(df["config_label"]) == {"baseline", "tv_0.10_lb_21"}
     assert len(df) == 8
-    assert {"cagr", "annualized_vol", "sharpe", "calmar", "average_leverage", "trade_count"}.issubset(df.columns)
+    assert {
+        "cagr",
+        "annualized_vol",
+        "sharpe",
+        "calmar",
+        "average_leverage",
+        "trade_count",
+        "rebalance_event_count",
+        "commission_trade_count",
+    }.issubset(df.columns)
 
     summary = summary_out.read_text(encoding="utf-8")
     assert "overlay default for dual_mom" in summary
     assert "overlay default for valmom_v1" in summary
     assert "single recommended default parameter set" in summary
+    assert "rebalance event count" in summary
+    assert "commission trade count" in summary
+
+
+def test_run_backtest_summary_and_metrics_json_show_cost_assumptions_and_count_labels(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    _write_synth_store(data_dir)
+
+    metrics_out = tmp_path / "metrics.json"
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "run_backtest.py"),
+        "--strategy",
+        "dual_mom",
+        "--symbols",
+        "AAA",
+        "BBB",
+        "CCC",
+        "--defensive",
+        "BIL",
+        "--mom-lookback",
+        "63",
+        "--rebalance",
+        "M",
+        "--start",
+        "2019-01-01",
+        "--end",
+        "2020-12-31",
+        "--no-plot",
+        "--metrics-out",
+        str(metrics_out),
+        "--data-dir",
+        str(data_dir),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(repo_root))
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    stdout = proc.stdout
+    assert "Cost Assumptions: slippage_bps=5.0 commission_per_trade=0.00 commission_bps=0.0" in stdout
+    assert "Rebalance Events:" in stdout
+    assert "Commissioned Sleeve/Order Count:" in stdout
+    assert "Rebalance Events/Year:" in stdout
+    assert "Commissioned Sleeve/Orders Per Year:" in stdout
+
+    payload = json.loads(metrics_out.read_text(encoding="utf-8"))
+    assert "cost_assumptions" in payload
+    assert float(payload["cost_assumptions"]["slippage_bps"]) == 5.0

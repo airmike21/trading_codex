@@ -259,8 +259,13 @@ def _evaluate_context(
                 "average_leverage": float(leverage.mean()) if len(leverage) else 1.0,
                 "min_leverage_observed": float(leverage.min()) if len(leverage) else 1.0,
                 "max_leverage_observed": float(leverage.max()) if len(leverage) else 1.0,
+                # Legacy alias retained for compatibility; matches turnover/rebalance days.
                 "trade_count": int((sliced.turnover > 0).sum()),
+                "rebalance_event_count": int(extended["rebalance_event_count"]),
+                "commission_trade_count": int(extended["commission_trade_count"]),
                 "trades_per_year": float(extended["trades_per_year"]),
+                "rebalance_events_per_year": float(extended["rebalance_events_per_year"]),
+                "commission_trade_count_per_year": float(extended["commission_trade_count_per_year"]),
             }
         )
     return rows
@@ -304,6 +309,8 @@ def _compare_config_rows(df: pd.DataFrame, config_label: str) -> pd.DataFrame:
         "min_leverage_observed",
         "max_leverage_observed",
         "trade_count",
+        "rebalance_event_count",
+        "commission_trade_count",
     ]
     subset = df[df["config_label"] == config_label].copy()
     return subset[columns].sort_values("period").reset_index(drop=True)
@@ -422,11 +429,11 @@ def _write_summary(
             compare.insert(0, "config_label", overlay_label)
             base = compare_frames[0].copy()
             base.insert(0, "config_label", "baseline")
-            lines.append(_markdown_table(pd.concat([base, compare], ignore_index=True), ["config_label", "period", "cagr", "annualized_vol", "sharpe", "max_drawdown", "calmar", "total_return", "average_leverage", "trade_count"]))
+            lines.append(_markdown_table(pd.concat([base, compare], ignore_index=True), ["config_label", "period", "cagr", "annualized_vol", "sharpe", "max_drawdown", "calmar", "total_return", "average_leverage", "rebalance_event_count", "commission_trade_count"]))
         else:
             base = compare_frames[0].copy()
             base.insert(0, "config_label", "baseline")
-            lines.append(_markdown_table(base, ["config_label", "period", "cagr", "annualized_vol", "sharpe", "max_drawdown", "calmar", "total_return", "average_leverage", "trade_count"]))
+            lines.append(_markdown_table(base, ["config_label", "period", "cagr", "annualized_vol", "sharpe", "max_drawdown", "calmar", "total_return", "average_leverage", "rebalance_event_count", "commission_trade_count"]))
         lines.append("")
         if best_overlay is not None:
             lines.append(

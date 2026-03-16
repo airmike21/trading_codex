@@ -119,6 +119,10 @@ def test_run_backtest_exposes_gross_and_net_cost_metrics_for_portfolios() -> Non
     assert np.isclose(extended["gross_cagr"], float((1.0 + expected_gross).prod() ** (252.0 / len(expected_gross)) - 1.0))
     assert np.isclose(extended["net_cagr"], float((1.0 + expected_net).prod() ** (252.0 / len(expected_net)) - 1.0))
     assert extended["gross_sharpe"] > extended["net_sharpe"]
+    assert np.isclose(extended["rebalance_event_count"], 2.0)
+    assert np.isclose(extended["commission_trade_count"], 3.0)
+    assert np.isclose(extended["rebalance_events_per_year"], 126.0)
+    assert np.isclose(extended["commission_trade_count_per_year"], 189.0)
     assert np.isclose(extended["annual_turnover"], 189.0)
     assert np.isclose(extended["total_estimated_cost"], 18.0)
     assert np.isclose(extended["average_rebalance_cost"], 9.0)
