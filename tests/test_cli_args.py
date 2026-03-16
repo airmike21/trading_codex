@@ -135,6 +135,21 @@ def test_cost_model_flags_parse_and_keep_legacy_commission_bps(monkeypatch):
     assert args.commission_bps == 0.4
 
 
+def test_shadow_artifacts_dir_flag_parses(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--shadow-artifacts-dir",
+            "/tmp/shadow-review",
+        ],
+    )
+
+    args = parse_args()
+    assert args.shadow_artifacts_dir == "/tmp/shadow-review"
+
+
 def test_tsmom_v1_cli_args_parse(monkeypatch):
     monkeypatch.setattr(
         sys,

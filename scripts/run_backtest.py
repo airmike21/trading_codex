@@ -14,6 +14,7 @@ import pandas as pd
 from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult, run_backtest
 from trading_codex.backtest.next_rebalance import compute_next_rebalance_date
+from trading_codex.backtest.shadow_artifacts import build_shadow_review_bundle, write_shadow_review_artifacts
 from trading_codex.data import LocalStore
 from trading_codex.strategies.dual_mom_v1 import DualMomentumV1Strategy
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
@@ -396,6 +397,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional Markdown output path for dual momentum trade checklist.",
     )
     parser.add_argument(
+        "--shadow-artifacts-dir",
+        default=None,
+        help="Optional local-only base directory for deterministic shadow review JSON/Markdown artifacts.",
+    )
+    parser.add_argument(
         "--print-latest",
         action="store_true",
         help="Print latest manual-execution status.",
@@ -615,6 +621,47 @@ def maybe_write_metrics_json(
         "benchmark_spy": benchmark,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def maybe_write_shadow_artifacts(
+    base_dir: str | None,
+    *,
+    strategy: str,
+    next_action_payload: dict[str, object] | None,
+    metrics_summary: dict[str, float],
+    cost_assumptions: dict[str, float],
+) -> None:
+    if not base_dir or next_action_payload is None:
+        return
+
+    bundle = build_shadow_review_bundle(
+        strategy=strategy,
+        as_of_date=str(next_action_payload.get("date")),
+        next_rebalance=(
+            None if next_action_payload.get("next_rebalance") is None else str(next_action_payload.get("next_rebalance"))
+        ),
+        actions=[dict(next_action_payload)],
+        cost_assumptions=cost_assumptions,
+        metrics=metrics_summary,
+        leverage=(
+            float(next_action_payload["leverage"])
+            if next_action_payload.get("leverage") is not None
+            else None
+        ),
+        vol_target=(
+            float(next_action_payload["vol_target"])
+            if next_action_payload.get("vol_target") is not None
+            else None
+        ),
+        realized_vol=(
+            float(next_action_payload["realized_vol"])
+            if next_action_payload.get("realized_vol") is not None
+            else None
+        ),
+        warnings=[],
+        blockers=[],
+    )
+    write_shadow_review_artifacts(base_dir=Path(base_dir), bundle=bundle)
 
 
 def build_tsmom_trade_log(
@@ -2059,10 +2106,22 @@ def main() -> None:
         actions_bars = tsmom_action_bars
         actions_weights = tsmom_action_weights
 
-    if (args.next_action_json or args.next_action) and actions_bars is not None and actions_weights is not None:
+    extended = compute_extended_metrics(result)
+    cost_assumptions = {
+        "slippage_bps": float(args.slippage_bps),
+        "commission_per_trade": float(args.commission_per_trade),
+        "commission_bps": float(args.commission_bps),
+    }
+    next_action_payload: dict[str, object] | None = None
+    next_action_strategy_label: str | None = None
+    next_action_rebalance: str | int | None = None
+    if actions_bars is not None and actions_weights is not None and (
+        args.shadow_artifacts_dir or args.next_action_json or args.next_action
+    ):
         strategy_label = (
             "BASELINE" if args.strategy == "tsmom" and args.long_only else args.strategy
         )
+        next_action_strategy_label = strategy_label
         next_rebalance: str | int | None
         if args.strategy in {"dual_mom", "sma200"}:
             next_rebalance = args.rebalance
@@ -2078,8 +2137,9 @@ def main() -> None:
             next_rebalance = args.vm_rebalance
         else:
             next_rebalance = None
+        next_action_rebalance = next_rebalance
 
-        payload = build_next_action_payload(
+        next_action_payload = build_next_action_payload(
             strategy_label=strategy_label,
             bars=actions_bars,
             weights=actions_weights,
@@ -2094,17 +2154,27 @@ def main() -> None:
             latest_leverage=latest_leverage,
             leverage_last_update_date=leverage_last_update_date,
         )
+        maybe_write_shadow_artifacts(
+            args.shadow_artifacts_dir,
+            strategy=strategy_label,
+            next_action_payload=next_action_payload,
+            metrics_summary=extended,
+            cost_assumptions=cost_assumptions,
+        )
+
+    if (args.next_action_json or args.next_action) and actions_bars is not None and actions_weights is not None:
+        payload = next_action_payload if next_action_payload is not None else {}
         if args.next_action_json:
             print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
         else:
             print(
                 render_next_action_line(
-                    strategy_label=strategy_label,
+                    strategy_label=next_action_strategy_label or str(payload["strategy"]),
                     bars=actions_bars,
                     weights=actions_weights,
                     actions=dual_actions,
                     resize_rebalance=rebalance_cadence,
-                    next_rebalance=next_rebalance,
+                    next_rebalance=next_action_rebalance,
                     rebalance_anchor_date=args.rebalance_anchor_date,
                     vol_target=args.vol_target,
                     vol_lookback=args.vol_lookback,
@@ -2122,12 +2192,6 @@ def main() -> None:
     print("Max DD:", round(metrics.max_drawdown(result.returns), 4))
     print("Turnover:", round(_weights_turnover_total(result.weights, result.turnover), 4))
 
-    extended = compute_extended_metrics(result)
-    cost_assumptions = {
-        "slippage_bps": float(args.slippage_bps),
-        "commission_per_trade": float(args.commission_per_trade),
-        "commission_bps": float(args.commission_bps),
-    }
     print("Gross CAGR:", round(extended["gross_cagr"], 4))
     print("Net CAGR:", round(extended["net_cagr"], 4))
     print("Gross Sharpe:", round(extended["gross_sharpe"], 4))
