@@ -1261,6 +1261,11 @@ def build_next_action_payload(
         else None
     )
     leverage_update_value = leverage_last_update_date if vol_target is not None else None
+    lookback_value = (
+        int(vol_lookback)
+        if vol_target is not None and vol_lookback is not None
+        else None
+    )
     if weights.empty:
         today = pd.Timestamp.today().date().isoformat()
         next_rebalance_value = _next_rebalance_value_for_payload(
@@ -1283,7 +1288,8 @@ def build_next_action_payload(
             "resize_new_shares": None,
             "next_rebalance": next_rebalance_value,
             "vol_target": float(vol_target) if vol_target is not None else None,
-            "vol_lookback": int(vol_lookback) if vol_target is not None and vol_lookback is not None else None,
+            "vol_lookback": lookback_value,
+            "lookback": lookback_value,
             "vol_update": vol_update if vol_target is not None else None,
             "realized_vol": realized_vol_value if vol_target is not None else None,
             "leverage": leverage_value if vol_target is not None else None,
@@ -1356,7 +1362,8 @@ def build_next_action_payload(
         else None,
         "next_rebalance": next_rebalance_value,
         "vol_target": float(vol_target) if vol_target is not None else None,
-        "vol_lookback": int(vol_lookback) if vol_target is not None and vol_lookback is not None else None,
+        "vol_lookback": lookback_value,
+        "lookback": lookback_value,
         "vol_update": vol_update if vol_target is not None else None,
         "realized_vol": realized_vol_value if vol_target is not None else None,
         "leverage": leverage_value if vol_target is not None else None,

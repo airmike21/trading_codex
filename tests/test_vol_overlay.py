@@ -141,6 +141,39 @@ def test_compute_leverage_series_zero_target_zero_vol_uses_min_leverage():
     pdt.assert_series_equal(got, expected)
 
 
+def test_apply_vol_target_overlay_scales_raw_weights_by_leverage_series():
+    idx = pd.date_range("2020-01-01", periods=6, freq="B")
+    raw_weights = pd.DataFrame(
+        {
+            "A": [0.6] * len(idx),
+            "B": [0.4] * len(idx),
+        },
+        index=idx,
+        dtype=float,
+    )
+    asset_returns = pd.DataFrame(
+        {
+            "A": [0.0, 0.04, -0.03, 0.05, -0.04, 0.05],
+            "B": [0.0, 0.01, -0.015, 0.02, -0.01, 0.015],
+        },
+        index=idx,
+        dtype=float,
+    )
+
+    scaled_weights, leverage, _ = apply_vol_target_overlay(
+        raw_weights,
+        asset_returns,
+        target_vol=0.10,
+        lookback=3,
+        min_leverage=0.0,
+        max_leverage=1.0,
+    )
+
+    expected = raw_weights.mul(leverage, axis=0)
+    pdt.assert_frame_equal(scaled_weights, expected)
+    assert float(leverage.iloc[-1]) < 1.0
+
+
 def test_vol_overlay_disabled_matches_baseline_exact():
     idx = pd.date_range("2020-01-01", periods=15, freq="B")
     close = pd.Series(np.linspace(100.0, 112.0, len(idx)), index=idx)
@@ -402,6 +435,7 @@ def test_vol_overlay_changes_target_shares_through_pipeline():
     assert isinstance(overlay_payload["target_shares"], int)
     assert overlay_payload["target_shares"] < plain_payload["target_shares"]
     assert overlay_payload["vol_lookback"] == 5
+    assert overlay_payload["lookback"] == 5
     assert overlay_payload["realized_vol"] is not None
     assert overlay_payload["event_id"] == _expected_event_id(overlay_payload)
 
@@ -451,6 +485,7 @@ def test_run_backtest_cli_vol_target_flag_enables_default_overlay_and_preserves_
     obj = json.loads(lines[0])
     assert obj["vol_target"] == 0.10
     assert obj["vol_lookback"] == 63
+    assert obj["lookback"] == 63
     assert obj["leverage"] is not None
     assert obj["realized_vol"] is not None
     assert obj["event_id"] == _expected_event_id(obj)

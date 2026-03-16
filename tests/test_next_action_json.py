@@ -124,6 +124,7 @@ def test_next_action_json_is_single_line_and_parseable_and_has_resize_fields():
     assert obj["resize_prev_shares"] != obj["resize_new_shares"]
     assert obj["next_rebalance"] is not None
     assert obj["vol_lookback"] == 5
+    assert obj["lookback"] == 5
     assert obj["realized_vol"] is not None
     assert obj["leverage"] is not None
 
@@ -198,4 +199,5 @@ def test_next_action_json_no_stale_resize_on_next_day():
     assert obj["resize_prev_shares"] is None
     assert obj["resize_new_shares"] is None
     assert obj["vol_lookback"] == 5
+    assert obj["lookback"] == 5
     assert obj["realized_vol"] is not None
