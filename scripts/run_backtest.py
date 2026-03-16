@@ -126,14 +126,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--slippage-bps",
         type=float,
-        default=1.0,
-        help="Slippage in basis points per unit turnover (default: 1.0).",
+        default=5.0,
+        help="Slippage in basis points per unit turnover (default: 5.0).",
     )
     parser.add_argument(
         "--commission-bps",
         type=float,
-        default=0.5,
-        help="Commission in basis points per unit turnover (default: 0.5).",
+        default=0.0,
+        help="Legacy commission in basis points per unit turnover (default: 0.0).",
+    )
+    parser.add_argument(
+        "--commission-per-trade",
+        type=float,
+        default=0.0,
+        help="Fixed commission per changed sleeve/order in the normalized $10,000 backtest model (default: 0.0).",
     )
 
     parser.add_argument(
@@ -481,15 +487,17 @@ def load_multi_asset_bars(
 
 
 def _weights_turnover_total(weights: pd.Series | pd.DataFrame, turnover: pd.Series) -> float:
-    if isinstance(weights, pd.Series):
-        return float(metrics.turnover(weights))
     return float(turnover.sum())
 
 
 def compute_extended_metrics(result: BacktestResult) -> dict[str, float]:
-    cagr_v = float(metrics.cagr(result.returns))
-    vol_v = float(metrics.vol(result.returns))
-    sharpe_v = float(metrics.sharpe(result.returns))
+    net_returns = result.returns
+    gross_returns = result.gross_returns if result.gross_returns is not None else net_returns
+    cagr_v = float(metrics.cagr(net_returns))
+    vol_v = float(metrics.vol(net_returns))
+    sharpe_v = float(metrics.sharpe(net_returns))
+    gross_cagr_v = float(metrics.cagr(gross_returns))
+    gross_sharpe_v = float(metrics.sharpe(gross_returns))
     max_dd_v = float(metrics.max_drawdown(result.returns))
     calmar_v = cagr_v / abs(max_dd_v) if max_dd_v < 0 else 0.0
 
@@ -500,19 +508,37 @@ def compute_extended_metrics(result: BacktestResult) -> dict[str, float]:
     exposure_pct = float(invested.mean() * 100.0) if len(invested) else 0.0
 
     turnover_avg = float(result.turnover.mean()) if len(result.turnover) else 0.0
-    years = len(result.returns) / 252.0
+    total_turnover = _weights_turnover_total(result.weights, result.turnover)
+    years = len(net_returns) / 252.0
     if years > 0:
         trades_per_year = float((result.turnover > 0).sum() / years)
+        annual_turnover = float(total_turnover / years)
     else:
         trades_per_year = 0.0
+        annual_turnover = 0.0
+
+    if result.estimated_costs is not None:
+        total_estimated_cost = float(result.estimated_costs.sum())
+        rebalance_costs = result.estimated_costs[result.estimated_costs > 0.0]
+        average_rebalance_cost = float(rebalance_costs.mean()) if len(rebalance_costs) else 0.0
+    else:
+        total_estimated_cost = 0.0
+        average_rebalance_cost = 0.0
 
     summary = {
+        "gross_cagr": gross_cagr_v,
+        "net_cagr": cagr_v,
+        "gross_sharpe": gross_sharpe_v,
+        "net_sharpe": sharpe_v,
         "cagr": cagr_v,
         "vol": vol_v,
         "sharpe": sharpe_v,
         "max_drawdown": max_dd_v,
         "calmar": calmar_v,
         "exposure_pct": exposure_pct,
+        "annual_turnover": annual_turnover,
+        "total_estimated_cost": total_estimated_cost,
+        "average_rebalance_cost": average_rebalance_cost,
         "turnover_avg_abs_change": turnover_avg,
         "trades_per_year": trades_per_year,
     }
@@ -1956,6 +1982,7 @@ def main() -> None:
         strategy,
         slippage_bps=args.slippage_bps,
         commission_bps=args.commission_bps,
+        commission_per_trade=args.commission_per_trade,
         vol_target=args.vol_target,
         vol_lookback=args.vol_lookback,
         vol_min=args.min_leverage,
@@ -2083,8 +2110,15 @@ def main() -> None:
     print("Turnover:", round(_weights_turnover_total(result.weights, result.turnover), 4))
 
     extended = compute_extended_metrics(result)
+    print("Gross CAGR:", round(extended["gross_cagr"], 4))
+    print("Net CAGR:", round(extended["net_cagr"], 4))
+    print("Gross Sharpe:", round(extended["gross_sharpe"], 4))
+    print("Net Sharpe:", round(extended["net_sharpe"], 4))
     print("Calmar:", round(extended["calmar"], 4))
     print("Exposure %:", round(extended["exposure_pct"], 2))
+    print("Annual Turnover:", round(extended["annual_turnover"], 4))
+    print("Total Estimated Cost:", round(extended["total_estimated_cost"], 4))
+    print("Average Rebalance Cost:", round(extended["average_rebalance_cost"], 4))
     print("Turnover Avg:", round(extended["turnover_avg_abs_change"], 4))
     print("Trades/Year:", round(extended["trades_per_year"], 2))
     if "avg_leverage" in extended:

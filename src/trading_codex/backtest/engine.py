@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from trading_codex.backtest.costs import bps_cost
+from trading_codex.backtest.costs import compute_trade_count, compute_turnover, estimate_transaction_costs
 from trading_codex.backtest.vol_overlay import apply_vol_target_overlay
 from trading_codex.data.contracts import BAR_COLUMNS, validate_bars, validate_signals
 from trading_codex.overlays.ivol_overlay import apply_inverse_vol_overlay
@@ -19,6 +19,11 @@ class BacktestResult:
     weights: pd.Series | pd.DataFrame
     turnover: pd.Series
     equity: pd.Series
+    gross_returns: pd.Series | None = None
+    gross_equity: pd.Series | None = None
+    cost_returns: pd.Series | None = None
+    estimated_costs: pd.Series | None = None
+    trade_count: pd.Series | None = None
     leverage: pd.Series | None = None
     realized_vol: pd.Series | None = None
 
@@ -89,8 +94,9 @@ def _rebalance_update_mask(index: pd.DatetimeIndex, rebalance_cadence: str | int
 def run_backtest(
     bars: pd.DataFrame,
     strategy: Strategy,
-    slippage_bps: float = 1.0,
+    slippage_bps: float = 5.0,
     commission_bps: float = 0.0,
+    commission_per_trade: float = 0.0,
     vol_target: float | None = None,
     vol_lookback: int = 63,
     vol_min: float = 0.0,
@@ -106,6 +112,12 @@ def run_backtest(
             raise ValueError("ivol_lookback must be > 0 when --ivol is enabled.")
         if ivol_eps <= 0:
             raise ValueError("ivol_eps must be > 0 when --ivol is enabled.")
+    if slippage_bps < 0:
+        raise ValueError("slippage_bps must be >= 0.")
+    if commission_bps < 0:
+        raise ValueError("commission_bps must be >= 0.")
+    if commission_per_trade < 0:
+        raise ValueError("commission_per_trade must be >= 0.")
 
     if vol_target is not None:
         if vol_target < 0:
@@ -167,17 +179,30 @@ def run_backtest(
         turnover_weights = (
             base_weights if (vol_target is not None and vol_update == "rebalance") else weights
         )
-        turnover = turnover_weights.diff().abs().sum(axis=1).fillna(0.0)
-        costs = bps_cost(turnover, slippage_bps=slippage_bps, commission_bps=commission_bps)
-
-        strategy_returns = (weights * rets).sum(axis=1) - costs
+        turnover = compute_turnover(turnover_weights)
+        trade_count = compute_trade_count(turnover_weights)
+        gross_returns = (weights * rets).sum(axis=1).astype(float)
+        cost_estimate = estimate_transaction_costs(
+            turnover,
+            trade_count,
+            slippage_bps=slippage_bps,
+            commission_bps=commission_bps,
+            commission_per_trade=commission_per_trade,
+        )
+        strategy_returns = gross_returns - cost_estimate.cost_return
         equity = (1 + strategy_returns).cumprod()
+        gross_equity = (1 + gross_returns).cumprod()
 
         return BacktestResult(
             returns=strategy_returns,
             weights=weights,
             turnover=turnover,
             equity=equity,
+            gross_returns=gross_returns,
+            gross_equity=gross_equity,
+            cost_returns=cost_estimate.cost_return,
+            estimated_costs=cost_estimate.total_cost,
+            trade_count=cost_estimate.trade_count,
             leverage=leverage,
             realized_vol=realized_vol,
         )
@@ -216,17 +241,31 @@ def run_backtest(
         weights = base_weights
 
     turnover_weights = base_weights if (vol_target is not None and vol_update == "rebalance") else weights
-    turnover = turnover_weights.diff().abs().fillna(0.0)
-    costs = bps_cost(turnover, slippage_bps=slippage_bps, commission_bps=commission_bps)
+    turnover = compute_turnover(turnover_weights)
+    trade_count = compute_trade_count(turnover_weights)
+    gross_returns = (weights * rets).astype(float)
+    cost_estimate = estimate_transaction_costs(
+        turnover,
+        trade_count,
+        slippage_bps=slippage_bps,
+        commission_bps=commission_bps,
+        commission_per_trade=commission_per_trade,
+    )
 
-    strategy_returns = (weights * rets) - costs
+    strategy_returns = gross_returns - cost_estimate.cost_return
     equity = (1 + strategy_returns).cumprod()
+    gross_equity = (1 + gross_returns).cumprod()
 
     return BacktestResult(
         returns=strategy_returns,
         weights=weights,
         turnover=turnover,
         equity=equity,
+        gross_returns=gross_returns,
+        gross_equity=gross_equity,
+        cost_returns=cost_estimate.cost_return,
+        estimated_costs=cost_estimate.total_cost,
+        trade_count=cost_estimate.trade_count,
         leverage=leverage,
         realized_vol=realized_vol,
     )

@@ -158,6 +158,11 @@ def _slice_result(
     else:
         weights = result.weights.loc[returns.index]
     turnover = result.turnover.loc[returns.index]
+    gross_returns = result.gross_returns.loc[returns.index] if result.gross_returns is not None else returns
+    gross_equity = result.gross_equity.loc[returns.index] if result.gross_equity is not None else (1.0 + gross_returns).cumprod()
+    cost_returns = result.cost_returns.loc[returns.index] if result.cost_returns is not None else (gross_returns - returns)
+    estimated_costs = result.estimated_costs.loc[returns.index] if result.estimated_costs is not None else None
+    trade_count = result.trade_count.loc[returns.index] if result.trade_count is not None else None
     leverage = (
         result.leverage.loc[returns.index]
         if result.leverage is not None
@@ -169,6 +174,11 @@ def _slice_result(
         weights=weights,
         turnover=turnover,
         equity=(1.0 + returns).cumprod(),
+        gross_returns=gross_returns,
+        gross_equity=gross_equity,
+        cost_returns=cost_returns,
+        estimated_costs=estimated_costs,
+        trade_count=trade_count,
         leverage=leverage,
         realized_vol=realized_vol,
     )
@@ -197,6 +207,7 @@ def _evaluate_context(
         ctx.strategy,  # type: ignore[arg-type]
         slippage_bps=ctx.args.slippage_bps,
         commission_bps=ctx.args.commission_bps,
+        commission_per_trade=ctx.args.commission_per_trade,
         vol_target=target_vol,
         vol_lookback=int(vol_lookback) if vol_lookback is not None else ctx.args.vol_lookback,
         vol_min=min_leverage,

@@ -114,6 +114,27 @@ def test_risk_parity_cli_args_parse(monkeypatch):
     assert args.rp_tol == 1e-7
 
 
+def test_cost_model_flags_parse_and_keep_legacy_commission_bps(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--slippage-bps",
+            "7.5",
+            "--commission-per-trade",
+            "1.25",
+            "--commission-bps",
+            "0.4",
+        ],
+    )
+
+    args = parse_args()
+    assert args.slippage_bps == 7.5
+    assert args.commission_per_trade == 1.25
+    assert args.commission_bps == 0.4
+
+
 def test_tsmom_v1_cli_args_parse(monkeypatch):
     monkeypatch.setattr(
         sys,
