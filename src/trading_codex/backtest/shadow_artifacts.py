@@ -3,12 +3,60 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# Data is considered stale when the as_of_date is more than this many calendar
+# days behind today.  5 days covers a long weekend plus one trading day of lag.
+_STALE_CALENDAR_DAYS = 5
+
+
+def _compute_stale_data_warning(as_of_date: str) -> bool:
+    """Return True when as_of_date is more than _STALE_CALENDAR_DAYS old."""
+    delta = pd.Timestamp.now().normalize() - pd.Timestamp(as_of_date).normalize()
+    return delta.days > _STALE_CALENDAR_DAYS
+
+
+def _compute_missing_price_warning(actions: list[dict[str, Any]]) -> bool:
+    """Return True when any non-CASH action is missing a usable price."""
+    for item in actions:
+        symbol = item.get("symbol")
+        action = item.get("action")
+        price = item.get("price")
+        if symbol is None or str(symbol).upper() == "CASH":
+            continue
+        if action is not None and str(action).upper() == "HOLD" and price is None:
+            # HOLD with no price is acceptable (held position priced separately)
+            continue
+        if price is None:
+            return True
+        try:
+            if math.isnan(float(price)):
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def _compute_symbol_count_mismatch_warning(
+    expected_symbol_count: int | None,
+    actual_symbol_count: int | None,
+) -> bool:
+    """Return True when the loaded symbol count differs from the expected count.
+
+    expected_symbol_count: number of distinct symbols configured for the strategy
+        (derived from the bars panel column headers at the call site).
+    actual_symbol_count: number of those symbols that have valid close-price data
+        on the as_of_date row.
+    """
+    if expected_symbol_count is None or actual_symbol_count is None:
+        return False
+    return actual_symbol_count != expected_symbol_count
 
 
 @dataclass(frozen=True)
@@ -63,11 +111,22 @@ def build_shadow_review_bundle(
     realized_vol: float | None = None,
     warnings: list[str] | None = None,
     blockers: list[str] | None = None,
+    expected_symbol_count: int | None = None,
+    actual_symbol_count: int | None = None,
 ) -> dict[str, Any]:
     warnings_list = list(warnings or [])
     blockers_list = list(blockers or [])
     action_types = [str(item.get("action", "")) for item in actions if item.get("action") is not None]
     symbols = [str(item.get("symbol", "")) for item in actions if item.get("symbol") is not None]
+
+    stale_data_warning = _compute_stale_data_warning(as_of_date)
+    missing_price_warning = _compute_missing_price_warning(actions)
+    symbol_count_mismatch_warning = _compute_symbol_count_mismatch_warning(
+        expected_symbol_count, actual_symbol_count
+    )
+    ready_for_shadow_review = not (
+        stale_data_warning or missing_price_warning or symbol_count_mismatch_warning
+    )
 
     return {
         "artifact_type": "shadow_review",
@@ -90,6 +149,10 @@ def build_shadow_review_bundle(
         "realized_vol": realized_vol,
         "warnings": warnings_list,
         "blockers": blockers_list,
+        "stale_data_warning": stale_data_warning,
+        "missing_price_warning": missing_price_warning,
+        "symbol_count_mismatch_warning": symbol_count_mismatch_warning,
+        "ready_for_shadow_review": ready_for_shadow_review,
     }
 
 

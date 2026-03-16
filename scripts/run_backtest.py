@@ -630,9 +630,22 @@ def maybe_write_shadow_artifacts(
     next_action_payload: dict[str, object] | None,
     metrics_summary: dict[str, float],
     cost_assumptions: dict[str, float],
+    actions_bars: pd.DataFrame | None = None,
 ) -> None:
     if not base_dir or next_action_payload is None:
         return
+
+    expected_symbol_count: int | None = None
+    actual_symbol_count: int | None = None
+    if actions_bars is not None and isinstance(actions_bars.columns, pd.MultiIndex):
+        all_symbols = actions_bars.columns.get_level_values(0).unique().tolist()
+        expected_symbol_count = len(all_symbols)
+        as_of = str(next_action_payload.get("date"))
+        try:
+            last_row = actions_bars.xs("close", axis=1, level=1).loc[as_of]
+            actual_symbol_count = int(last_row.notna().sum())
+        except KeyError:
+            actual_symbol_count = 0
 
     bundle = build_shadow_review_bundle(
         strategy=strategy,
@@ -660,6 +673,8 @@ def maybe_write_shadow_artifacts(
         ),
         warnings=[],
         blockers=[],
+        expected_symbol_count=expected_symbol_count,
+        actual_symbol_count=actual_symbol_count,
     )
     write_shadow_review_artifacts(base_dir=Path(base_dir), bundle=bundle)
 
@@ -2160,6 +2175,7 @@ def main() -> None:
             next_action_payload=next_action_payload,
             metrics_summary=extended,
             cost_assumptions=cost_assumptions,
+            actions_bars=actions_bars,
         )
 
     if (args.next_action_json or args.next_action) and actions_bars is not None and actions_weights is not None:
