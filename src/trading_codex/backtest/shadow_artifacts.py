@@ -205,6 +205,8 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         f"- Commission-counted sleeve/order count: `{bundle.get('commission_trade_count', 0)}`",
         f"- Warnings: `{', '.join(str(item) for item in warnings) if warnings else '-'}`",
         f"- Blockers: `{', '.join(str(item) for item in blockers) if blockers else '-'}`",
+        f"- Warning reasons: `{', '.join(warning_reasons) if warning_reasons else '-'}`",
+        f"- Blocking reasons: `{', '.join(blocking_reasons) if blocking_reasons else '-'}`",
         "",
     ]
 

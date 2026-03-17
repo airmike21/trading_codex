@@ -313,3 +313,122 @@ class TestRenderShadowReviewMarkdownReasons:
         actions_pos = md.index("## Actions")
         assert warnings_pos < actions_pos, "## Warnings must come before ## Actions"
         assert blockers_pos < actions_pos, "## Blockers must come before ## Actions"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: new "Warning reasons" / "Blocking reasons" summary lines
+# ---------------------------------------------------------------------------
+
+
+class TestReasonSummaryLines:
+    """Focused tests for the new top-level summary lines added after Warnings/Blockers."""
+
+    def test_warning_reasons_summary_line_renders_codes_when_non_empty(self) -> None:
+        """Non-empty warning_reasons renders comma-joined codes on the summary line."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "- Warning reasons: `stale_data`" in md
+
+    def test_blocking_reasons_summary_line_renders_codes_when_non_empty(self) -> None:
+        """Non-empty blocking_reasons renders comma-joined codes on the summary line."""
+        bundle = _minimal_bundle(warning_reasons=[], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        assert "- Blocking reasons: `missing_price`" in md
+
+    def test_multiple_warning_reason_codes_comma_joined_in_summary(self) -> None:
+        """Multiple warning reason codes are comma-joined on the summary line."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data", "extra_warn"], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "- Warning reasons: `stale_data, extra_warn`" in md
+
+    def test_multiple_blocking_reason_codes_comma_joined_in_summary(self) -> None:
+        """Multiple blocking reason codes are comma-joined on the summary line."""
+        bundle = _minimal_bundle(
+            warning_reasons=[],
+            blocking_reasons=["missing_price", "symbol_count_mismatch"],
+        )
+        md = render_shadow_review_markdown(bundle)
+        assert "- Blocking reasons: `missing_price, symbol_count_mismatch`" in md
+
+    def test_empty_warning_reasons_renders_dash_on_summary_line(self) -> None:
+        """Empty warning_reasons list renders '-' on the summary line."""
+        bundle = _minimal_bundle(warning_reasons=[], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "- Warning reasons: `-`" in md
+
+    def test_empty_blocking_reasons_renders_dash_on_summary_line(self) -> None:
+        """Empty blocking_reasons list renders '-' on the summary line."""
+        bundle = _minimal_bundle(warning_reasons=[], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "- Blocking reasons: `-`" in md
+
+    def test_absent_warning_reasons_renders_dash_on_summary_line(self) -> None:
+        """Absent warning_reasons key renders '-' on the summary line."""
+        bundle = _minimal_bundle()
+        bundle.pop("warning_reasons", None)
+        md = render_shadow_review_markdown(bundle)
+        assert "- Warning reasons: `-`" in md
+
+    def test_absent_blocking_reasons_renders_dash_on_summary_line(self) -> None:
+        """Absent blocking_reasons key renders '-' on the summary line."""
+        bundle = _minimal_bundle()
+        bundle.pop("blocking_reasons", None)
+        md = render_shadow_review_markdown(bundle)
+        assert "- Blocking reasons: `-`" in md
+
+    def test_summary_lines_appear_after_legacy_warnings_blockers_lines(self) -> None:
+        """New summary lines appear after the legacy Warnings/Blockers lines."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        warnings_legacy_pos = md.index("- Warnings:")
+        blockers_legacy_pos = md.index("- Blockers:")
+        warning_reasons_pos = md.index("- Warning reasons:")
+        blocking_reasons_pos = md.index("- Blocking reasons:")
+        assert warnings_legacy_pos < warning_reasons_pos, (
+            "legacy '- Warnings:' must appear before '- Warning reasons:'"
+        )
+        assert blockers_legacy_pos < blocking_reasons_pos, (
+            "legacy '- Blockers:' must appear before '- Blocking reasons:'"
+        )
+
+    def test_summary_lines_appear_before_actions_section(self) -> None:
+        """New summary lines appear in the header block, before ## Actions."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        warning_reasons_pos = md.index("- Warning reasons:")
+        blocking_reasons_pos = md.index("- Blocking reasons:")
+        actions_pos = md.index("## Actions")
+        assert warning_reasons_pos < actions_pos
+        assert blocking_reasons_pos < actions_pos
+
+    def test_existing_detailed_warnings_section_still_renders(self) -> None:
+        """The existing ## Warnings bullet-list section is unchanged."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Warnings" in md
+        assert "- stale_data" in md
+
+    def test_existing_detailed_blockers_section_still_renders(self) -> None:
+        """The existing ## Blockers bullet-list section is unchanged."""
+        bundle = _minimal_bundle(warning_reasons=[], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Blockers" in md
+        assert "- missing_price" in md
+
+    def test_actions_section_preserved_with_reason_summary_lines(self) -> None:
+        """## Actions section is still present when reason summary lines are rendered."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Actions" in md
+
+    def test_stale_data_bundle_has_meaningful_top_summary(self) -> None:
+        """A stale-data bundle shows 'stale_data' on the top summary line (not just ## Warnings)."""
+        # Simulate a stale-data bundle by injecting the reason directly
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        # The summary line must appear near the top, before any ## section headers
+        first_section_pos = md.index("##")
+        summary_line_pos = md.index("- Warning reasons: `stale_data`")
+        assert summary_line_pos < first_section_pos, (
+            "Warning reasons summary must appear before the first ## section"
+        )
