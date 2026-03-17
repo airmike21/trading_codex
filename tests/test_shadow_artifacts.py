@@ -453,6 +453,7 @@ class TestArtifactVersion:
         md = render_shadow_review_markdown(bundle)
         assert "- Artifact version: `1`" in md
 
+
     def test_artifact_version_line_appears_before_actions_section(self) -> None:
         """Artifact version summary line must appear in the header block, before ## Actions."""
         bundle = _minimal_bundle()
@@ -512,3 +513,101 @@ class TestArtifactVersion:
         assert bundle["artifact_version"] == 1
         md = render_shadow_review_markdown(bundle)
         assert "- Artifact version: `1`" in md
+
+
+class TestReadinessBooleanSummaryLines:
+    """Focused tests for readiness booleans rendered in the markdown summary block."""
+
+    def test_readiness_boolean_summary_lines_render_true_values(self) -> None:
+        bundle = {
+            **_minimal_bundle(),
+            "ready_for_shadow_review": True,
+            "stale_data_warning": True,
+            "missing_price_warning": True,
+            "symbol_count_mismatch_warning": True,
+        }
+        md = render_shadow_review_markdown(bundle)
+        assert "- Ready for shadow review: `true`" in md
+        assert "- Stale data warning: `true`" in md
+        assert "- Missing price warning: `true`" in md
+        assert "- Symbol count mismatch warning: `true`" in md
+
+    def test_readiness_boolean_summary_lines_render_false_values(self) -> None:
+        bundle = {
+            **_minimal_bundle(),
+            "ready_for_shadow_review": False,
+            "stale_data_warning": False,
+            "missing_price_warning": False,
+            "symbol_count_mismatch_warning": False,
+        }
+        md = render_shadow_review_markdown(bundle)
+        assert "- Ready for shadow review: `false`" in md
+        assert "- Stale data warning: `false`" in md
+        assert "- Missing price warning: `false`" in md
+        assert "- Symbol count mismatch warning: `false`" in md
+
+    def test_existing_summary_lines_remain_present_with_readiness_booleans(self) -> None:
+        bundle = {
+            **_minimal_bundle(),
+            "ready_for_shadow_review": True,
+            "stale_data_warning": False,
+            "missing_price_warning": False,
+            "symbol_count_mismatch_warning": False,
+        }
+        md = render_shadow_review_markdown(bundle)
+        assert "- Artifact version: `1`" in md
+        assert "- Shadow status:" in md
+        assert "- Strategy:" in md
+        assert "- As-of date:" in md
+        assert "- Next rebalance:" in md
+        assert "- Number of actions:" in md
+        assert "- Warning reasons:" in md
+        assert "- Blocking reasons:" in md
+
+    def test_existing_detailed_sections_remain_intact_with_readiness_booleans(self) -> None:
+        bundle = {
+            **_minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=["missing_price"]),
+            "ready_for_shadow_review": False,
+            "stale_data_warning": True,
+            "missing_price_warning": True,
+            "symbol_count_mismatch_warning": False,
+        }
+        md = render_shadow_review_markdown(bundle)
+        assert "## Warnings" in md
+        assert "- stale_data" in md
+        assert "## Blockers" in md
+        assert "- missing_price" in md
+        assert "## Actions" in md
+
+    def test_stale_data_bundle_shows_warning_boolean_and_existing_detail_behavior(self) -> None:
+        stale_bundle = build_shadow_review_bundle(
+            strategy="stale_data_case",
+            as_of_date="2020-01-01",
+            next_rebalance=None,
+            actions=[
+                {
+                    "action": "HOLD",
+                    "symbol": "BIL",
+                    "price": 91.5,
+                    "target_shares": 5,
+                    "event_id": "eid-stale",
+                }
+            ],
+            cost_assumptions={
+                "slippage_bps": 2.0,
+                "commission_per_trade": 0.0,
+                "commission_bps": 0.0,
+            },
+            metrics={
+                "gross_cagr": 0.05,
+                "net_cagr": 0.045,
+                "gross_sharpe": 0.7,
+                "net_sharpe": 0.65,
+            },
+        )
+        md = render_shadow_review_markdown(stale_bundle)
+        assert stale_bundle["stale_data_warning"] is True
+        assert "- Stale data warning: `true`" in md
+        assert "- Warning reasons: `stale_data`" in md
+        assert "## Warnings" in md
+        assert "- stale_data" in md

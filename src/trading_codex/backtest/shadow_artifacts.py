@@ -180,6 +180,10 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
 
     warning_reasons = bundle.get("warning_reasons") or []
     blocking_reasons = bundle.get("blocking_reasons") or []
+    ready_for_shadow_review = str(bool(bundle.get("ready_for_shadow_review"))).lower()
+    stale_data_warning = str(bool(bundle.get("stale_data_warning"))).lower()
+    missing_price_warning = str(bool(bundle.get("missing_price_warning"))).lower()
+    symbol_count_mismatch_warning = str(bool(bundle.get("symbol_count_mismatch_warning"))).lower()
 
     lines = [
         f"# Shadow Review {bundle.get('strategy', '-')}",
@@ -208,6 +212,10 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         f"- Blockers: `{', '.join(str(item) for item in blockers) if blockers else '-'}`",
         f"- Warning reasons: `{', '.join(warning_reasons) if warning_reasons else '-'}`",
         f"- Blocking reasons: `{', '.join(blocking_reasons) if blocking_reasons else '-'}`",
+        f"- Ready for shadow review: `{ready_for_shadow_review}`",
+        f"- Stale data warning: `{stale_data_warning}`",
+        f"- Missing price warning: `{missing_price_warning}`",
+        f"- Symbol count mismatch warning: `{symbol_count_mismatch_warning}`",
         "",
     ]
 
