@@ -11,6 +11,7 @@ import pandas as pd
 
 from trading_codex.data import LocalStore
 from trading_codex.backtest.shadow_artifacts import (
+    _derive_shadow_review_state,
     build_shadow_review_bundle,
     render_shadow_review_markdown,
 )
@@ -656,6 +657,15 @@ class TestReadinessBooleanSummaryLines:
 
 class TestShadowReviewState:
     """Focused tests for the machine-readable shadow review state field."""
+
+    def test_derive_shadow_review_state_returns_clean_for_empty_reason_lists(self) -> None:
+        assert _derive_shadow_review_state([], []) == "clean"
+
+    def test_derive_shadow_review_state_returns_warning_for_warning_only(self) -> None:
+        assert _derive_shadow_review_state(["stale_data"], []) == "warning"
+
+    def test_derive_shadow_review_state_returns_blocked_when_blockers_exist(self) -> None:
+        assert _derive_shadow_review_state(["stale_data"], ["missing_price"]) == "blocked"
 
     def test_build_shadow_review_bundle_returns_shadow_review_state(self) -> None:
         bundle = _contract_bundle()

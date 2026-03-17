@@ -60,6 +60,18 @@ def _compute_symbol_count_mismatch_warning(
     return actual_symbol_count != expected_symbol_count
 
 
+def _derive_shadow_review_state(
+    warning_reasons: list[str],
+    blocking_reasons: list[str],
+) -> str:
+    """Return the machine-readable review state from existing reason lists."""
+    if blocking_reasons:
+        return "blocked"
+    if warning_reasons:
+        return "warning"
+    return "clean"
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path
@@ -139,12 +151,7 @@ def build_shadow_review_bundle(
     if symbol_count_mismatch_warning:
         blocking_reasons.append("symbol_count_mismatch")
 
-    if blocking_reasons:
-        shadow_review_state = "blocked"
-    elif warning_reasons:
-        shadow_review_state = "warning"
-    else:
-        shadow_review_state = "clean"
+    shadow_review_state = _derive_shadow_review_state(warning_reasons, blocking_reasons)
 
     return {
         "artifact_type": "shadow_review",
