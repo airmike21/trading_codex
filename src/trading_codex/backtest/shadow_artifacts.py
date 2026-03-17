@@ -14,6 +14,7 @@ import pandas as pd
 # Data is considered stale when the as_of_date is more than this many calendar
 # days behind today.  5 days covers a long weekend plus one trading day of lag.
 _STALE_CALENDAR_DAYS = 5
+SHADOW_ARTIFACT_VERSION = 1
 
 
 def _compute_stale_data_warning(as_of_date: str) -> bool:
@@ -155,7 +156,7 @@ def build_shadow_review_bundle(
 
     return {
         "artifact_type": "shadow_review",
-        "artifact_version": 1,
+        "artifact_version": SHADOW_ARTIFACT_VERSION,
         "strategy": strategy,
         # Keep bundle content deterministic from the signal date for easy local diffs/review.
         "generated_at": pd.Timestamp(as_of_date).isoformat(),
@@ -204,7 +205,7 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
     lines = [
         f"# Shadow Review {bundle.get('strategy', '-')}",
         "",
-        f"- Artifact version: `{bundle.get('artifact_version', 1)}`",
+        f"- Artifact version: `{bundle.get('artifact_version', SHADOW_ARTIFACT_VERSION)}`",
         f"- Shadow status: `{bundle.get('shadow_status', '-')}`",
         f"- Strategy: `{bundle.get('strategy', '-')}`",
         f"- As-of date: `{bundle.get('as_of_date', '-')}`",

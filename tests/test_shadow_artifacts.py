@@ -12,6 +12,7 @@ import pandas as pd
 from trading_codex.data import LocalStore
 from trading_codex.backtest.shadow_artifacts import (
     _derive_shadow_review_state,
+    SHADOW_ARTIFACT_VERSION,
     build_shadow_review_bundle,
     render_shadow_review_markdown,
 )
@@ -484,16 +485,19 @@ class TestReasonSummaryLines:
 class TestArtifactVersion:
     """Focused tests for the artifact_version field and its markdown representation."""
 
+    def test_shadow_artifact_version_constant_is_1(self) -> None:
+        assert SHADOW_ARTIFACT_VERSION == 1
+
     def test_build_shadow_review_bundle_returns_artifact_version_1(self) -> None:
         """build_shadow_review_bundle() must include artifact_version equal to 1."""
         bundle = _minimal_bundle()
-        assert bundle["artifact_version"] == 1
+        assert bundle["artifact_version"] == SHADOW_ARTIFACT_VERSION
 
     def test_render_shadow_review_markdown_includes_artifact_version_line(self) -> None:
         """render_shadow_review_markdown() must include '- Artifact version: `1`' line."""
         bundle = _minimal_bundle()
         md = render_shadow_review_markdown(bundle)
-        assert "- Artifact version: `1`" in md
+        assert f"- Artifact version: `{SHADOW_ARTIFACT_VERSION}`" in md
 
 
     def test_artifact_version_line_appears_before_actions_section(self) -> None:
@@ -552,9 +556,9 @@ class TestArtifactVersion:
             cost_assumptions={"slippage_bps": 2.0, "commission_per_trade": 0.0, "commission_bps": 0.0},
             metrics={"gross_cagr": 0.05, "net_cagr": 0.045, "gross_sharpe": 0.7, "net_sharpe": 0.65},
         )
-        assert bundle["artifact_version"] == 1
+        assert bundle["artifact_version"] == SHADOW_ARTIFACT_VERSION
         md = render_shadow_review_markdown(bundle)
-        assert "- Artifact version: `1`" in md
+        assert f"- Artifact version: `{SHADOW_ARTIFACT_VERSION}`" in md
 
 
 class TestReadinessBooleanSummaryLines:
