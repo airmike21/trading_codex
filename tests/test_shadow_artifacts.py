@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from trading_codex.data import LocalStore
 from trading_codex.backtest.shadow_artifacts import (
@@ -15,6 +16,7 @@ from trading_codex.backtest.shadow_artifacts import (
     SHADOW_ARTIFACT_VERSION,
     build_shadow_review_bundle,
     derive_shadow_automation_decision,
+    derive_shadow_review_summary,
     render_shadow_review_markdown,
 )
 
@@ -147,6 +149,13 @@ def test_run_backtest_shadow_artifacts_create_bundle_and_preserve_next_action_st
     assert payload["warning_reasons"] == ["stale_data"]
     assert payload["blocking_reasons"] == []
     assert payload["shadow_review_state"] == "warning"
+    assert payload["review_summary"] == {
+        "shadow_review_state": "warning",
+        "automation_decision": "review",
+        "automation_status": "review_required",
+        "warning_reasons": ["stale_data"],
+        "blocking_reasons": [],
+    }
 
     review_text = markdown_artifacts[0].read_text(encoding="utf-8")
     assert "# Shadow Review valmom_v1" in review_text
@@ -804,6 +813,77 @@ class TestShadowAutomationDecision:
         assert "## Actions" in md
 
 
+class TestShadowReviewSummary:
+    """Focused tests for the normalized shadow review summary helper."""
+
+    def test_shadow_review_summary_is_deterministic_and_read_only_for_clean_bundle(self) -> None:
+        bundle = _contract_bundle()
+
+        summary_one = derive_shadow_review_summary(bundle)
+        summary_two = derive_shadow_review_summary(bundle)
+
+        assert dict(summary_one) == dict(summary_two) == {
+            "shadow_review_state": "clean",
+            "automation_decision": "allow",
+            "automation_status": "automation_ready",
+            "warning_reasons": (),
+            "blocking_reasons": (),
+        }
+        with pytest.raises(TypeError):
+            summary_one["automation_decision"] = "review"  # type: ignore[index]
+
+    def test_shadow_review_summary_reuses_existing_warning_and_blocking_reason_lists(self) -> None:
+        warning_bundle = _contract_bundle(as_of_date="2020-01-01")
+        blocked_bundle = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "summary-blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+
+        assert dict(derive_shadow_review_summary(warning_bundle)) == {
+            "shadow_review_state": "warning",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reasons": ("stale_data",),
+            "blocking_reasons": (),
+        }
+        assert dict(derive_shadow_review_summary(blocked_bundle)) == {
+            "shadow_review_state": "blocked",
+            "automation_decision": "block",
+            "automation_status": "blocked",
+            "warning_reasons": ("stale_data",),
+            "blocking_reasons": ("missing_price", "symbol_count_mismatch"),
+        }
+
+    def test_build_shadow_review_bundle_includes_review_summary_consistent_with_decision(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+
+        assert bundle["review_summary"] == {
+            "shadow_review_state": bundle["shadow_review_state"],
+            "automation_decision": derive_shadow_automation_decision(bundle),
+            "automation_status": "review_required",
+            "warning_reasons": ["stale_data"],
+            "blocking_reasons": [],
+        }
+
+    def test_markdown_rendering_remains_unchanged_when_review_summary_is_added(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+        md = render_shadow_review_markdown(bundle)
+        assert "review_summary" not in md
+        assert "- Shadow review state: `warning`" in md
+        assert "- Warning reasons: `stale_data`" in md
+        assert "## Warnings" in md
+
+
 class TestShadowArtifactContractParity:
     """Contract/parity coverage for the current bundle and markdown behavior."""
 
@@ -816,6 +896,7 @@ class TestShadowArtifactContractParity:
         assert "symbol_count_mismatch_warning" in bundle
         assert "warning_reasons" in bundle
         assert "blocking_reasons" in bundle
+        assert "review_summary" in bundle
 
         assert isinstance(bundle["artifact_version"], int)
         assert isinstance(bundle["ready_for_shadow_review"], bool)
@@ -824,6 +905,7 @@ class TestShadowArtifactContractParity:
         assert isinstance(bundle["symbol_count_mismatch_warning"], bool)
         assert isinstance(bundle["warning_reasons"], list)
         assert isinstance(bundle["blocking_reasons"], list)
+        assert isinstance(bundle["review_summary"], dict)
 
     def test_bundle_consistency_rules_follow_current_repo_semantics(self) -> None:
         clean_bundle = _contract_bundle()

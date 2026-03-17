@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pandas as pd
@@ -83,6 +85,27 @@ def derive_shadow_automation_decision(bundle: dict[str, Any]) -> str:
     if shadow_review_state == "clean" and bundle.get("ready_for_shadow_review") is True:
         return "allow"
     return "review"
+
+
+def derive_shadow_review_summary(bundle: dict[str, Any]) -> Mapping[str, Any]:
+    """Return a minimal normalized summary view for shadow-only downstream consumers."""
+    automation_decision = derive_shadow_automation_decision(bundle)
+    if automation_decision == "allow":
+        automation_status = "automation_ready"
+    elif automation_decision == "block":
+        automation_status = "blocked"
+    else:
+        automation_status = "review_required"
+
+    return MappingProxyType(
+        {
+            "shadow_review_state": str(bundle.get("shadow_review_state", "-")),
+            "automation_decision": automation_decision,
+            "automation_status": automation_status,
+            "warning_reasons": tuple(str(item) for item in bundle.get("warning_reasons") or ()),
+            "blocking_reasons": tuple(str(item) for item in bundle.get("blocking_reasons") or ()),
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -166,7 +189,7 @@ def build_shadow_review_bundle(
 
     shadow_review_state = _derive_shadow_review_state(warning_reasons, blocking_reasons)
 
-    return {
+    bundle = {
         "artifact_type": "shadow_review",
         "artifact_version": SHADOW_ARTIFACT_VERSION,
         "strategy": strategy,
@@ -195,6 +218,15 @@ def build_shadow_review_bundle(
         "blocking_reasons": blocking_reasons,
         "shadow_review_state": shadow_review_state,
     }
+    review_summary = derive_shadow_review_summary(bundle)
+    bundle["review_summary"] = {
+        "shadow_review_state": str(review_summary["shadow_review_state"]),
+        "automation_decision": str(review_summary["automation_decision"]),
+        "automation_status": str(review_summary["automation_status"]),
+        "warning_reasons": list(review_summary["warning_reasons"]),
+        "blocking_reasons": list(review_summary["blocking_reasons"]),
+    }
+    return bundle
 
 
 def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
