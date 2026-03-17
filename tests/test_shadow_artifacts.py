@@ -18,6 +18,7 @@ from trading_codex.backtest.shadow_artifacts import (
     derive_shadow_automation_decision,
     derive_shadow_review_summary,
     derive_shadow_review_summary_row,
+    derive_shadow_review_summary_rows,
     render_shadow_review_markdown,
 )
 
@@ -966,6 +967,86 @@ class TestShadowReviewSummaryRow:
         assert "review_summary" not in md
         assert "- Shadow review state: `warning`" in md
         assert "## Warnings" in md
+
+
+class TestShadowReviewSummaryRows:
+    """Focused tests for the batch/table row helper."""
+
+    def test_shadow_review_summary_rows_is_deterministic_and_pure(self) -> None:
+        bundles = [_contract_bundle(), _contract_bundle(as_of_date="2020-01-01")]
+
+        rows_one = derive_shadow_review_summary_rows(bundles)
+        rows_two = derive_shadow_review_summary_rows(bundles)
+
+        assert rows_one == rows_two == [
+            {
+                "shadow_review_state": "clean",
+                "automation_decision": "allow",
+                "automation_status": "automation_ready",
+                "warning_reason_count": 0,
+                "blocking_reason_count": 0,
+                "warning_reasons": "",
+                "blocking_reasons": "",
+            },
+            {
+                "shadow_review_state": "warning",
+                "automation_decision": "review",
+                "automation_status": "review_required",
+                "warning_reason_count": 1,
+                "blocking_reason_count": 0,
+                "warning_reasons": "stale_data",
+                "blocking_reasons": "",
+            },
+        ]
+        rows_one[0]["automation_status"] = "mutated"
+        assert derive_shadow_review_summary_rows(bundles) == rows_two
+
+    def test_shadow_review_summary_rows_delegates_to_single_row_helper_consistently(self) -> None:
+        bundles = [
+            _contract_bundle(),
+            _contract_bundle(
+                as_of_date="2020-01-01",
+                actions=[
+                    {
+                        "action": "BUY",
+                        "symbol": "SPY",
+                        "price": None,
+                        "target_shares": 10,
+                        "event_id": "rows-blocked-eid",
+                    }
+                ],
+                expected_symbol_count=3,
+                actual_symbol_count=2,
+            ),
+        ]
+
+        assert derive_shadow_review_summary_rows(bundles) == [
+            dict(derive_shadow_review_summary_row(bundle)) for bundle in bundles
+        ]
+
+    def test_shadow_review_summary_rows_preserves_input_order(self) -> None:
+        warning_bundle = _contract_bundle(as_of_date="2020-01-01")
+        clean_bundle = _contract_bundle()
+        rows = derive_shadow_review_summary_rows([warning_bundle, clean_bundle])
+
+        assert [row["shadow_review_state"] for row in rows] == ["warning", "clean"]
+
+    def test_shadow_review_summary_rows_handles_empty_input(self) -> None:
+        assert derive_shadow_review_summary_rows([]) == []
+
+    def test_existing_single_row_helper_behavior_remains_unchanged(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+        row = derive_shadow_review_summary_row(bundle)
+
+        assert dict(row) == {
+            "shadow_review_state": "warning",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reason_count": 1,
+            "blocking_reason_count": 0,
+            "warning_reasons": "stale_data",
+            "blocking_reasons": "",
+        }
 
 
 class TestShadowArtifactContractParity:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -136,6 +136,11 @@ def derive_shadow_review_summary_row(bundle: dict[str, Any]) -> Mapping[str, Any
             "blocking_reasons": ", ".join(blocking_reasons),
         }
     )
+
+
+def derive_shadow_review_summary_rows(bundles: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return flat deterministic row dicts for multiple shadow review bundles."""
+    return [dict(derive_shadow_review_summary_row(bundle)) for bundle in bundles]
 
 
 @dataclass(frozen=True)
