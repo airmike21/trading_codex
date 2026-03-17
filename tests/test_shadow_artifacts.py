@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 
 from trading_codex.data import LocalStore
+from trading_codex.backtest.shadow_artifacts import (
+    build_shadow_review_bundle,
+    render_shadow_review_markdown,
+)
 
 
 def _repo_root_and_env() -> tuple[Path, dict[str, str]]:
@@ -175,3 +179,137 @@ def test_run_backtest_shadow_artifacts_can_coexist_with_metrics_out(tmp_path: Pa
 
     metrics_payload = json.loads(metrics_out.read_text(encoding="utf-8"))
     assert metrics_payload["cost_assumptions"]["slippage_bps"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: warning_reasons / blocking_reasons markdown rendering
+# ---------------------------------------------------------------------------
+
+
+def _minimal_bundle(
+    *,
+    warning_reasons: list[str] | None = None,
+    blocking_reasons: list[str] | None = None,
+) -> dict:
+    """Return a minimal valid shadow review bundle with injected reason lists."""
+    import pandas as pd
+
+    today = pd.Timestamp.now().normalize().date().isoformat()
+    bundle = build_shadow_review_bundle(
+        strategy="test_strategy",
+        as_of_date=today,
+        next_rebalance=None,
+        actions=[{"action": "BUY", "symbol": "SPY", "price": 450.0, "target_shares": 10, "event_id": "eid1"}],
+        cost_assumptions={"slippage_bps": 5.0, "commission_per_trade": 1.0, "commission_bps": 0.0},
+        metrics={"gross_cagr": 0.12, "net_cagr": 0.10, "gross_sharpe": 0.9, "net_sharpe": 0.8},
+    )
+    # Override reason lists so tests are date-independent
+    overrides: dict = {}
+    if warning_reasons is not None:
+        overrides["warning_reasons"] = warning_reasons
+    if blocking_reasons is not None:
+        overrides["blocking_reasons"] = blocking_reasons
+    return {**bundle, **overrides}
+
+
+class TestRenderShadowReviewMarkdownReasons:
+    """Focused unit tests for warning_reasons / blocking_reasons markdown sections."""
+
+    def test_non_empty_warning_reasons_render_warnings_section(self) -> None:
+        """Non-empty warning_reasons produces a '## Warnings' section with one bullet per reason."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Warnings" in md
+        assert "- stale_data" in md
+
+    def test_non_empty_blocking_reasons_render_blockers_section(self) -> None:
+        """Non-empty blocking_reasons produces a '## Blockers' section with one bullet per reason."""
+        bundle = _minimal_bundle(warning_reasons=[], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Blockers" in md
+        assert "- missing_price" in md
+
+    def test_multiple_warning_reasons_all_rendered(self) -> None:
+        """Each entry in warning_reasons appears as its own bullet."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data", "extra_warn"], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Warnings" in md
+        assert "- stale_data" in md
+        assert "- extra_warn" in md
+
+    def test_multiple_blocking_reasons_all_rendered(self) -> None:
+        """Each entry in blocking_reasons appears as its own bullet."""
+        bundle = _minimal_bundle(
+            warning_reasons=[],
+            blocking_reasons=["missing_price", "symbol_count_mismatch"],
+        )
+        md = render_shadow_review_markdown(bundle)
+        assert "## Blockers" in md
+        assert "- missing_price" in md
+        assert "- symbol_count_mismatch" in md
+
+    def test_empty_warning_reasons_omits_warnings_section(self) -> None:
+        """Empty warning_reasons must not produce a '## Warnings' section."""
+        bundle = _minimal_bundle(warning_reasons=[], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Warnings" not in md
+
+    def test_empty_blocking_reasons_omits_blockers_section(self) -> None:
+        """Empty blocking_reasons must not produce a '## Blockers' section."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Blockers" not in md
+
+    def test_absent_reason_lists_omit_both_sections(self) -> None:
+        """Bundle without warning_reasons/blocking_reasons keys omits both sections."""
+        bundle = _minimal_bundle()
+        # Remove the keys entirely to simulate absent fields
+        bundle.pop("warning_reasons", None)
+        bundle.pop("blocking_reasons", None)
+        md = render_shadow_review_markdown(bundle)
+        assert "## Warnings" not in md
+        assert "## Blockers" not in md
+
+    def test_both_empty_omit_both_sections(self) -> None:
+        """Both lists empty → neither section appears."""
+        bundle = _minimal_bundle(warning_reasons=[], blocking_reasons=[])
+        md = render_shadow_review_markdown(bundle)
+        assert "## Warnings" not in md
+        assert "## Blockers" not in md
+
+    def test_actions_section_still_present(self) -> None:
+        """## Actions section must still appear regardless of reason content."""
+        for warning_reasons, blocking_reasons in [
+            ([], []),
+            (["stale_data"], []),
+            ([], ["missing_price"]),
+            (["stale_data"], ["missing_price"]),
+        ]:
+            bundle = _minimal_bundle(
+                warning_reasons=warning_reasons, blocking_reasons=blocking_reasons
+            )
+            md = render_shadow_review_markdown(bundle)
+            assert "## Actions" in md, (
+                f"## Actions missing when warning_reasons={warning_reasons!r}, "
+                f"blocking_reasons={blocking_reasons!r}"
+            )
+
+    def test_existing_header_metadata_preserved(self) -> None:
+        """Existing header lines must still appear even when reason sections are added."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        assert "# Shadow Review test_strategy" in md
+        assert "As-of date:" in md
+        assert "Gross CAGR:" in md
+        assert "Rebalance-event count:" in md
+        assert "Commission-counted sleeve/order count:" in md
+
+    def test_sections_appear_before_actions(self) -> None:
+        """## Warnings and ## Blockers must appear before ## Actions in the output."""
+        bundle = _minimal_bundle(warning_reasons=["stale_data"], blocking_reasons=["missing_price"])
+        md = render_shadow_review_markdown(bundle)
+        warnings_pos = md.index("## Warnings")
+        blockers_pos = md.index("## Blockers")
+        actions_pos = md.index("## Actions")
+        assert warnings_pos < actions_pos, "## Warnings must come before ## Actions"
+        assert blockers_pos < actions_pos, "## Blockers must come before ## Actions"

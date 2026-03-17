@@ -178,6 +178,9 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
     warnings = bundle.get("warnings", [])
     blockers = bundle.get("blockers", [])
 
+    warning_reasons = bundle.get("warning_reasons") or []
+    blocking_reasons = bundle.get("blocking_reasons") or []
+
     lines = [
         f"# Shadow Review {bundle.get('strategy', '-')}",
         "",
@@ -203,6 +206,21 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         f"- Warnings: `{', '.join(str(item) for item in warnings) if warnings else '-'}`",
         f"- Blockers: `{', '.join(str(item) for item in blockers) if blockers else '-'}`",
         "",
+    ]
+
+    if warning_reasons:
+        lines += ["## Warnings", ""]
+        for reason in warning_reasons:
+            lines.append(f"- {reason}")
+        lines.append("")
+
+    if blocking_reasons:
+        lines += ["## Blockers", ""]
+        for reason in blocking_reasons:
+            lines.append(f"- {reason}")
+        lines.append("")
+
+    lines += [
         "## Actions",
         "",
     ]
