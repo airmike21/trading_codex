@@ -73,6 +73,18 @@ def _derive_shadow_review_state(
     return "clean"
 
 
+def derive_shadow_automation_decision(bundle: dict[str, Any]) -> str:
+    """Return the recommended automation decision from an existing review bundle."""
+    shadow_review_state = bundle.get("shadow_review_state")
+    if shadow_review_state == "blocked":
+        return "block"
+    if shadow_review_state == "warning":
+        return "review"
+    if shadow_review_state == "clean" and bundle.get("ready_for_shadow_review") is True:
+        return "allow"
+    return "review"
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path

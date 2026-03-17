@@ -14,6 +14,7 @@ from trading_codex.backtest.shadow_artifacts import (
     _derive_shadow_review_state,
     SHADOW_ARTIFACT_VERSION,
     build_shadow_review_bundle,
+    derive_shadow_automation_decision,
     render_shadow_review_markdown,
 )
 
@@ -742,6 +743,67 @@ class TestShadowReviewState:
         assert blockers_pos < actions_pos
 
 
+class TestShadowAutomationDecision:
+    """Focused tests for the pure automation decision helper."""
+
+    def test_blocked_bundle_state_returns_block(self) -> None:
+        decision = derive_shadow_automation_decision(
+            {"shadow_review_state": "blocked", "ready_for_shadow_review": False}
+        )
+        assert decision == "block"
+
+    def test_warning_bundle_state_returns_review(self) -> None:
+        decision = derive_shadow_automation_decision(
+            {"shadow_review_state": "warning", "ready_for_shadow_review": False}
+        )
+        assert decision == "review"
+
+    def test_clean_ready_bundle_returns_allow(self) -> None:
+        decision = derive_shadow_automation_decision(
+            {"shadow_review_state": "clean", "ready_for_shadow_review": True}
+        )
+        assert decision == "allow"
+
+    def test_clean_not_ready_bundle_returns_review(self) -> None:
+        decision = derive_shadow_automation_decision(
+            {"shadow_review_state": "clean", "ready_for_shadow_review": False}
+        )
+        assert decision == "review"
+
+    def test_build_shadow_review_bundle_state_maps_to_same_decisions_as_before(self) -> None:
+        clean_bundle = _contract_bundle()
+        warning_bundle = _contract_bundle(as_of_date="2020-01-01")
+        blocked_bundle = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "decision-blocked-eid",
+                }
+            ],
+        )
+
+        assert clean_bundle["shadow_review_state"] == "clean"
+        assert derive_shadow_automation_decision(clean_bundle) == "allow"
+
+        assert warning_bundle["shadow_review_state"] == "warning"
+        assert derive_shadow_automation_decision(warning_bundle) == "review"
+
+        assert blocked_bundle["shadow_review_state"] == "blocked"
+        assert derive_shadow_automation_decision(blocked_bundle) == "block"
+
+    def test_markdown_rendering_remains_unchanged_with_helper_present(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+        md = render_shadow_review_markdown(bundle)
+        assert "- Shadow review state: `warning`" in md
+        assert "- Ready for shadow review: `false`" in md
+        assert "## Warnings" in md
+        assert "## Actions" in md
+
+
 class TestShadowArtifactContractParity:
     """Contract/parity coverage for the current bundle and markdown behavior."""
 
@@ -864,6 +926,7 @@ class TestShadowArtifactContractParity:
         assert stale_bundle["missing_price_warning"] is False
         assert stale_bundle["symbol_count_mismatch_warning"] is False
         assert stale_bundle["ready_for_shadow_review"] is False
+        assert derive_shadow_automation_decision(stale_bundle) == "review"
         assert "- Stale data warning: `true`" in md
         assert "- Warning reasons: `stale_data`" in md
         assert "## Warnings" in md
