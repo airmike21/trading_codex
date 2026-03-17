@@ -141,6 +141,9 @@ def test_run_backtest_shadow_artifacts_create_bundle_and_preserve_next_action_st
     assert payload["actions"][0]["event_id"] == json.loads(proc.stdout)["event_id"]
     assert payload["warnings"] == []
     assert payload["blockers"] == []
+    assert payload["warning_reasons"] == ["stale_data"]
+    assert payload["blocking_reasons"] == []
+    assert payload["shadow_review_state"] == "warning"
 
     review_text = markdown_artifacts[0].read_text(encoding="utf-8")
     assert "# Shadow Review valmom_v1" in review_text
@@ -152,6 +155,7 @@ def test_run_backtest_shadow_artifacts_create_bundle_and_preserve_next_action_st
     assert "Net CAGR:" in review_text
     assert "Rebalance-event count:" in review_text
     assert "Commission-counted sleeve/order count:" in review_text
+    assert "Shadow review state: `warning`" in review_text
 
 
 def test_run_backtest_shadow_artifacts_can_coexist_with_metrics_out(tmp_path: Path) -> None:
@@ -648,6 +652,80 @@ class TestReadinessBooleanSummaryLines:
         assert "- Warning reasons: `stale_data`" in md
         assert "## Warnings" in md
         assert "- stale_data" in md
+
+
+class TestShadowReviewState:
+    """Focused tests for the machine-readable shadow review state field."""
+
+    def test_build_shadow_review_bundle_returns_shadow_review_state(self) -> None:
+        bundle = _contract_bundle()
+        assert bundle["shadow_review_state"] == "clean"
+
+    def test_shadow_review_state_is_clean_when_reason_lists_are_empty(self) -> None:
+        bundle = _contract_bundle()
+        assert bundle["warning_reasons"] == []
+        assert bundle["blocking_reasons"] == []
+        assert bundle["shadow_review_state"] == "clean"
+
+    def test_shadow_review_state_is_warning_when_warning_reasons_exist_without_blockers(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+        assert bundle["warning_reasons"] == ["stale_data"]
+        assert bundle["blocking_reasons"] == []
+        assert bundle["shadow_review_state"] == "warning"
+
+    def test_shadow_review_state_is_blocked_when_blocking_reasons_exist(self) -> None:
+        bundle = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+        assert "stale_data" in bundle["warning_reasons"]
+        assert "missing_price" in bundle["blocking_reasons"]
+        assert "symbol_count_mismatch" in bundle["blocking_reasons"]
+        assert bundle["shadow_review_state"] == "blocked"
+
+    def test_markdown_includes_shadow_review_state_line(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+        md = render_shadow_review_markdown(bundle)
+        assert "- Shadow review state: `warning`" in md
+
+    def test_existing_summary_lines_and_sections_remain_intact_with_shadow_review_state(self) -> None:
+        bundle = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "state-sections-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+        md = render_shadow_review_markdown(bundle)
+        assert "- Artifact version: `1`" in md
+        assert "- Warning reasons: `stale_data`" in md
+        assert "- Blocking reasons: `missing_price, symbol_count_mismatch`" in md
+        assert "- Ready for shadow review: `false`" in md
+        assert "## Warnings" in md
+        assert "## Blockers" in md
+        assert "## Actions" in md
+        warnings_pos = md.index("## Warnings")
+        blockers_pos = md.index("## Blockers")
+        actions_pos = md.index("## Actions")
+        assert warnings_pos < actions_pos
+        assert blockers_pos < actions_pos
 
 
 class TestShadowArtifactContractParity:

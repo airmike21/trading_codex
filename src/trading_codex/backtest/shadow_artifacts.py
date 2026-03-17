@@ -139,6 +139,13 @@ def build_shadow_review_bundle(
     if symbol_count_mismatch_warning:
         blocking_reasons.append("symbol_count_mismatch")
 
+    if blocking_reasons:
+        shadow_review_state = "blocked"
+    elif warning_reasons:
+        shadow_review_state = "warning"
+    else:
+        shadow_review_state = "clean"
+
     return {
         "artifact_type": "shadow_review",
         "artifact_version": 1,
@@ -166,6 +173,7 @@ def build_shadow_review_bundle(
         "ready_for_shadow_review": ready_for_shadow_review,
         "warning_reasons": warning_reasons,
         "blocking_reasons": blocking_reasons,
+        "shadow_review_state": shadow_review_state,
     }
 
 
@@ -180,6 +188,7 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
 
     warning_reasons = bundle.get("warning_reasons") or []
     blocking_reasons = bundle.get("blocking_reasons") or []
+    shadow_review_state = bundle.get("shadow_review_state", "-")
     ready_for_shadow_review = str(bool(bundle.get("ready_for_shadow_review"))).lower()
     stale_data_warning = str(bool(bundle.get("stale_data_warning"))).lower()
     missing_price_warning = str(bool(bundle.get("missing_price_warning"))).lower()
@@ -212,6 +221,7 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         f"- Blockers: `{', '.join(str(item) for item in blockers) if blockers else '-'}`",
         f"- Warning reasons: `{', '.join(warning_reasons) if warning_reasons else '-'}`",
         f"- Blocking reasons: `{', '.join(blocking_reasons) if blocking_reasons else '-'}`",
+        f"- Shadow review state: `{shadow_review_state}`",
         f"- Ready for shadow review: `{ready_for_shadow_review}`",
         f"- Stale data warning: `{stale_data_warning}`",
         f"- Missing price warning: `{missing_price_warning}`",
