@@ -184,6 +184,7 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
     lines = [
         f"# Shadow Review {bundle.get('strategy', '-')}",
         "",
+        f"- Artifact version: `{bundle.get('artifact_version', 1)}`",
         f"- Shadow status: `{bundle.get('shadow_status', '-')}`",
         f"- Strategy: `{bundle.get('strategy', '-')}`",
         f"- As-of date: `{bundle.get('as_of_date', '-')}`",

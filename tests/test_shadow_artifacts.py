@@ -432,3 +432,83 @@ class TestReasonSummaryLines:
         assert summary_line_pos < first_section_pos, (
             "Warning reasons summary must appear before the first ## section"
         )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: artifact_version field and markdown line
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactVersion:
+    """Focused tests for the artifact_version field and its markdown representation."""
+
+    def test_build_shadow_review_bundle_returns_artifact_version_1(self) -> None:
+        """build_shadow_review_bundle() must include artifact_version equal to 1."""
+        bundle = _minimal_bundle()
+        assert bundle["artifact_version"] == 1
+
+    def test_render_shadow_review_markdown_includes_artifact_version_line(self) -> None:
+        """render_shadow_review_markdown() must include '- Artifact version: `1`' line."""
+        bundle = _minimal_bundle()
+        md = render_shadow_review_markdown(bundle)
+        assert "- Artifact version: `1`" in md
+
+    def test_artifact_version_line_appears_before_actions_section(self) -> None:
+        """Artifact version summary line must appear in the header block, before ## Actions."""
+        bundle = _minimal_bundle()
+        md = render_shadow_review_markdown(bundle)
+        artifact_pos = md.index("- Artifact version:")
+        actions_pos = md.index("## Actions")
+        assert artifact_pos < actions_pos, "Artifact version line must appear before ## Actions"
+
+    def test_artifact_version_line_appears_before_any_section_header(self) -> None:
+        """Artifact version line must appear in the top metadata block, before any ## header."""
+        bundle = _minimal_bundle()
+        md = render_shadow_review_markdown(bundle)
+        artifact_pos = md.index("- Artifact version:")
+        first_section_pos = md.index("##")
+        assert artifact_pos < first_section_pos, (
+            "Artifact version line must appear before the first ## section header"
+        )
+
+    def test_existing_summary_lines_still_render_with_artifact_version(self) -> None:
+        """Existing summary lines are unchanged when artifact_version line is added."""
+        bundle = _minimal_bundle()
+        md = render_shadow_review_markdown(bundle)
+        assert "- Shadow status:" in md
+        assert "- Strategy:" in md
+        assert "- As-of date:" in md
+        assert "- Next rebalance:" in md
+        assert "- Number of actions:" in md
+        assert "- Gross CAGR:" in md
+        assert "- Net CAGR:" in md
+        assert "- Rebalance-event count:" in md
+        assert "- Commission-counted sleeve/order count:" in md
+
+    def test_existing_sections_still_render_with_artifact_version(self) -> None:
+        """Existing ## Actions section is still present after adding the artifact_version line."""
+        bundle = _minimal_bundle()
+        md = render_shadow_review_markdown(bundle)
+        assert "## Actions" in md
+
+    def test_artifact_version_field_is_integer(self) -> None:
+        """artifact_version field must be an integer, not a string."""
+        bundle = _minimal_bundle()
+        assert isinstance(bundle["artifact_version"], int)
+
+    def test_integration_bundle_contains_artifact_version_1(self) -> None:
+        """Integration-style check: bundle produced by build_shadow_review_bundle has artifact_version=1."""
+        import pandas as pd
+
+        today = pd.Timestamp.now().normalize().date().isoformat()
+        bundle = build_shadow_review_bundle(
+            strategy="integration_test",
+            as_of_date=today,
+            next_rebalance=None,
+            actions=[{"action": "HOLD", "symbol": "BIL", "price": 91.5, "target_shares": 5, "event_id": "eid2"}],
+            cost_assumptions={"slippage_bps": 2.0, "commission_per_trade": 0.0, "commission_bps": 0.0},
+            metrics={"gross_cagr": 0.05, "net_cagr": 0.045, "gross_sharpe": 0.7, "net_sharpe": 0.65},
+        )
+        assert bundle["artifact_version"] == 1
+        md = render_shadow_review_markdown(bundle)
+        assert "- Artifact version: `1`" in md
