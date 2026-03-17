@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from streamlit.testing.v1 import AppTest
+import pytest
+
+AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
 from trading_codex.run_archive import write_run_archive
 
