@@ -212,6 +212,43 @@ def _minimal_bundle(
     return {**bundle, **overrides}
 
 
+def _contract_bundle(
+    *,
+    as_of_date: str | None = None,
+    actions: list[dict] | None = None,
+    expected_symbol_count: int | None = None,
+    actual_symbol_count: int | None = None,
+) -> dict:
+    """Return a real bundle for contract/parity assertions."""
+    bundle_as_of_date = as_of_date or pd.Timestamp.now().normalize().date().isoformat()
+    bundle_actions = actions or [
+        {
+            "action": "BUY",
+            "symbol": "SPY",
+            "price": 450.0,
+            "target_shares": 10,
+            "event_id": "contract-eid",
+        }
+    ]
+    return build_shadow_review_bundle(
+        strategy="contract_strategy",
+        as_of_date=bundle_as_of_date,
+        next_rebalance="2026-03-31",
+        actions=bundle_actions,
+        cost_assumptions={"slippage_bps": 5.0, "commission_per_trade": 1.0, "commission_bps": 0.0},
+        metrics={
+            "gross_cagr": 0.12,
+            "net_cagr": 0.10,
+            "gross_sharpe": 0.9,
+            "net_sharpe": 0.8,
+            "rebalance_event_count": 3.0,
+            "commission_trade_count": 4.0,
+        },
+        expected_symbol_count=expected_symbol_count,
+        actual_symbol_count=actual_symbol_count,
+    )
+
+
 class TestRenderShadowReviewMarkdownReasons:
     """Focused unit tests for warning_reasons / blocking_reasons markdown sections."""
 
@@ -607,6 +644,134 @@ class TestReadinessBooleanSummaryLines:
         )
         md = render_shadow_review_markdown(stale_bundle)
         assert stale_bundle["stale_data_warning"] is True
+        assert "- Stale data warning: `true`" in md
+        assert "- Warning reasons: `stale_data`" in md
+        assert "## Warnings" in md
+        assert "- stale_data" in md
+
+
+class TestShadowArtifactContractParity:
+    """Contract/parity coverage for the current bundle and markdown behavior."""
+
+    def test_bundle_contract_fields_exist_with_expected_basic_types(self) -> None:
+        bundle = _contract_bundle()
+        assert "artifact_version" in bundle
+        assert "ready_for_shadow_review" in bundle
+        assert "stale_data_warning" in bundle
+        assert "missing_price_warning" in bundle
+        assert "symbol_count_mismatch_warning" in bundle
+        assert "warning_reasons" in bundle
+        assert "blocking_reasons" in bundle
+
+        assert isinstance(bundle["artifact_version"], int)
+        assert isinstance(bundle["ready_for_shadow_review"], bool)
+        assert isinstance(bundle["stale_data_warning"], bool)
+        assert isinstance(bundle["missing_price_warning"], bool)
+        assert isinstance(bundle["symbol_count_mismatch_warning"], bool)
+        assert isinstance(bundle["warning_reasons"], list)
+        assert isinstance(bundle["blocking_reasons"], list)
+
+    def test_bundle_consistency_rules_follow_current_repo_semantics(self) -> None:
+        clean_bundle = _contract_bundle()
+        missing_price_bundle = _contract_bundle(
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "missing-price-eid",
+                }
+            ]
+        )
+        symbol_mismatch_bundle = _contract_bundle(expected_symbol_count=3, actual_symbol_count=2)
+
+        assert clean_bundle["ready_for_shadow_review"] is True
+        assert clean_bundle["stale_data_warning"] is False
+        assert clean_bundle["missing_price_warning"] is False
+        assert clean_bundle["symbol_count_mismatch_warning"] is False
+        assert clean_bundle["warning_reasons"] == []
+        assert clean_bundle["blocking_reasons"] == []
+
+        assert missing_price_bundle["missing_price_warning"] is True
+        assert "missing_price" in missing_price_bundle["blocking_reasons"]
+        assert missing_price_bundle["ready_for_shadow_review"] is False
+
+        assert symbol_mismatch_bundle["symbol_count_mismatch_warning"] is True
+        assert "symbol_count_mismatch" in symbol_mismatch_bundle["blocking_reasons"]
+        assert symbol_mismatch_bundle["ready_for_shadow_review"] is False
+
+    def test_markdown_parity_includes_current_contract_lines_and_sections(self) -> None:
+        bundle = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "contract-stale-missing",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+        md = render_shadow_review_markdown(bundle)
+
+        assert "- Artifact version: `1`" in md
+        assert "- Ready for shadow review: `false`" in md
+        assert "- Stale data warning: `true`" in md
+        assert "- Missing price warning: `true`" in md
+        assert "- Symbol count mismatch warning: `true`" in md
+        assert "- Warning reasons: `stale_data`" in md
+        assert "- Blocking reasons: `missing_price, symbol_count_mismatch`" in md
+        assert "## Warnings" in md
+        assert "- stale_data" in md
+        assert "## Blockers" in md
+        assert "- missing_price" in md
+        assert "- symbol_count_mismatch" in md
+
+    def test_legacy_summary_lines_and_actions_order_are_preserved(self) -> None:
+        bundle = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "order-check-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+        md = render_shadow_review_markdown(bundle)
+
+        assert "- Shadow status:" in md
+        assert "- Strategy:" in md
+        assert "- As-of date:" in md
+        assert "- Next rebalance:" in md
+        assert "- Number of actions:" in md
+        assert "- Warnings:" in md
+        assert "- Blockers:" in md
+        assert "## Actions" in md
+
+        warnings_pos = md.index("## Warnings")
+        blockers_pos = md.index("## Blockers")
+        actions_pos = md.index("## Actions")
+        assert warnings_pos < actions_pos
+        assert blockers_pos < actions_pos
+
+    def test_stale_data_integration_keeps_bundle_and_markdown_consistent(self) -> None:
+        stale_bundle = _contract_bundle(as_of_date="2020-01-01")
+        md = render_shadow_review_markdown(stale_bundle)
+
+        assert stale_bundle["stale_data_warning"] is True
+        assert "stale_data" in stale_bundle["warning_reasons"]
+        assert stale_bundle["missing_price_warning"] is False
+        assert stale_bundle["symbol_count_mismatch_warning"] is False
+        assert stale_bundle["ready_for_shadow_review"] is False
         assert "- Stale data warning: `true`" in md
         assert "- Warning reasons: `stale_data`" in md
         assert "## Warnings" in md
