@@ -108,6 +108,36 @@ def derive_shadow_review_summary(bundle: dict[str, Any]) -> Mapping[str, Any]:
     )
 
 
+def derive_shadow_review_summary_row(bundle: dict[str, Any]) -> Mapping[str, Any]:
+    """Return a flat deterministic row view for shadow-only reporting/export consumers."""
+    review_summary = bundle.get("review_summary")
+    if isinstance(review_summary, Mapping):
+        shadow_review_state = str(review_summary.get("shadow_review_state", "-"))
+        automation_decision = str(review_summary.get("automation_decision", "review"))
+        automation_status = str(review_summary.get("automation_status", "review_required"))
+        warning_reasons = tuple(str(item) for item in review_summary.get("warning_reasons") or ())
+        blocking_reasons = tuple(str(item) for item in review_summary.get("blocking_reasons") or ())
+    else:
+        normalized_summary = derive_shadow_review_summary(bundle)
+        shadow_review_state = str(normalized_summary["shadow_review_state"])
+        automation_decision = str(normalized_summary["automation_decision"])
+        automation_status = str(normalized_summary["automation_status"])
+        warning_reasons = tuple(str(item) for item in normalized_summary["warning_reasons"])
+        blocking_reasons = tuple(str(item) for item in normalized_summary["blocking_reasons"])
+
+    return MappingProxyType(
+        {
+            "shadow_review_state": shadow_review_state,
+            "automation_decision": automation_decision,
+            "automation_status": automation_status,
+            "warning_reason_count": len(warning_reasons),
+            "blocking_reason_count": len(blocking_reasons),
+            "warning_reasons": ", ".join(warning_reasons),
+            "blocking_reasons": ", ".join(blocking_reasons),
+        }
+    )
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path

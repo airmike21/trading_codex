@@ -17,6 +17,7 @@ from trading_codex.backtest.shadow_artifacts import (
     build_shadow_review_bundle,
     derive_shadow_automation_decision,
     derive_shadow_review_summary,
+    derive_shadow_review_summary_row,
     render_shadow_review_markdown,
 )
 
@@ -881,6 +882,89 @@ class TestShadowReviewSummary:
         assert "review_summary" not in md
         assert "- Shadow review state: `warning`" in md
         assert "- Warning reasons: `stale_data`" in md
+        assert "## Warnings" in md
+
+
+class TestShadowReviewSummaryRow:
+    """Focused tests for the flat shadow review summary row helper."""
+
+    def test_shadow_review_summary_row_is_deterministic_and_read_only(self) -> None:
+        bundle = _contract_bundle()
+
+        row_one = derive_shadow_review_summary_row(bundle)
+        row_two = derive_shadow_review_summary_row(bundle)
+
+        assert dict(row_one) == dict(row_two) == {
+            "shadow_review_state": "clean",
+            "automation_decision": "allow",
+            "automation_status": "automation_ready",
+            "warning_reason_count": 0,
+            "blocking_reason_count": 0,
+            "warning_reasons": "",
+            "blocking_reasons": "",
+        }
+        with pytest.raises(TypeError):
+            row_one["automation_status"] = "blocked"  # type: ignore[index]
+
+    def test_shadow_review_summary_row_prefers_review_summary_when_present(self) -> None:
+        bundle = {
+            "shadow_review_state": "clean",
+            "ready_for_shadow_review": True,
+            "warning_reasons": [],
+            "blocking_reasons": [],
+            "review_summary": {
+                "shadow_review_state": "warning",
+                "automation_decision": "review",
+                "automation_status": "review_required",
+                "warning_reasons": ["stale_data"],
+                "blocking_reasons": [],
+            },
+        }
+
+        assert dict(derive_shadow_review_summary_row(bundle)) == {
+            "shadow_review_state": "warning",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reason_count": 1,
+            "blocking_reason_count": 0,
+            "warning_reasons": "stale_data",
+            "blocking_reasons": "",
+        }
+
+    def test_shadow_review_summary_row_falls_back_conservatively_without_review_summary(self) -> None:
+        bundle = {
+            "shadow_review_state": "blocked",
+            "ready_for_shadow_review": False,
+            "warning_reasons": ["stale_data"],
+            "blocking_reasons": ["missing_price", "symbol_count_mismatch"],
+        }
+
+        assert dict(derive_shadow_review_summary_row(bundle)) == {
+            "shadow_review_state": "blocked",
+            "automation_decision": "block",
+            "automation_status": "blocked",
+            "warning_reason_count": 1,
+            "blocking_reason_count": 2,
+            "warning_reasons": "stale_data",
+            "blocking_reasons": "missing_price, symbol_count_mismatch",
+        }
+
+    def test_existing_bundle_and_markdown_behavior_remain_unchanged_with_row_helper(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+        row = derive_shadow_review_summary_row(bundle)
+        md = render_shadow_review_markdown(bundle)
+
+        assert dict(row) == {
+            "shadow_review_state": "warning",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reason_count": 1,
+            "blocking_reason_count": 0,
+            "warning_reasons": "stale_data",
+            "blocking_reasons": "",
+        }
+        assert "review_summary" not in md
+        assert "- Shadow review state: `warning`" in md
         assert "## Warnings" in md
 
 
