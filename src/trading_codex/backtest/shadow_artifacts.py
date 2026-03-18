@@ -164,6 +164,16 @@ def derive_shadow_review_summary_table(bundles: Iterable[dict[str, Any]]) -> dic
     }
 
 
+def derive_shadow_review_summary_records(bundles: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return canonical record-shaped rows for shadow review summary bundles."""
+    table = derive_shadow_review_summary_table(bundles)
+    columns = table["columns"]
+    return [
+        dict(zip(columns, (row[column] for column in columns)))
+        for row in table["rows"]
+    ]
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path
