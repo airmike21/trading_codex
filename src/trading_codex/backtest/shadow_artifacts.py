@@ -181,6 +181,26 @@ def derive_shadow_review_summary_records(bundles: Iterable[dict[str, Any]]) -> l
     ]
 
 
+def derive_shadow_review_summary_records_from_artifact(
+    artifact: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return normalized review-summary records from a shadow artifact/container payload."""
+    bundle = artifact.get("bundle")
+    if isinstance(bundle, Mapping):
+        return derive_shadow_review_summary_records([bundle])
+
+    bundles = artifact.get("bundles")
+    if isinstance(bundles, Iterable) and not isinstance(bundles, (str, bytes, Mapping)):
+        return derive_shadow_review_summary_records(
+            [bundle for bundle in bundles if isinstance(bundle, Mapping)]
+        )
+
+    if artifact.get("artifact_type") == "shadow_review":
+        return derive_shadow_review_summary_records([artifact])
+
+    return []
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path
