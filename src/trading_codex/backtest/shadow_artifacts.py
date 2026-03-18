@@ -190,6 +190,16 @@ def derive_shadow_review_summary_records_from_artifact(
     return derive_shadow_review_summary_records([artifact])
 
 
+def derive_shadow_review_summary_table_from_artifacts(
+    artifacts: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return the canonical summary table for shadow review artifacts only."""
+    shadow_review_artifacts = [
+        artifact for artifact in artifacts if artifact.get("artifact_type") == "shadow_review"
+    ]
+    return derive_shadow_review_summary_table(shadow_review_artifacts)
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path

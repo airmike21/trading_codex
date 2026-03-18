@@ -24,6 +24,7 @@ from trading_codex.backtest.shadow_artifacts import (
     derive_shadow_review_summary_row,
     derive_shadow_review_summary_rows,
     derive_shadow_review_summary_table,
+    derive_shadow_review_summary_table_from_artifacts,
     render_shadow_review_markdown,
 )
 
@@ -1269,6 +1270,76 @@ class TestShadowReviewSummaryArtifactConsumer:
         assert records_one == records_two
         assert records_one == derive_shadow_review_summary_records([artifact])
         assert artifact == expected
+
+
+class TestShadowReviewSummaryTableFromArtifacts:
+    """Focused tests for building the canonical summary table from artifact iterables."""
+
+    def test_shadow_review_summary_table_from_artifacts_excludes_non_shadow_review_artifacts(self) -> None:
+        clean_artifact = _contract_bundle()
+        warning_artifact = _contract_bundle(as_of_date="2020-01-01")
+        artifacts = [
+            {"artifact_type": "daily_summary", "review_summary": {"automation_status": "blocked"}},
+            clean_artifact,
+            {"artifact_type": "not_shadow_review", "shadow_review_state": "blocked"},
+            warning_artifact,
+        ]
+
+        assert derive_shadow_review_summary_table_from_artifacts(artifacts) == derive_shadow_review_summary_table(
+            [clean_artifact, warning_artifact]
+        )
+
+    def test_shadow_review_summary_table_from_artifacts_accepts_generator_input(self) -> None:
+        clean_artifact = _contract_bundle()
+        blocked_artifact = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "table-from-artifacts-blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+
+        artifacts = (
+            artifact
+            for artifact in [
+                {"artifact_type": "daily_summary"},
+                clean_artifact,
+                blocked_artifact,
+            ]
+        )
+
+        assert derive_shadow_review_summary_table_from_artifacts(artifacts) == derive_shadow_review_summary_table(
+            [clean_artifact, blocked_artifact]
+        )
+
+    def test_shadow_review_summary_table_from_artifacts_returns_canonical_empty_shape_for_empty_input(self) -> None:
+        assert derive_shadow_review_summary_table_from_artifacts([]) == derive_shadow_review_summary_table([])
+
+    def test_shadow_review_summary_table_from_artifacts_returns_canonical_empty_shape_for_no_matches(self) -> None:
+        artifacts = [
+            {"artifact_type": "daily_summary"},
+            {"artifact_type": "plan_execution"},
+            {},
+        ]
+
+        assert derive_shadow_review_summary_table_from_artifacts(artifacts) == derive_shadow_review_summary_table([])
+
+    def test_shadow_review_summary_table_from_artifacts_matches_existing_table_path_for_shadow_review_inputs(self) -> None:
+        artifacts = [
+            _contract_bundle(),
+            _contract_bundle(as_of_date="2020-01-01"),
+        ]
+
+        assert derive_shadow_review_summary_table_from_artifacts(artifacts) == derive_shadow_review_summary_table(
+            artifacts
+        )
 
 
 class TestShadowArtifactContractParity:
