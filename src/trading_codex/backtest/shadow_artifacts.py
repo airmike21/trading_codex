@@ -203,7 +203,10 @@ def derive_shadow_review_summary_table_from_artifacts(
 def derive_shadow_review_summary_bundle_from_artifacts(
     artifacts: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Return the canonical review_summary bundle field from mixed artifact iterables."""
+    """Return the canonical review_summary bundle field from mixed artifact iterables.
+
+    When multiple shadow_review artifacts are present, the first match in iteration order wins.
+    """
     materialized_artifacts = tuple(artifacts)
     table = derive_shadow_review_summary_table_from_artifacts(materialized_artifacts)
     if not table["rows"]:
@@ -216,6 +219,7 @@ def derive_shadow_review_summary_bundle_from_artifacts(
             "blocking_reasons": list(summary["blocking_reasons"]),
         }
 
+    # Preserve the existing deterministic contract for multiple shadow_review matches.
     first_shadow_review_artifact = next(
         (
             artifact

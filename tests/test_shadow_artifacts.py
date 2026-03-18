@@ -1347,14 +1347,37 @@ class TestShadowReviewSummaryTableFromArtifacts:
 class TestShadowReviewSummaryBundleFromArtifacts:
     """Focused tests for deriving the canonical review_summary field from artifact iterables."""
 
-    def test_shadow_review_summary_bundle_from_artifacts_accepts_mixed_generator_input(self) -> None:
+    def test_shadow_review_summary_bundle_from_artifacts_returns_first_match_when_multiple_shadow_review_artifacts_exist(self) -> None:
+        clean_artifact = _contract_bundle()
         warning_artifact = _contract_bundle(as_of_date="2020-01-01")
+
+        result = derive_shadow_review_summary_bundle_from_artifacts([clean_artifact, warning_artifact])
+
+        assert result == clean_artifact["review_summary"]
+
+    def test_shadow_review_summary_bundle_from_artifacts_returns_first_relevant_match_from_mixed_generator_input(self) -> None:
+        warning_artifact = _contract_bundle(as_of_date="2020-01-01")
+        blocked_artifact = _contract_bundle(
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "bundle-from-artifacts-mixed-generator-blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
         artifacts = (
             artifact
             for artifact in [
                 {"artifact_type": "daily_summary"},
                 warning_artifact,
                 {"artifact_type": "plan_execution"},
+                blocked_artifact,
+                {"artifact_type": "daily_summary"},
             ]
         )
 
@@ -1406,7 +1429,38 @@ class TestShadowReviewSummaryBundleFromArtifacts:
             "blocking_reasons": [],
         }
 
-    def test_shadow_review_summary_bundle_from_artifacts_matches_existing_bundle_field_path(self) -> None:
+    def test_shadow_review_summary_bundle_from_artifacts_preserves_canonical_review_summary_shape(self) -> None:
+        warning_artifact = _contract_bundle(as_of_date="2020-01-01")
+        blocked_artifact = _contract_bundle(
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "bundle-from-artifacts-shape-blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+
+        result = derive_shadow_review_summary_bundle_from_artifacts(
+            [warning_artifact, blocked_artifact]
+        )
+
+        assert tuple(result.keys()) == (
+            "shadow_review_state",
+            "automation_decision",
+            "automation_status",
+            "warning_reasons",
+            "blocking_reasons",
+        )
+        assert isinstance(result["warning_reasons"], list)
+        assert isinstance(result["blocking_reasons"], list)
+        assert result == warning_artifact["review_summary"]
+
+    def test_shadow_review_summary_bundle_from_artifacts_preserves_single_match_behavior(self) -> None:
         artifact = _contract_bundle(
             as_of_date="2020-01-01",
             actions=[
