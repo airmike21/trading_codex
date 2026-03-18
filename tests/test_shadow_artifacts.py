@@ -1243,32 +1243,31 @@ class TestShadowReviewSummaryArtifactConsumer:
             [artifact]
         )
 
-    def test_shadow_review_summary_records_from_artifact_extracts_bundle_and_bundles_keys(self) -> None:
-        clean_bundle = _contract_bundle()
-        warning_bundle = _contract_bundle(as_of_date="2020-01-01")
+    def test_shadow_review_summary_records_from_artifact_rejects_unrelated_bundle_mapping(self) -> None:
+        assert derive_shadow_review_summary_records_from_artifact({"bundle": _contract_bundle()}) == []
 
-        assert derive_shadow_review_summary_records_from_artifact({"bundle": clean_bundle}) == (
-            derive_shadow_review_summary_records([clean_bundle])
-        )
+    def test_shadow_review_summary_records_from_artifact_rejects_unrelated_bundles_mapping(self) -> None:
         assert derive_shadow_review_summary_records_from_artifact(
-            {"bundles": [clean_bundle, warning_bundle]}
-        ) == derive_shadow_review_summary_records([clean_bundle, warning_bundle])
+            {"bundles": [_contract_bundle(), _contract_bundle(as_of_date="2020-01-01")]}
+        ) == []
 
-    def test_shadow_review_summary_records_from_artifact_handles_empty_or_missing_bundle_collections(self) -> None:
-        assert derive_shadow_review_summary_records_from_artifact({"bundles": []}) == []
+    def test_shadow_review_summary_records_from_artifact_rejects_non_shadow_artifact_marker(self) -> None:
+        assert derive_shadow_review_summary_records_from_artifact(
+            {"artifact_type": "not_shadow_review", "bundle": _contract_bundle()}
+        ) == []
+
+    def test_shadow_review_summary_records_from_artifact_handles_missing_shadow_artifact_marker(self) -> None:
         assert derive_shadow_review_summary_records_from_artifact({}) == []
 
-    def test_shadow_review_summary_records_from_artifact_is_pure_for_container_payloads(self) -> None:
-        clean_bundle = _contract_bundle()
-        warning_bundle = _contract_bundle(as_of_date="2020-01-01")
-        artifact = {"bundles": [clean_bundle, warning_bundle]}
+    def test_shadow_review_summary_records_from_artifact_is_pure_for_real_shadow_artifact_payload(self) -> None:
+        artifact = _contract_bundle(as_of_date="2020-01-01")
         expected = json.loads(json.dumps(artifact))
 
         records_one = derive_shadow_review_summary_records_from_artifact(artifact)
         records_two = derive_shadow_review_summary_records_from_artifact(artifact)
 
         assert records_one == records_two
-        assert records_one == derive_shadow_review_summary_records([clean_bundle, warning_bundle])
+        assert records_one == derive_shadow_review_summary_records([artifact])
         assert artifact == expected
 
 
