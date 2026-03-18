@@ -200,6 +200,43 @@ def derive_shadow_review_summary_table_from_artifacts(
     return derive_shadow_review_summary_table(shadow_review_artifacts)
 
 
+def derive_shadow_review_summary_bundle_from_artifacts(
+    artifacts: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return the canonical review_summary bundle field from mixed artifact iterables."""
+    materialized_artifacts = tuple(artifacts)
+    table = derive_shadow_review_summary_table_from_artifacts(materialized_artifacts)
+    if not table["rows"]:
+        summary = derive_shadow_review_summary({})
+        return {
+            "shadow_review_state": str(summary["shadow_review_state"]),
+            "automation_decision": str(summary["automation_decision"]),
+            "automation_status": str(summary["automation_status"]),
+            "warning_reasons": list(summary["warning_reasons"]),
+            "blocking_reasons": list(summary["blocking_reasons"]),
+        }
+
+    first_shadow_review_artifact = next(
+        (
+            artifact
+            for artifact in materialized_artifacts
+            if artifact.get("artifact_type") == "shadow_review"
+        ),
+        None,
+    )
+    if first_shadow_review_artifact is None:
+        summary = derive_shadow_review_summary({})
+    else:
+        summary = derive_shadow_review_summary(dict(first_shadow_review_artifact))
+    return {
+        "shadow_review_state": str(summary["shadow_review_state"]),
+        "automation_decision": str(summary["automation_decision"]),
+        "automation_status": str(summary["automation_status"]),
+        "warning_reasons": list(summary["warning_reasons"]),
+        "blocking_reasons": list(summary["blocking_reasons"]),
+    }
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path

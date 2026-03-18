@@ -10,12 +10,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import trading_codex.backtest.shadow_artifacts as shadow_artifacts
 from trading_codex.data import LocalStore
 from trading_codex.backtest.shadow_artifacts import (
     _derive_shadow_review_state,
     SHADOW_ARTIFACT_VERSION,
     build_shadow_review_bundle,
     derive_shadow_automation_decision,
+    derive_shadow_review_summary_bundle_from_artifacts,
     derive_shadow_review_summary_columns,
     derive_shadow_review_summary_record,
     derive_shadow_review_summary_records_from_artifact,
@@ -1340,6 +1342,87 @@ class TestShadowReviewSummaryTableFromArtifacts:
         assert derive_shadow_review_summary_table_from_artifacts(artifacts) == derive_shadow_review_summary_table(
             artifacts
         )
+
+
+class TestShadowReviewSummaryBundleFromArtifacts:
+    """Focused tests for deriving the canonical review_summary field from artifact iterables."""
+
+    def test_shadow_review_summary_bundle_from_artifacts_accepts_mixed_generator_input(self) -> None:
+        warning_artifact = _contract_bundle(as_of_date="2020-01-01")
+        artifacts = (
+            artifact
+            for artifact in [
+                {"artifact_type": "daily_summary"},
+                warning_artifact,
+                {"artifact_type": "plan_execution"},
+            ]
+        )
+
+        assert derive_shadow_review_summary_bundle_from_artifacts(artifacts) == warning_artifact[
+            "review_summary"
+        ]
+
+    def test_shadow_review_summary_bundle_from_artifacts_routes_through_table_helper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clean_artifact = _contract_bundle()
+        seen_artifacts: list[tuple[dict[str, object], ...]] = []
+
+        def fake_table_from_artifacts(artifacts: object) -> dict[str, object]:
+            assert isinstance(artifacts, tuple)
+            seen_artifacts.append(artifacts)
+            return derive_shadow_review_summary_table([clean_artifact])
+
+        monkeypatch.setattr(
+            shadow_artifacts,
+            "derive_shadow_review_summary_table_from_artifacts",
+            fake_table_from_artifacts,
+        )
+
+        assert derive_shadow_review_summary_bundle_from_artifacts([clean_artifact]) == clean_artifact[
+            "review_summary"
+        ]
+        assert seen_artifacts == [(clean_artifact,)]
+
+    def test_shadow_review_summary_bundle_from_artifacts_returns_canonical_empty_shape_for_empty_input(self) -> None:
+        assert derive_shadow_review_summary_bundle_from_artifacts([]) == {
+            "shadow_review_state": "-",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reasons": [],
+            "blocking_reasons": [],
+        }
+
+    def test_shadow_review_summary_bundle_from_artifacts_returns_canonical_empty_shape_for_no_matches(self) -> None:
+        artifacts = [
+            {"artifact_type": "daily_summary"},
+            {"artifact_type": "plan_execution"},
+            {},
+        ]
+
+        assert derive_shadow_review_summary_bundle_from_artifacts(artifacts) == {
+            "shadow_review_state": "-",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reasons": [],
+            "blocking_reasons": [],
+        }
+
+    def test_shadow_review_summary_bundle_from_artifacts_matches_existing_bundle_field_path(self) -> None:
+        artifact = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "bundle-from-artifacts-blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+
+        assert derive_shadow_review_summary_bundle_from_artifacts([artifact]) == artifact["review_summary"]
 
 
 class TestShadowArtifactContractParity:
