@@ -151,6 +151,13 @@ def derive_shadow_review_summary_columns() -> tuple[str, ...]:
     return _SHADOW_REVIEW_SUMMARY_ROW_COLUMNS
 
 
+def derive_shadow_review_summary_record(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Return a canonical record-shaped row for a single shadow review bundle."""
+    columns = derive_shadow_review_summary_columns()
+    row = derive_shadow_review_summary_row(bundle)
+    return dict(zip(columns, (row[column] for column in columns)))
+
+
 def derive_shadow_review_summary_rows(bundles: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return flat deterministic row dicts for multiple shadow review bundles."""
     return [dict(derive_shadow_review_summary_row(bundle)) for bundle in bundles]

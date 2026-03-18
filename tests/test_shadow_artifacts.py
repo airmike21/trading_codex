@@ -17,6 +17,7 @@ from trading_codex.backtest.shadow_artifacts import (
     build_shadow_review_bundle,
     derive_shadow_automation_decision,
     derive_shadow_review_summary_columns,
+    derive_shadow_review_summary_record,
     derive_shadow_review_summary_records,
     derive_shadow_review_summary,
     derive_shadow_review_summary_row,
@@ -1075,6 +1076,65 @@ class TestShadowReviewSummaryRows:
         )
 
         assert all(tuple(row.keys()) == derive_shadow_review_summary_columns() for row in rows)
+
+
+class TestShadowReviewSummaryRecord:
+    """Focused tests for the single-record shadow review summary helper."""
+
+    def test_shadow_review_summary_record_returns_canonical_keys_in_canonical_order(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+
+        record = derive_shadow_review_summary_record(bundle)
+
+        assert tuple(record.keys()) == derive_shadow_review_summary_columns()
+
+    def test_shadow_review_summary_record_matches_single_row_helper_positionally(self) -> None:
+        bundle = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "record-blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+
+        columns = derive_shadow_review_summary_columns()
+        row = derive_shadow_review_summary_row(bundle)
+        record = derive_shadow_review_summary_record(bundle)
+
+        assert list(record.values()) == [row[column] for column in columns]
+
+    def test_shadow_review_summary_record_is_additive_and_does_not_change_existing_row_helper(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+
+        row_before = dict(derive_shadow_review_summary_row(bundle))
+        record = derive_shadow_review_summary_record(bundle)
+        row_after = dict(derive_shadow_review_summary_row(bundle))
+
+        assert row_before == row_after == {
+            "shadow_review_state": "warning",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reason_count": 1,
+            "blocking_reason_count": 0,
+            "warning_reasons": "stale_data",
+            "blocking_reasons": "",
+        }
+        assert record == {
+            "shadow_review_state": "warning",
+            "automation_decision": "review",
+            "automation_status": "review_required",
+            "warning_reason_count": 1,
+            "blocking_reason_count": 0,
+            "warning_reasons": "stale_data",
+            "blocking_reasons": "",
+        }
 
 
 class TestShadowReviewSummaryTable:
