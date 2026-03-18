@@ -16,6 +16,7 @@ from trading_codex.backtest.shadow_artifacts import (
     SHADOW_ARTIFACT_VERSION,
     build_shadow_review_bundle,
     derive_shadow_automation_decision,
+    derive_shadow_review_summary_columns,
     derive_shadow_review_summary,
     derive_shadow_review_summary_row,
     derive_shadow_review_summary_rows,
@@ -889,6 +890,17 @@ class TestShadowReviewSummary:
 class TestShadowReviewSummaryRow:
     """Focused tests for the flat shadow review summary row helper."""
 
+    def test_shadow_review_summary_columns_return_exact_canonical_order(self) -> None:
+        assert derive_shadow_review_summary_columns() == (
+            "shadow_review_state",
+            "automation_decision",
+            "automation_status",
+            "warning_reason_count",
+            "blocking_reason_count",
+            "warning_reasons",
+            "blocking_reasons",
+        )
+
     def test_shadow_review_summary_row_is_deterministic_and_read_only(self) -> None:
         bundle = _contract_bundle()
 
@@ -967,6 +979,13 @@ class TestShadowReviewSummaryRow:
         assert "review_summary" not in md
         assert "- Shadow review state: `warning`" in md
         assert "## Warnings" in md
+
+    def test_shadow_review_summary_row_keys_remain_aligned_with_columns(self) -> None:
+        bundle = _contract_bundle(as_of_date="2020-01-01")
+
+        assert tuple(derive_shadow_review_summary_row(bundle).keys()) == (
+            derive_shadow_review_summary_columns()
+        )
 
 
 class TestShadowReviewSummaryRows:
@@ -1047,6 +1066,13 @@ class TestShadowReviewSummaryRows:
             "warning_reasons": "stale_data",
             "blocking_reasons": "",
         }
+
+    def test_shadow_review_summary_rows_remain_column_compatible(self) -> None:
+        rows = derive_shadow_review_summary_rows(
+            [_contract_bundle(), _contract_bundle(as_of_date="2020-01-01")]
+        )
+
+        assert all(tuple(row.keys()) == derive_shadow_review_summary_columns() for row in rows)
 
 
 class TestShadowArtifactContractParity:

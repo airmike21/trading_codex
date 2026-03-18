@@ -17,6 +17,15 @@ import pandas as pd
 # days behind today.  5 days covers a long weekend plus one trading day of lag.
 _STALE_CALENDAR_DAYS = 5
 SHADOW_ARTIFACT_VERSION = 1
+_SHADOW_REVIEW_SUMMARY_ROW_COLUMNS = (
+    "shadow_review_state",
+    "automation_decision",
+    "automation_status",
+    "warning_reason_count",
+    "blocking_reason_count",
+    "warning_reasons",
+    "blocking_reasons",
+)
 
 
 def _compute_stale_data_warning(as_of_date: str) -> bool:
@@ -125,17 +134,21 @@ def derive_shadow_review_summary_row(bundle: dict[str, Any]) -> Mapping[str, Any
         warning_reasons = tuple(str(item) for item in normalized_summary["warning_reasons"])
         blocking_reasons = tuple(str(item) for item in normalized_summary["blocking_reasons"])
 
-    return MappingProxyType(
-        {
-            "shadow_review_state": shadow_review_state,
-            "automation_decision": automation_decision,
-            "automation_status": automation_status,
-            "warning_reason_count": len(warning_reasons),
-            "blocking_reason_count": len(blocking_reasons),
-            "warning_reasons": ", ".join(warning_reasons),
-            "blocking_reasons": ", ".join(blocking_reasons),
-        }
+    row_values = (
+        shadow_review_state,
+        automation_decision,
+        automation_status,
+        len(warning_reasons),
+        len(blocking_reasons),
+        ", ".join(warning_reasons),
+        ", ".join(blocking_reasons),
     )
+    return MappingProxyType(dict(zip(_SHADOW_REVIEW_SUMMARY_ROW_COLUMNS, row_values)))
+
+
+def derive_shadow_review_summary_columns() -> tuple[str, ...]:
+    """Return the canonical ordered columns for shadow review summary rows."""
+    return _SHADOW_REVIEW_SUMMARY_ROW_COLUMNS
 
 
 def derive_shadow_review_summary_rows(bundles: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
