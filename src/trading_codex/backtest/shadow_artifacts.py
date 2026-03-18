@@ -156,6 +156,14 @@ def derive_shadow_review_summary_rows(bundles: Iterable[dict[str, Any]]) -> list
     return [dict(derive_shadow_review_summary_row(bundle)) for bundle in bundles]
 
 
+def derive_shadow_review_summary_table(bundles: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Return the canonical normalized table view for shadow review summary bundles."""
+    return {
+        "columns": derive_shadow_review_summary_columns(),
+        "rows": derive_shadow_review_summary_rows(bundles),
+    }
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path

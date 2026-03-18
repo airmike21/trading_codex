@@ -20,6 +20,7 @@ from trading_codex.backtest.shadow_artifacts import (
     derive_shadow_review_summary,
     derive_shadow_review_summary_row,
     derive_shadow_review_summary_rows,
+    derive_shadow_review_summary_table,
     render_shadow_review_markdown,
 )
 
@@ -1073,6 +1074,52 @@ class TestShadowReviewSummaryRows:
         )
 
         assert all(tuple(row.keys()) == derive_shadow_review_summary_columns() for row in rows)
+
+
+class TestShadowReviewSummaryTable:
+    """Focused tests for the normalized shadow review summary table helper."""
+
+    def test_shadow_review_summary_table_returns_canonical_columns_and_rows(self) -> None:
+        bundles = [_contract_bundle(), _contract_bundle(as_of_date="2020-01-01")]
+
+        assert derive_shadow_review_summary_table(bundles) == {
+            "columns": derive_shadow_review_summary_columns(),
+            "rows": derive_shadow_review_summary_rows(bundles),
+        }
+
+    def test_shadow_review_summary_table_handles_empty_input(self) -> None:
+        assert derive_shadow_review_summary_table([]) == {
+            "columns": derive_shadow_review_summary_columns(),
+            "rows": [],
+        }
+
+    def test_shadow_review_summary_table_is_canonical_composition(self) -> None:
+        bundles = [
+            _contract_bundle(),
+            _contract_bundle(
+                as_of_date="2020-01-01",
+                actions=[
+                    {
+                        "action": "BUY",
+                        "symbol": "SPY",
+                        "price": None,
+                        "target_shares": 10,
+                        "event_id": "table-blocked-eid",
+                    }
+                ],
+                expected_symbol_count=3,
+                actual_symbol_count=2,
+            ),
+        ]
+
+        table_one = derive_shadow_review_summary_table(bundles)
+        table_two = derive_shadow_review_summary_table(bundles)
+
+        assert table_one == table_two
+        assert table_one["columns"] is derive_shadow_review_summary_columns()
+        assert table_one["rows"] == [dict(derive_shadow_review_summary_row(bundle)) for bundle in bundles]
+        table_one["rows"][0]["automation_status"] = "mutated"
+        assert derive_shadow_review_summary_table(bundles) == table_two
 
 
 class TestShadowArtifactContractParity:
