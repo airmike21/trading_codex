@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -449,7 +450,17 @@ def parse_args() -> argparse.Namespace:
         help="Print a single-line JSON next action payload for automation/parsing.",
     )
     args = parser.parse_args()
+    raw_argv = sys.argv[1:]
+    vol_update_requested = any(
+        token == "--vol-update" or token.startswith("--vol-update=")
+        for token in raw_argv
+    )
     if args.strategy == "dual_mom_vol10_cash":
+        if vol_update_requested:
+            parser.error(
+                "--strategy dual_mom_vol10_cash has built-in rebalance-driven resize handling "
+                "and does not support generic --vol-update."
+            )
         if args.vol_target is not None:
             parser.error(
                 "--strategy dual_mom_vol10_cash has built-in volatility sizing; "

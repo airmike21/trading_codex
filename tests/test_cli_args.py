@@ -318,6 +318,28 @@ def test_dual_mom_vol10_cash_rejects_ivol(monkeypatch, capsys):
     assert "--ivol" in msg
 
 
+def test_dual_mom_vol10_cash_rejects_vol_update_daily(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "dual_mom_vol10_cash",
+            "--vol-update",
+            "daily",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args()
+
+    assert excinfo.value.code != 0
+    msg = capsys.readouterr().err
+    assert "dual_mom_vol10_cash" in msg
+    assert "--vol-update" in msg
+
+
 def test_valmom_v1_cli_args_parse(monkeypatch):
     monkeypatch.setattr(
         sys,
