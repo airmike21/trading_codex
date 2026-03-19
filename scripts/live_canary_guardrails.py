@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -173,8 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-canary-account",
         type=str,
-        default=None,
-        help="Required explicit account binding. Env fallback: TRADING_CODEX_LIVE_CANARY_ACCOUNT.",
+        required=True,
+        help="Required explicit account binding for this canary path. No env fallback.",
     )
     parser.add_argument(
         "--live-submit",
@@ -228,9 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     signal = parse_signal_payload(raw_signal)
     source_label = args.signal_json_file.stem
     source_ref = str(args.signal_json_file)
-    account_id = normalize_live_canary_account(args.live_canary_account) or normalize_live_canary_account(
-        os.getenv("TRADING_CODEX_LIVE_CANARY_ACCOUNT")
-    )
+    account_id = normalize_live_canary_account(args.live_canary_account)
 
     if account_id is None:
         timestamp_chicago = _now_chicago_iso()

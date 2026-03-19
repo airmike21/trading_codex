@@ -41,6 +41,7 @@ LIVE_CANARY_SUPPORTED_ENTER_ACTIONS = {"BUY", "ENTER", "RESIZE", "ROTATE"}
 LIVE_CANARY_SUPPORTED_EXIT_ACTIONS = {"EXIT", "SELL"}
 LIVE_CANARY_NOOP_ACTIONS = {"HOLD"}
 LIVE_CANARY_STATE_PENDING = "claim_pending_manual_clearance_required"
+LIVE_CANARY_SUBMISSION_CAP_BLOCKER = "live_canary_existing_position_exceeds_cap"
 
 
 @dataclass(frozen=True)
@@ -323,13 +324,13 @@ def evaluate_live_canary(
     mode, action_blockers = _action_support_mode(signal, allowed_symbols=resolved_allowed_symbols)
     blockers.extend(action_blockers)
 
-    if mode == "target_long":
-        target_item = next((item for item in plan.items if item.symbol.upper() == signal.symbol.upper()), None)
-        if target_item is not None and target_item.current_broker_shares > max_long_shares:
-            blockers.append(
-                f"live_canary_existing_target_position_exceeds_cap:{signal.symbol.upper()}:"
-                f"{target_item.current_broker_shares}:{max_long_shares}"
-            )
+    if mode in {"target_long", "cash_exit"}:
+        for item in plan.items:
+            if item.current_broker_shares > max_long_shares:
+                blockers.append(
+                    f"{LIVE_CANARY_SUBMISSION_CAP_BLOCKER}:{item.symbol.upper()}:"
+                    f"{item.current_broker_shares}:{max_long_shares}"
+                )
 
     if not blockers and mode in {"target_long", "cash_exit"}:
         desired_positions = {}

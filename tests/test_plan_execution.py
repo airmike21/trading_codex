@@ -827,11 +827,11 @@ def test_plan_execution_cli_live_submit_refuses_live_allowed_account_mismatch(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "live_submit_live_allowed_account_mismatch" in captured.err
+    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
-    assert "live_submit_live_allowed_account_mismatch" in live_payload["refusal_reasons"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
 
 
 @pytest.mark.parametrize(
@@ -986,12 +986,12 @@ def test_plan_execution_cli_live_submit_refuses_when_confirm_hash_mismatches(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "live_submit_plan_sha256_mismatch" in captured.err
+    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
     assert live_payload["plan_sha256"] == plan_sha256
-    assert "live_submit_plan_sha256_mismatch" in live_payload["refusal_reasons"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
 
 
 def test_plan_execution_cli_live_submit_refused_for_blocked_plan(
@@ -1132,14 +1132,14 @@ def test_plan_execution_cli_live_submit_refused_for_unmanaged_positions(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "live_submit_refused_for_unmanaged_positions" in captured.err
+    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
-    assert "live_submit_refused_for_unmanaged_positions" in live_payload["refusal_reasons"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
 
 
-def test_plan_execution_cli_live_submit_success_writes_artifact(
+def test_plan_execution_cli_live_submit_is_disabled_and_writes_refusal_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1147,7 +1147,6 @@ def test_plan_execution_cli_live_submit_success_writes_artifact(
     repo_root, _env = _repo_root_and_env()
     sys.path.insert(0, str(repo_root))
     plan_execution = importlib.import_module("scripts.plan_execution")
-    _isolate_live_submit_state(plan_execution, monkeypatch, tmp_path)
 
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
@@ -1175,6 +1174,10 @@ def test_plan_execution_cli_live_submit_success_writes_artifact(
             self.calls.append((account_id, payload))
             return {"data": {"id": "order-123", "status": "received"}}
 
+    def _unexpected_live_state(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("Legacy live-submit disablement should not touch durable live-submit state.")
+
+    monkeypatch.setattr(plan_execution, "build_live_submission_ledger_path", _unexpected_live_state)
     client = FakeLiveClient()
     monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: client)
     plan_sha256 = _compute_tastytrade_plan_sha256(
@@ -1205,38 +1208,23 @@ def test_plan_execution_cli_live_submit_success_writes_artifact(
         ]
     )
 
-    assert exit_code == 0
     captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
-    assert live_payload["live_submit_attempted"] is True
-    assert live_payload["submission_succeeded"] is True
+    assert live_payload["live_submit_attempted"] is False
+    assert live_payload["submission_succeeded"] is False
     assert live_payload["live_allowed_account"] == "5WT00001"
     assert live_payload["live_max_order_notional"] == 5000.0
     assert live_payload["live_max_order_qty"] == 100
-    assert live_payload["orders"][0]["dry_run"] is False
-    assert live_payload["orders"][0]["broker_order_id"] == "order-123"
+    assert live_payload["orders"] == []
     assert live_payload["plan_sha256"] == plan_sha256
-    assert client.calls == [
-        (
-            "5WT00001",
-            {
-                "order-type": "Market",
-                "time-in-force": "Day",
-                "legs": [
-                    {
-                        "instrument-type": "Equity",
-                        "symbol": "EFA",
-                        "quantity": 18,
-                        "action": "Buy to Open",
-                    }
-                ],
-            },
-        )
-    ]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
+    assert client.calls == []
 
 
-def test_plan_execution_cli_duplicate_live_submit_is_refused(
+def test_plan_execution_cli_repeated_live_submit_attempts_stay_disabled_without_submitting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1249,7 +1237,6 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
     signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
     first_base_dir = tmp_path / "execution_plans_a"
     second_base_dir = tmp_path / "execution_plans_b"
-    durable_ledger_path = tmp_path / "live_submit_state" / "live_submission_fingerprints.jsonl"
 
     class FakeLiveClient:
         def __init__(self) -> None:
@@ -1275,13 +1262,12 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
             self.place_order_calls += 1
             return {"data": {"id": f"order-{self.place_order_calls}", "status": "received"}}
 
+    def _unexpected_live_state(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("Legacy live-submit disablement should not touch durable live-submit state.")
+
     client = FakeLiveClient()
     monkeypatch.setattr(plan_execution, "RequestsTastytradeHttpClient", lambda **_kwargs: client)
-    monkeypatch.setattr(
-        plan_execution,
-        "build_live_submission_ledger_path",
-        lambda *_args, **_kwargs: durable_ledger_path,
-    )
+    monkeypatch.setattr(plan_execution, "build_live_submission_ledger_path", _unexpected_live_state)
     plan_sha256 = _compute_tastytrade_plan_sha256(
         plan_execution,
         signal_path=signal_path,
@@ -1314,8 +1300,9 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
         ]
     )
     first_captured = capsys.readouterr()
-    assert first_exit_code == 0, first_captured.err
-    assert client.place_order_calls == 1
+    assert first_exit_code == 2
+    assert "live_submit_disabled_use_live_canary_guardrails" in first_captured.err
+    assert client.place_order_calls == 0
 
     second_exit_code = plan_execution.main(
         [
@@ -1327,18 +1314,17 @@ def test_plan_execution_cli_duplicate_live_submit_is_refused(
     )
     second_captured = capsys.readouterr()
     assert second_exit_code == 2
-    assert "live_submit_duplicate_fingerprint" in second_captured.err
-    assert client.place_order_calls == 1
+    assert "live_submit_disabled_use_live_canary_guardrails" in second_captured.err
+    assert client.place_order_calls == 0
 
     payload = json.loads(second_captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
-    assert live_payload["submission_result"] == "refused_duplicate"
-    assert live_payload["durable_state"]["ledger_path"] == str(durable_ledger_path)
-    assert live_payload["duplicate_submit_refusal"] is not None
-    assert live_payload["duplicate_submit_refusal"]["prior_record"]["result"] == "submitted"
-    assert live_payload["duplicate_submit_refusal"]["prior_record"]["plan_sha256"] == plan_sha256
-    assert "live_submit_duplicate_fingerprint" in live_payload["refusal_reasons"]
+    assert live_payload["submission_result"] == "refused_pre_submit"
+    assert live_payload["durable_state"] is None
+    assert live_payload["duplicate_submit_refusal"] is None
+    assert live_payload["plan_sha256"] == plan_sha256
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
 
 
 def test_plan_execution_cli_dry_run_does_not_touch_live_submit_state(

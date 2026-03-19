@@ -49,6 +49,8 @@ from trading_codex.execution import (
 from trading_codex.run_archive import write_run_archive
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
 
+LEGACY_LIVE_SUBMIT_BLOCKER = "live_submit_disabled_use_live_canary_guardrails"
+
 
 def _repo_root() -> Path:
     return REPO_ROOT
@@ -432,7 +434,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-submit",
         action="store_true",
-        help="Attempt real tastytrade submission for clean managed-sleeve ETF orders only. Requires --confirm-live-submit.",
+        help=(
+            "Legacy live-submit path is disabled for this first-live slice. "
+            f"Use scripts/live_canary_guardrails.py instead. Refusal reason: {LEGACY_LIVE_SUBMIT_BLOCKER}."
+        ),
     )
     parser.add_argument(
         "--confirm-live-submit",
@@ -618,7 +623,6 @@ def main(argv: list[str] | None = None) -> int:
         live_submission_export = None
         if args.live_submit:
             live_submission_path = build_live_submission_artifact_path(artifact_paths)
-            live_submission_ledger_path = build_live_submission_ledger_path()
             if plan.blockers:
                 live_submission_export = build_live_submission_refusal_from_plan(
                     plan=plan,
@@ -710,16 +714,14 @@ def main(argv: list[str] | None = None) -> int:
                     live_max_order_qty=args.live_max_order_qty,
                 )
             else:
-                live_submission_export = broker_adapter.submit_live_orders(
-                    export=simulated_export,
-                    confirm_account_id=args.confirm_live_submit,
+                live_submission_export = build_live_submission_refusal_from_plan(
+                    plan=plan,
+                    refusal_reasons=[LEGACY_LIVE_SUBMIT_BLOCKER],
+                    plan_preview=plan_preview,
+                    plan_sha256=plan_sha256,
                     live_allowed_account=args.live_allowed_account,
-                    confirm_plan_sha256=args.confirm_plan_sha256,
-                    allowed_symbols=managed_symbols or set(),
                     live_max_order_notional=args.live_max_order_notional,
                     live_max_order_qty=args.live_max_order_qty,
-                    ledger_path=live_submission_ledger_path,
-                    live_submission_artifact_path=live_submission_path,
                 )
             write_live_submission_artifact(
                 live_submission_export,

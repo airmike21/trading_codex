@@ -215,6 +215,77 @@ def test_live_canary_caps_buy_to_one_share_deterministically() -> None:
     assert "live_canary_qty_capped:EFA:100:1" in evaluation.warnings
 
 
+def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> None:
+    plan = _build_plan(
+        _signal_payload(
+            action="ROTATE",
+            symbol="EFA",
+            target_shares=100,
+            resize_prev_shares=None,
+            resize_new_shares=None,
+        ),
+        positions=[{"symbol": "BIL", "shares": 1, "price": 91.20, "instrument_type": "Equity"}],
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+    )
+
+    assert evaluation.decision == "ready_live_submit"
+    assert [(order.symbol, order.side, order.executable_qty) for order in evaluation.orders] == [
+        ("BIL", "SELL", 1),
+        ("EFA", "BUY", 1),
+    ]
+    assert all(order.executable_qty <= 1 for order in evaluation.orders)
+
+
+@pytest.mark.parametrize(
+    ("signal_payload", "positions"),
+    [
+        (
+            _signal_payload(
+                action="ROTATE",
+                symbol="EFA",
+                target_shares=100,
+                resize_prev_shares=None,
+                resize_new_shares=None,
+            ),
+            [{"symbol": "BIL", "shares": 7, "price": 91.20, "instrument_type": "Equity"}],
+        ),
+        (
+            _signal_payload(
+                action="EXIT",
+                symbol="CASH",
+                price=None,
+                target_shares=0,
+                resize_prev_shares=None,
+                resize_new_shares=None,
+            ),
+            [{"symbol": "BIL", "shares": 7, "price": 91.20, "instrument_type": "Equity"}],
+        ),
+    ],
+)
+def test_live_canary_blocks_oversized_existing_positions_before_any_leg_is_built(
+    signal_payload: dict[str, object],
+    positions: list[dict[str, object]],
+) -> None:
+    plan = _build_plan(signal_payload, positions=positions)
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=False,
+        arm_live_canary=None,
+    )
+
+    assert evaluation.decision == "blocked"
+    assert evaluation.orders == []
+    assert "live_canary_existing_position_exceeds_cap:BIL:7:1" in evaluation.blockers
+
+
 def test_live_canary_duplicate_event_state_blocks_repeat_event_for_same_account(tmp_path: Path) -> None:
     record = {
         "account_id": "5WT00001",
@@ -350,3 +421,49 @@ def test_live_canary_guardrails_cli_smoke_with_realistic_dual_mom_vol10_cash_pay
     assert len(audit_rows) == 2
     assert audit_rows[0]["event_id"] == payload["event_id"]
     assert {row["symbol"] for row in audit_rows} == {"BIL", "EFA"}
+
+
+def test_live_canary_guardrails_cli_blank_explicit_account_fails_closed_even_if_env_is_set(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    env["TRADING_CODEX_LIVE_CANARY_ACCOUNT"] = "5WT99999"
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "live_canary_guardrails.py"),
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "file",
+            "--positions-file",
+            str(positions_path),
+            "--live-canary-account",
+            "",
+            "--base-dir",
+            str(tmp_path / "live_canary"),
+            "--emit",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+        env=env,
+    )
+
+    assert proc.returncode == 2, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    payload = json.loads(proc.stdout)
+    assert payload["decision"] == "blocked"
+    assert payload["account_id"] is None
+    assert payload["blockers"] == ["live_canary_requires_account_binding"]
