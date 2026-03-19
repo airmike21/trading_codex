@@ -84,6 +84,22 @@ def _derive_shadow_review_state(
     return "clean"
 
 
+def _merge_reason_codes(*groups: Iterable[object] | None) -> list[str]:
+    """Return unique non-empty reason codes while preserving first-seen order."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        if group is None:
+            continue
+        for item in group:
+            code = str(item).strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            merged.append(code)
+    return merged
+
+
 def derive_shadow_automation_decision(bundle: dict[str, Any]) -> str:
     """Return the recommended automation decision from an existing review bundle."""
     shadow_review_state = bundle.get("shadow_review_state")
@@ -316,6 +332,8 @@ def build_shadow_review_bundle(
     blockers: list[str] | None = None,
     expected_symbol_count: int | None = None,
     actual_symbol_count: int | None = None,
+    extra_warning_reasons: Iterable[object] | None = None,
+    extra_blocking_reasons: Iterable[object] | None = None,
 ) -> dict[str, Any]:
     warnings_list = list(warnings or [])
     blockers_list = list(blockers or [])
@@ -327,19 +345,20 @@ def build_shadow_review_bundle(
     symbol_count_mismatch_warning = _compute_symbol_count_mismatch_warning(
         expected_symbol_count, actual_symbol_count
     )
-    ready_for_shadow_review = not (
-        stale_data_warning or missing_price_warning or symbol_count_mismatch_warning
-    )
-
-    # Derive reason lists from the computed booleans (never re-run independent logic).
-    warning_reasons: list[str] = []
-    blocking_reasons: list[str] = []
+    # Derive reason lists from the computed booleans, then merge any caller-supplied
+    # additive reason codes without re-running separate review-state logic.
+    computed_warning_reasons: list[str] = []
+    computed_blocking_reasons: list[str] = []
     if stale_data_warning:
-        warning_reasons.append("stale_data")
+        computed_warning_reasons.append("stale_data")
     if missing_price_warning:
-        blocking_reasons.append("missing_price")
+        computed_blocking_reasons.append("missing_price")
     if symbol_count_mismatch_warning:
-        blocking_reasons.append("symbol_count_mismatch")
+        computed_blocking_reasons.append("symbol_count_mismatch")
+
+    warning_reasons = _merge_reason_codes(computed_warning_reasons, extra_warning_reasons)
+    blocking_reasons = _merge_reason_codes(computed_blocking_reasons, extra_blocking_reasons)
+    ready_for_shadow_review = not (warning_reasons or blocking_reasons)
 
     shadow_review_state = _derive_shadow_review_state(warning_reasons, blocking_reasons)
 
@@ -399,6 +418,45 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
     stale_data_warning = str(bool(bundle.get("stale_data_warning"))).lower()
     missing_price_warning = str(bool(bundle.get("missing_price_warning"))).lower()
     symbol_count_mismatch_warning = str(bool(bundle.get("symbol_count_mismatch_warning"))).lower()
+    review_summary = bundle.get("review_summary")
+
+    automation_decision = None
+    automation_status = None
+    if isinstance(review_summary, Mapping):
+        automation_decision = review_summary.get("automation_decision")
+        automation_status = review_summary.get("automation_status")
+    if automation_decision is None:
+        automation_decision = bundle.get("automation_decision")
+    if automation_status is None:
+        automation_status = bundle.get("automation_status")
+
+    required_symbols = bundle.get("required_symbols") or []
+    loaded_symbols = bundle.get("loaded_symbols") or []
+    missing_symbols = bundle.get("missing_symbols") or []
+    data_dir = bundle.get("data_dir")
+    command = bundle.get("command")
+    run_backtest_command = bundle.get("run_backtest_command")
+    next_action_summary = bundle.get("next_action_summary")
+    history_rows = bundle.get("history_rows")
+    minimum_history_rows = bundle.get("minimum_history_rows")
+    expected_symbol_count = bundle.get("expected_symbol_count")
+    actual_symbol_count = bundle.get("actual_symbol_count")
+    target_shares = bundle.get("target_shares")
+    resize_prev_shares = bundle.get("resize_prev_shares")
+    resize_new_shares = bundle.get("resize_new_shares")
+    validated_with_cached_data = bundle.get("validated_with_cached_data")
+
+    loaded_symbol_latest_dates = bundle.get("loaded_symbol_latest_dates")
+    loaded_symbol_latest_dates_text = "-"
+    if isinstance(loaded_symbol_latest_dates, Mapping) and loaded_symbol_latest_dates:
+        loaded_symbol_latest_dates_text = ", ".join(
+            f"{str(symbol)}={str(as_of)}"
+            for symbol, as_of in loaded_symbol_latest_dates.items()
+        )
+
+    resize_text = "-"
+    if resize_prev_shares is not None or resize_new_shares is not None:
+        resize_text = f"{resize_prev_shares if resize_prev_shares is not None else '-'}->{resize_new_shares if resize_new_shares is not None else '-'}"
 
     lines = [
         f"# Shadow Review {bundle.get('strategy', '-')}",
@@ -428,12 +486,48 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         f"- Warning reasons: `{', '.join(warning_reasons) if warning_reasons else '-'}`",
         f"- Blocking reasons: `{', '.join(blocking_reasons) if blocking_reasons else '-'}`",
         f"- Shadow review state: `{shadow_review_state}`",
+        f"- Automation decision: `{automation_decision or '-'}`",
+        f"- Automation status: `{automation_status or '-'}`",
         f"- Ready for shadow review: `{ready_for_shadow_review}`",
         f"- Stale data warning: `{stale_data_warning}`",
         f"- Missing price warning: `{missing_price_warning}`",
         f"- Symbol count mismatch warning: `{symbol_count_mismatch_warning}`",
-        "",
     ]
+
+    if data_dir is not None:
+        lines.append(f"- Data dir: `{data_dir}`")
+    if required_symbols:
+        lines.append(f"- Required symbols: `{', '.join(str(item) for item in required_symbols)}`")
+    if loaded_symbols:
+        lines.append(f"- Loaded symbols: `{', '.join(str(item) for item in loaded_symbols)}`")
+    if missing_symbols:
+        lines.append(f"- Missing symbols: `{', '.join(str(item) for item in missing_symbols)}`")
+    if expected_symbol_count is not None:
+        lines.append(f"- Expected symbol count: `{expected_symbol_count}`")
+    if actual_symbol_count is not None:
+        lines.append(f"- Actual symbol count: `{actual_symbol_count}`")
+    if history_rows is not None:
+        lines.append(f"- History rows: `{history_rows}`")
+    if minimum_history_rows is not None:
+        lines.append(f"- Minimum history rows: `{minimum_history_rows}`")
+    if validated_with_cached_data is not None:
+        lines.append(
+            f"- Validated with cached data: `{str(bool(validated_with_cached_data)).lower()}`"
+        )
+    if loaded_symbol_latest_dates_text != "-":
+        lines.append(f"- Loaded symbol as-ofs: `{loaded_symbol_latest_dates_text}`")
+    if next_action_summary is not None:
+        lines.append(f"- Next action summary: `{next_action_summary}`")
+    if target_shares is not None:
+        lines.append(f"- Target shares: `{target_shares}`")
+    if resize_text != "-":
+        lines.append(f"- Resize shares: `{resize_text}`")
+    if command is not None:
+        lines.append(f"- Command: `{command}`")
+    if run_backtest_command is not None:
+        lines.append(f"- Run backtest command: `{run_backtest_command}`")
+
+    lines.append("")
 
     if warning_reasons:
         lines += ["## Warnings", ""]
