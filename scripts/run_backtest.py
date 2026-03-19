@@ -16,6 +16,7 @@ from trading_codex.backtest.engine import BacktestResult, run_backtest
 from trading_codex.backtest.next_rebalance import compute_next_rebalance_date
 from trading_codex.backtest.shadow_artifacts import build_shadow_review_bundle, write_shadow_review_artifacts
 from trading_codex.data import LocalStore
+from trading_codex.strategies.dual_mom_vol10_cash import DualMomentumVol10CashStrategy
 from trading_codex.strategies.dual_mom_v1 import DualMomentumV1Strategy
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
 from trading_codex.strategies.risk_parity_erc import RiskParityERCStrategy
@@ -89,6 +90,7 @@ def parse_args() -> argparse.Namespace:
             "tsmom_v1",
             "xsmom_v1",
             "dual_mom_v1",
+            "dual_mom_vol10_cash",
             "valmom_v1",
         ],
         default="tsmom",
@@ -272,6 +274,35 @@ def parse_args() -> argparse.Namespace:
         help="Defensive symbol for dual_mom_v1 fallback (default: SHY).",
     )
     parser.add_argument(
+        "--dmv-mom-lookback",
+        type=int,
+        default=63,
+        help="Momentum lookback in trading days for dual_mom_vol10_cash (default: 63).",
+    )
+    parser.add_argument(
+        "--dmv-rebalance",
+        type=int,
+        default=21,
+        help="Fixed trading-day rebalance interval for dual_mom_vol10_cash (default: 21).",
+    )
+    parser.add_argument(
+        "--dmv-defensive-symbol",
+        default="BIL",
+        help="Defensive symbol for dual_mom_vol10_cash fallback (default: BIL).",
+    )
+    parser.add_argument(
+        "--dmv-vol-lookback",
+        type=int,
+        default=20,
+        help="Realized-vol lookback in trading days for dual_mom_vol10_cash (default: 20).",
+    )
+    parser.add_argument(
+        "--dmv-target-vol",
+        type=float,
+        default=0.10,
+        help="Annualized target vol for dual_mom_vol10_cash sizing (default: 0.10).",
+    )
+    parser.add_argument(
         "--vm-mom-lookback",
         type=int,
         default=252,
@@ -417,7 +448,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print a single-line JSON next action payload for automation/parsing.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.strategy == "dual_mom_vol10_cash":
+        if args.vol_target is not None:
+            parser.error(
+                "--strategy dual_mom_vol10_cash has built-in volatility sizing; "
+                "do not combine it with generic --vol-target/--vol-lookback/--min-leverage/--max-leverage/--vol-update."
+            )
+        if args.ivol:
+            parser.error(
+                "--strategy dual_mom_vol10_cash has dedicated sleeve sizing and does not support --ivol."
+            )
+    return args
 
 
 def _position_from_weight(weight: float) -> int:
@@ -812,6 +854,7 @@ def _resize_mask_and_target_shares(
     vol_update: str,
     rebalance: str | int,
     capital: float = 10_000.0,
+    allow_resize_without_vol_target: bool = False,
 ) -> tuple[pd.Series, pd.Series]:
     if weights.empty:
         empty_mask = pd.Series(False, index=weights.index, dtype=bool)
@@ -822,7 +865,7 @@ def _resize_mask_and_target_shares(
     close_panel = close_panel.reindex(index=weights.index, columns=weights.columns)
     target_shares = _target_shares_for_active_symbol(weights, close_panel, capital=capital)
 
-    if vol_target is None:
+    if vol_target is None and not allow_resize_without_vol_target:
         return pd.Series(False, index=weights.index, dtype=bool), target_shares
 
     update_mask = _vol_update_mask_for_print(weights.index, vol_update, rebalance)
@@ -844,8 +887,9 @@ def _latest_resize_details(
     vol_update: str,
     rebalance: str | int,
     up_to_date: pd.Timestamp | None = None,
+    allow_resize_without_vol_target: bool = False,
 ) -> tuple[pd.Timestamp | None, int | None, int | None]:
-    if weights.empty or vol_target is None:
+    if weights.empty or (vol_target is None and not allow_resize_without_vol_target):
         return None, None, None
 
     resize_mask, target_shares = _resize_mask_and_target_shares(
@@ -854,6 +898,7 @@ def _latest_resize_details(
         vol_target=vol_target,
         vol_update=vol_update,
         rebalance=rebalance,
+        allow_resize_without_vol_target=allow_resize_without_vol_target,
     )
     if up_to_date is not None:
         resize_mask = resize_mask & (resize_mask.index <= up_to_date)
@@ -874,6 +919,7 @@ def build_dual_actions(
     vol_target: float | None = None,
     vol_update: str = "rebalance",
     rebalance: str | int = "M",
+    allow_resize_without_vol_target: bool = False,
 ) -> pd.DataFrame:
     columns = [
         "date",
@@ -898,6 +944,7 @@ def build_dual_actions(
         vol_target=vol_target,
         vol_update=vol_update,
         rebalance=rebalance,
+        allow_resize_without_vol_target=allow_resize_without_vol_target,
     )
 
     records: list[dict[str, object]] = []
@@ -1097,6 +1144,7 @@ def maybe_write_trades(
         "tsmom_v1",
         "xsmom_v1",
         "dual_mom_v1",
+        "dual_mom_vol10_cash",
         "valmom_v1",
     }:
         dual_actions.to_csv(out_path, index=False)
@@ -1350,6 +1398,7 @@ def build_next_action_payload(
     latest_realized_vol: float | None = None,
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
+    allow_resize_without_vol_target: bool = False,
 ) -> dict[str, object]:
     realized_vol_value = (
         float(latest_realized_vol)
@@ -1427,6 +1476,7 @@ def build_next_action_payload(
             vol_update=vol_update,
             rebalance=resize_rebalance,
             up_to_date=last_date,
+            allow_resize_without_vol_target=allow_resize_without_vol_target,
         )
 
     close_panel = bars.xs("close", axis=1, level=1)
@@ -1488,6 +1538,7 @@ def render_next_action_line(
     latest_realized_vol: float | None = None,
     latest_leverage: float | None = None,
     leverage_last_update_date: str | None = None,
+    allow_resize_without_vol_target: bool = False,
 ) -> str:
     payload = build_next_action_payload(
         strategy_label=strategy_label,
@@ -1503,6 +1554,7 @@ def render_next_action_line(
         latest_realized_vol=latest_realized_vol,
         latest_leverage=latest_leverage,
         leverage_last_update_date=leverage_last_update_date,
+        allow_resize_without_vol_target=allow_resize_without_vol_target,
     )
 
     if (
@@ -1577,6 +1629,7 @@ def maybe_write_dual_checklist(
     weights: pd.DataFrame,
     vol_target: float | None = None,
     vol_update: str = "rebalance",
+    allow_resize_without_vol_target: bool = False,
 ) -> None:
     if not out_path:
         return
@@ -1587,6 +1640,7 @@ def maybe_write_dual_checklist(
         vol_target=vol_target,
         vol_update=vol_update,
         rebalance=rebalance,
+        allow_resize_without_vol_target=allow_resize_without_vol_target,
     )
     active_symbol = _active_symbol_from_weights(weights)
     last_date = bars.index[-1]
@@ -1609,7 +1663,8 @@ def maybe_write_dual_checklist(
         price_txt = "N/A"
     else:
         latest_price = float(close_panel.loc[last_date, current])
-        target_shares = int(10_000 // latest_price)
+        target_weight = float(weights.loc[last_date, current])
+        target_shares = _target_shares_for_weight(target_weight, latest_price)
         price_txt = f"{latest_price:.2f}"
 
     if isinstance(rebalance, int):
@@ -1649,6 +1704,7 @@ def maybe_print_latest_dual(
     print_latest: bool,
     vol_target: float | None = None,
     vol_update: str = "rebalance",
+    allow_resize_without_vol_target: bool = False,
     regime_gate: str = "none",
     gate_symbol: str = "SPY",
     gate_sma_window: int = 200,
@@ -1667,6 +1723,7 @@ def maybe_print_latest_dual(
         vol_target=vol_target,
         vol_update=vol_update,
         rebalance=rebalance,
+        allow_resize_without_vol_target=allow_resize_without_vol_target,
     )
     active_symbol = _active_symbol_from_weights(weights)
     last_date = bars.index[-1]
@@ -1692,6 +1749,7 @@ def maybe_print_latest_dual(
             vol_update=vol_update,
             rebalance=rebalance,
             up_to_date=last_date,
+            allow_resize_without_vol_target=allow_resize_without_vol_target,
         )
 
     close_panel = bars.xs("close", axis=1, level=1)
@@ -1932,6 +1990,7 @@ def main() -> None:
 
     store = LocalStore(base_dir=args.data_dir)
     rebalance_cadence = args.rebalance
+    allow_resize_without_vol_target = False
 
     if args.strategy == "tsmom":
         bars = store.read_bars(args.symbol, start=args.start, end=args.end)
@@ -2025,6 +2084,24 @@ def main() -> None:
         )
         plot_label = "dual_mom_v1"
         rebalance_cadence = args.dm_rebalance
+    elif args.strategy == "dual_mom_vol10_cash":
+        risk_symbols = list(dict.fromkeys(args.symbols))
+        defensive_symbol = args.dmv_defensive_symbol.strip()
+        if not defensive_symbol:
+            raise ValueError("--dmv-defensive-symbol must not be empty.")
+        symbols_to_load = list(dict.fromkeys(risk_symbols + [defensive_symbol]))
+        bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
+        strategy = DualMomentumVol10CashStrategy(
+            symbols=risk_symbols,
+            defensive_symbol=defensive_symbol,
+            momentum_lookback=args.dmv_mom_lookback,
+            rebalance=args.dmv_rebalance,
+            vol_lookback=args.dmv_vol_lookback,
+            target_vol=args.dmv_target_vol,
+        )
+        plot_label = "dual_mom_vol10_cash"
+        rebalance_cadence = args.dmv_rebalance
+        allow_resize_without_vol_target = True
     elif args.strategy == "valmom_v1":
         risk_symbols = list(dict.fromkeys(args.symbols))
         defensive_symbol = args.vm_defensive_symbol.strip()
@@ -2094,6 +2171,7 @@ def main() -> None:
         "tsmom_v1",
         "xsmom_v1",
         "dual_mom_v1",
+        "dual_mom_vol10_cash",
         "valmom_v1",
     }:
         dual_actions = build_dual_actions(  # type: ignore[arg-type]
@@ -2102,6 +2180,7 @@ def main() -> None:
             vol_target=args.vol_target,
             vol_update=args.vol_update,
             rebalance=rebalance_cadence,
+            allow_resize_without_vol_target=allow_resize_without_vol_target,
         )
         actions_bars = bars
         actions_weights = result.weights  # type: ignore[assignment]
@@ -2117,6 +2196,7 @@ def main() -> None:
             vol_target=args.vol_target,
             vol_update=args.vol_update,
             rebalance=rebalance_cadence,
+            allow_resize_without_vol_target=allow_resize_without_vol_target,
         )
         actions_bars = tsmom_action_bars
         actions_weights = tsmom_action_weights
@@ -2148,6 +2228,8 @@ def main() -> None:
             next_rebalance = args.xs_rebalance
         elif args.strategy == "dual_mom_v1":
             next_rebalance = args.dm_rebalance
+        elif args.strategy == "dual_mom_vol10_cash":
+            next_rebalance = args.dmv_rebalance
         elif args.strategy == "valmom_v1":
             next_rebalance = args.vm_rebalance
         else:
@@ -2168,6 +2250,7 @@ def main() -> None:
             latest_realized_vol=latest_realized_vol,
             latest_leverage=latest_leverage,
             leverage_last_update_date=leverage_last_update_date,
+            allow_resize_without_vol_target=allow_resize_without_vol_target,
         )
         maybe_write_shadow_artifacts(
             args.shadow_artifacts_dir,
@@ -2198,6 +2281,7 @@ def main() -> None:
                     latest_realized_vol=latest_realized_vol,
                     latest_leverage=latest_leverage,
                     leverage_last_update_date=leverage_last_update_date,
+                    allow_resize_without_vol_target=allow_resize_without_vol_target,
                 )
             )
         return
@@ -2374,6 +2458,26 @@ def main() -> None:
             latest_leverage=latest_leverage,
             leverage_last_update_date=leverage_last_update_date,
             realized_vol_at_last_update=realized_vol_at_last_update,
+        )
+    elif args.strategy == "dual_mom_vol10_cash":
+        checklist_path = args.checklist_out or "outputs/dual_mom_vol10_cash_checklist.md"
+        defensive_symbol = args.dmv_defensive_symbol.strip()
+        maybe_write_dual_checklist(
+            checklist_path,
+            rebalance_cadence,
+            args.symbols,
+            defensive_symbol,
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            allow_resize_without_vol_target=True,
+        )
+        maybe_print_latest_dual(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            rebalance_cadence,
+            print_latest_enabled,
+            allow_resize_without_vol_target=True,
+            defensive_symbol=defensive_symbol,
         )
     elif args.strategy == "valmom_v1":
         maybe_print_latest_dual(
