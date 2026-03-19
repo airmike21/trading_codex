@@ -150,6 +150,23 @@ def test_presets_example_includes_opt_in_dual_mom_core_vt() -> None:
     assert vt_args[vt_args.index("--max-leverage") + 1] == "1.0"
 
 
+def test_presets_example_includes_dual_mom_vol10_cash_core() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    presets = daily_signal._load_presets_json(repo_root / "configs" / "presets.example.json")
+
+    assert "dual_mom_vol10_cash_core" in presets
+    args = presets["dual_mom_vol10_cash_core"].run_backtest_args
+
+    assert args[args.index("--strategy") + 1] == "dual_mom_vol10_cash"
+    assert args[args.index("--dmv-defensive-symbol") + 1] == "BIL"
+    assert args[args.index("--dmv-mom-lookback") + 1] == "63"
+    assert args[args.index("--dmv-rebalance") + 1] == "21"
+    assert args[args.index("--dmv-vol-lookback") + 1] == "20"
+    assert args[args.index("--dmv-target-vol") + 1] == "0.10"
+    assert "--vol-target" not in args
+    assert "--ivol" not in args
+
+
 def test_daily_signal_emit_json_is_one_line_and_matches_run_backtest(tmp_path: Path) -> None:
     repo_root, env = _repo_root_and_env()
     data_dir = tmp_path / "synth"

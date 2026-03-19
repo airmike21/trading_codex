@@ -84,6 +84,40 @@
         "~/trading_codex/data",
         "--no-plot"
       ]
+    },
+    "dual_mom_vol10_cash_core": {
+      "description": "First-live dual momentum example with defensive BIL fallback and internal 10% vol cap sizing.",
+      "mode": "change_only",
+      "emit": "text",
+      "state_file": "~/.trading_codex/next_action_alert_state.json",
+      "state_key": "dual_mom_vol10_cash_core",
+      "log_csv": "~/.trading_codex/alerts.csv",
+      "run_backtest_args": [
+        "--strategy",
+        "dual_mom_vol10_cash",
+        "--symbols",
+        "SPY",
+        "QQQ",
+        "IWM",
+        "EFA",
+        "--dmv-defensive-symbol",
+        "BIL",
+        "--dmv-mom-lookback",
+        "63",
+        "--dmv-rebalance",
+        "21",
+        "--dmv-vol-lookback",
+        "20",
+        "--dmv-target-vol",
+        "0.10",
+        "--start",
+        "2015-01-02",
+        "--end",
+        "2026-01-01",
+        "--data-dir",
+        "~/trading_codex/data",
+        "--no-plot"
+      ]
     }
   }
 }

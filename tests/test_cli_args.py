@@ -203,6 +203,85 @@ def test_dual_mom_v1_cli_args_parse(monkeypatch):
     assert args.dm_defensive_symbol == "SHY"
 
 
+def test_dual_mom_vol10_cash_cli_args_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "dual_mom_vol10_cash",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "IWM",
+            "EFA",
+            "--dmv-mom-lookback",
+            "84",
+            "--dmv-rebalance",
+            "15",
+            "--dmv-defensive-symbol",
+            "BIL",
+            "--dmv-vol-lookback",
+            "30",
+            "--dmv-target-vol",
+            "0.12",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "dual_mom_vol10_cash"
+    assert args.symbols == ["SPY", "QQQ", "IWM", "EFA"]
+    assert args.dmv_mom_lookback == 84
+    assert args.dmv_rebalance == 15
+    assert args.dmv_defensive_symbol == "BIL"
+    assert args.dmv_vol_lookback == 30
+    assert args.dmv_target_vol == 0.12
+
+
+def test_dual_mom_vol10_cash_rejects_generic_vol_target(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "dual_mom_vol10_cash",
+            "--vol-target",
+            "0.12",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args()
+
+    assert excinfo.value.code != 0
+    msg = capsys.readouterr().err
+    assert "dual_mom_vol10_cash" in msg
+    assert "--vol-target" in msg
+
+
+def test_dual_mom_vol10_cash_rejects_ivol(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "dual_mom_vol10_cash",
+            "--ivol",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args()
+
+    assert excinfo.value.code != 0
+    msg = capsys.readouterr().err
+    assert "dual_mom_vol10_cash" in msg
+    assert "--ivol" in msg
+
+
 def test_valmom_v1_cli_args_parse(monkeypatch):
     monkeypatch.setattr(
         sys,
