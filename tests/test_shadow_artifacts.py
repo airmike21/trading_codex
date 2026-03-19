@@ -17,6 +17,7 @@ from trading_codex.backtest.shadow_artifacts import (
     SHADOW_ARTIFACT_VERSION,
     build_shadow_review_bundle,
     derive_shadow_automation_decision,
+    derive_shadow_review_archive_note_from_artifacts,
     derive_shadow_review_summary_bundle_from_artifacts,
     derive_shadow_review_summary_columns,
     derive_shadow_review_summary_record,
@@ -1477,6 +1478,135 @@ class TestShadowReviewSummaryBundleFromArtifacts:
         )
 
         assert derive_shadow_review_summary_bundle_from_artifacts([artifact]) == artifact["review_summary"]
+
+
+class TestShadowReviewArchiveNoteFromArtifacts:
+    """Focused tests for the compact archive-facing shadow review note."""
+
+    def test_shadow_review_archive_note_from_artifacts_returns_none_for_no_matches(self) -> None:
+        artifacts = [
+            {"artifact_type": "daily_summary"},
+            {"artifact_type": "plan_execution"},
+            {},
+        ]
+
+        assert derive_shadow_review_archive_note_from_artifacts(artifacts) is None
+
+    def test_shadow_review_archive_note_from_artifacts_returns_expected_note_for_single_match(self) -> None:
+        artifact = _contract_bundle(as_of_date="2020-01-01")
+
+        assert derive_shadow_review_archive_note_from_artifacts([artifact]) == (
+            "shadow_review_state=warning; "
+            "automation_decision=review; "
+            "automation_status=review_required; "
+            "warning_reasons=stale_data; "
+            "blocking_reasons=-"
+        )
+
+    def test_shadow_review_archive_note_from_artifacts_returns_first_match_when_multiple_shadow_review_artifacts_exist(self) -> None:
+        clean_artifact = _contract_bundle()
+        warning_artifact = _contract_bundle(as_of_date="2020-01-01")
+
+        assert derive_shadow_review_archive_note_from_artifacts([clean_artifact, warning_artifact]) == (
+            "shadow_review_state=clean; "
+            "automation_decision=allow; "
+            "automation_status=automation_ready; "
+            "warning_reasons=-; "
+            "blocking_reasons=-"
+        )
+
+    def test_shadow_review_archive_note_from_artifacts_routes_through_promoted_helper_chain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        seen_artifacts: list[tuple[str, tuple[dict[str, object], ...]]] = []
+        input_artifacts = ({"artifact_type": "shadow_review"},)
+
+        def fake_table_from_artifacts(artifacts: object) -> dict[str, object]:
+            assert isinstance(artifacts, tuple)
+            seen_artifacts.append(("table", artifacts))
+            return {"columns": ("shadow_review_state",), "rows": [{"shadow_review_state": "warning"}]}
+
+        def fake_bundle_from_artifacts(artifacts: object) -> dict[str, object]:
+            assert isinstance(artifacts, tuple)
+            seen_artifacts.append(("bundle", artifacts))
+            return {
+                "shadow_review_state": "warning",
+                "automation_decision": "review",
+                "automation_status": "review_required",
+                "warning_reasons": ["from_promoted_helper"],
+                "blocking_reasons": [],
+            }
+
+        monkeypatch.setattr(
+            shadow_artifacts,
+            "derive_shadow_review_summary_table_from_artifacts",
+            fake_table_from_artifacts,
+        )
+        monkeypatch.setattr(
+            shadow_artifacts,
+            "derive_shadow_review_summary_bundle_from_artifacts",
+            fake_bundle_from_artifacts,
+        )
+
+        assert derive_shadow_review_archive_note_from_artifacts(input_artifacts) == (
+            "shadow_review_state=warning; "
+            "automation_decision=review; "
+            "automation_status=review_required; "
+            "warning_reasons=from_promoted_helper; "
+            "blocking_reasons=-"
+        )
+        assert seen_artifacts == [
+            ("table", input_artifacts),
+            ("bundle", input_artifacts),
+        ]
+
+    def test_shadow_review_archive_note_from_artifacts_is_additive_to_existing_summary_bundle_behavior(
+        self,
+    ) -> None:
+        artifact = _contract_bundle(
+            as_of_date="2020-01-01",
+            actions=[
+                {
+                    "action": "BUY",
+                    "symbol": "SPY",
+                    "price": None,
+                    "target_shares": 10,
+                    "event_id": "archive-note-blocked-eid",
+                }
+            ],
+            expected_symbol_count=3,
+            actual_symbol_count=2,
+        )
+        summary_before = derive_shadow_review_summary_bundle_from_artifacts([artifact])
+
+        note = derive_shadow_review_archive_note_from_artifacts([artifact])
+
+        assert note == (
+            "shadow_review_state=blocked; "
+            "automation_decision=block; "
+            "automation_status=blocked; "
+            "warning_reasons=stale_data; "
+            "blocking_reasons=missing_price, symbol_count_mismatch"
+        )
+        assert derive_shadow_review_summary_bundle_from_artifacts([artifact]) == summary_before
+        assert summary_before == artifact["review_summary"]
+
+    def test_shadow_review_archive_note_from_artifacts_consumes_real_mixed_artifact_payloads(self) -> None:
+        artifact = _contract_bundle(as_of_date="2020-01-01")
+        artifacts = [
+            {"artifact_type": "daily_summary"},
+            artifact,
+            {"artifact_type": "plan_execution"},
+        ]
+
+        assert derive_shadow_review_archive_note_from_artifacts(artifacts) == (
+            "shadow_review_state=warning; "
+            "automation_decision=review; "
+            "automation_status=review_required; "
+            "warning_reasons=stale_data; "
+            "blocking_reasons=-"
+        )
 
 
 class TestShadowArtifactContractParity:

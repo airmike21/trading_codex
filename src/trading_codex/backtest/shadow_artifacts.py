@@ -241,6 +241,27 @@ def derive_shadow_review_summary_bundle_from_artifacts(
     }
 
 
+def derive_shadow_review_archive_note_from_artifacts(
+    artifacts: Iterable[Mapping[str, Any]],
+) -> str | None:
+    """Return a compact archive-facing note for the first matching shadow review artifact."""
+    materialized_artifacts = tuple(artifacts)
+    table = derive_shadow_review_summary_table_from_artifacts(materialized_artifacts)
+    if not table["rows"]:
+        return None
+
+    summary = derive_shadow_review_summary_bundle_from_artifacts(materialized_artifacts)
+    warning_reasons = ", ".join(str(item) for item in summary["warning_reasons"]) or "-"
+    blocking_reasons = ", ".join(str(item) for item in summary["blocking_reasons"]) or "-"
+    return (
+        f"shadow_review_state={summary['shadow_review_state']}; "
+        f"automation_decision={summary['automation_decision']}; "
+        f"automation_status={summary['automation_status']}; "
+        f"warning_reasons={warning_reasons}; "
+        f"blocking_reasons={blocking_reasons}"
+    )
+
+
 @dataclass(frozen=True)
 class ShadowArtifactPaths:
     base_dir: Path
