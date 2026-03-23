@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import live_canary_guardrails
 from trading_codex.execution import build_execution_plan, parse_broker_snapshot, parse_signal_payload
 from trading_codex.execution.live_canary import (
     DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS,
@@ -114,6 +115,24 @@ def _build_plan(
 
 def _timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+class _SnapshotSequenceAdapter:
+    def __init__(self, *snapshots: dict[str, object]) -> None:
+        self._snapshots = [parse_broker_snapshot(snapshot) for snapshot in snapshots]
+        self.load_calls = 0
+        self.submit_calls = 0
+
+    def load_snapshot(self):
+        if self.load_calls >= len(self._snapshots):
+            raise AssertionError("No broker snapshot prepared for this load.")
+        snapshot = self._snapshots[self.load_calls]
+        self.load_calls += 1
+        return snapshot
+
+    def submit_live_orders(self, **_: object):
+        self.submit_calls += 1
+        raise AssertionError("submit_live_orders should not be called in this test.")
 
 
 def test_live_canary_blocks_missing_account_binding() -> None:
@@ -254,6 +273,126 @@ def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> No
         ("EFA", "BUY", 1),
     ]
     assert all(order.executable_qty <= 1 for order in evaluation.orders)
+
+
+def test_pre_submit_reconciliation_matches_when_refreshed_state_stays_ready() -> None:
+    signal_payload = _signal_payload(date="2026-03-20")
+    plan = _build_plan(
+        signal_payload,
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+    adapter = _SnapshotSequenceAdapter(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+            account_id="5WT00001",
+            as_of="2026-03-23T10:44:00-04:00",
+        )
+    )
+
+    reconciliation = live_canary_guardrails._reconcile_live_canary_pre_submit(
+        broker_adapter=adapter,
+        original_plan=plan,
+        original_evaluation=evaluation,
+        account_id="5WT00001",
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert reconciliation.matched is True
+    assert reconciliation.blockers == []
+    assert reconciliation.evaluation.decision == "ready_live_submit"
+    assert [(order.symbol, order.side, order.executable_qty) for order in reconciliation.evaluation.orders] == [
+        ("EFA", "BUY", 1)
+    ]
+    assert adapter.load_calls == 1
+
+
+def test_pre_submit_reconciliation_blocks_when_order_assumptions_change() -> None:
+    signal_payload = _signal_payload(
+        date="2026-03-20",
+        action="ROTATE",
+        target_shares=100,
+        resize_prev_shares=None,
+        resize_new_shares=None,
+    )
+    plan = _build_plan(
+        signal_payload,
+        positions=[{"symbol": "BIL", "shares": 1, "price": 91.20, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+    adapter = _SnapshotSequenceAdapter(
+        _broker_snapshot(
+            account_id="5WT00001",
+            as_of="2026-03-23T10:44:00-04:00",
+        )
+    )
+
+    reconciliation = live_canary_guardrails._reconcile_live_canary_pre_submit(
+        broker_adapter=adapter,
+        original_plan=plan,
+        original_evaluation=evaluation,
+        account_id="5WT00001",
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert reconciliation.matched is False
+    assert reconciliation.evaluation.decision == "ready_live_submit"
+    assert "live_canary_pre_submit_order_missing:BIL" in reconciliation.blockers
+    assert reconciliation.response_text == "live_canary_pre_submit_order_missing:BIL"
+
+
+def test_pre_submit_reconciliation_blocks_when_refreshed_state_adds_blocker() -> None:
+    signal_payload = _signal_payload(date="2026-03-20")
+    plan = _build_plan(
+        signal_payload,
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+    adapter = _SnapshotSequenceAdapter(
+        _broker_snapshot(
+            {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+            account_id="5WT99999",
+            as_of="2026-03-23T10:44:00-04:00",
+        )
+    )
+
+    reconciliation = live_canary_guardrails._reconcile_live_canary_pre_submit(
+        broker_adapter=adapter,
+        original_plan=plan,
+        original_evaluation=evaluation,
+        account_id="5WT00001",
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert reconciliation.matched is False
+    assert reconciliation.evaluation.decision == "blocked"
+    assert "live_canary_pre_submit_decision_changed:ready_live_submit:blocked" in reconciliation.blockers
+    assert "live_canary_pre_submit_blocker:live_canary_account_binding_mismatch" in reconciliation.blockers
+    assert "live_canary_pre_submit_broker_account_changed:5WT00001:5WT99999" in reconciliation.blockers
 
 
 @pytest.mark.parametrize(
@@ -822,3 +961,81 @@ def test_live_canary_guardrails_cli_live_submit_blocks_stale_broker_snapshot_wit
     assert len(audit_rows) == 1
     assert audit_rows[0]["decision"] == "blocked"
     assert audit_rows[0]["response_text"] == "live_canary_broker_snapshot_stale:1200:900"
+
+
+def test_live_canary_submit_path_reconciles_before_broker_submit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload(date="2026-03-20")), encoding="utf-8")
+    base_dir = tmp_path / "live_canary"
+    created_adapters: list[_SnapshotSequenceAdapter] = []
+
+    class FakeTastytradeBrokerExecutionAdapter(_SnapshotSequenceAdapter):
+        def __init__(self, *, account_id: str, client: object | None = None) -> None:
+            del account_id, client
+            super().__init__(
+                _broker_snapshot(
+                    {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                    account_id="5WT00001",
+                    as_of="2026-03-23T10:40:00-04:00",
+                ),
+                _broker_snapshot(
+                    {"symbol": "EFA", "shares": 1, "price": 99.16, "instrument_type": "Equity"},
+                    account_id="5WT00001",
+                    as_of="2026-03-23T10:44:00-04:00",
+                ),
+            )
+            created_adapters.append(self)
+
+    monkeypatch.setattr(live_canary_guardrails, "load_tastytrade_secrets", lambda *, secrets_file=None: None)
+    monkeypatch.setattr(
+        live_canary_guardrails,
+        "TastytradeBrokerExecutionAdapter",
+        FakeTastytradeBrokerExecutionAdapter,
+    )
+
+    result = live_canary_guardrails.main(
+        [
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "tastytrade",
+            "--live-canary-account",
+            "5WT00001",
+            "--live-submit",
+            "--arm-live-canary",
+            "5WT00001",
+            "--timestamp",
+            "2026-03-23T10:45:00-04:00",
+            "--base-dir",
+            str(base_dir),
+            "--emit",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert result == 2
+    assert len(created_adapters) == 1
+    assert created_adapters[0].load_calls == 2
+    assert created_adapters[0].submit_calls == 0
+    assert payload["decision"] == "blocked"
+    assert payload["live_submission"] is None
+    assert "live_canary_pre_submit_decision_changed:ready_live_submit:noop" in payload["blockers"]
+    assert payload["response_text"] == "live_canary_pre_submit_decision_changed:ready_live_submit:noop"
+
+    audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["decision"] == "blocked"
+    assert audit_rows[0]["response_text"] == "live_canary_pre_submit_decision_changed:ready_live_submit:noop"
+
+    event_state_path = Path(payload["event_state_path"])
+    state = json.loads(event_state_path.read_text(encoding="utf-8"))
+    assert state["decision"] == "blocked"
+    assert state["manual_clearance_required"] is True
+    assert state["result"] == "claim_pending_manual_clearance_required"

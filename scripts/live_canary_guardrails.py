@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from trading_codex.execution import (
+    BrokerPositionAdapter,
     FileBrokerPositionAdapter,
     RequestsTastytradeHttpClient,
     TastytradeBrokerExecutionAdapter,
@@ -23,6 +26,7 @@ from trading_codex.execution import (
 from trading_codex.execution.live_canary import (
     DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS,
     LIVE_CANARY_STATE_PENDING,
+    LiveCanaryEvaluation,
     append_live_canary_audit,
     audit_rows_for_result,
     build_live_canary_submission_export,
@@ -36,6 +40,18 @@ from trading_codex.execution.live_canary import (
     response_text_from_live_submission,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
+
+
+@dataclass(frozen=True)
+class PreSubmitReconciliation:
+    plan: Any | None
+    evaluation: LiveCanaryEvaluation
+    blockers: list[str]
+    response_text: str
+
+    @property
+    def matched(self) -> bool:
+        return not self.blockers
 
 
 def _load_signal_from_file(path: Path) -> dict[str, Any]:
@@ -144,6 +160,152 @@ def _emit_result(*, payload: dict[str, Any], emit: str) -> None:
         print(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return
     print(_render_text_result(payload))
+
+
+def _reconciliation_error_blocker(exc: Exception) -> str:
+    return f"live_canary_pre_submit_reconciliation_error:{exc}"
+
+
+def _normalize_reconciliation_value(value: object) -> str:
+    return "-" if value is None else str(value)
+
+
+def _synthetic_blocked_reconciliation_evaluation(
+    *,
+    original_evaluation: LiveCanaryEvaluation,
+    blocker: str,
+    timestamp: datetime,
+) -> LiveCanaryEvaluation:
+    return LiveCanaryEvaluation(
+        timestamp_chicago=timestamp.isoformat(),
+        account_id=original_evaluation.account_id,
+        broker_account_id=original_evaluation.broker_account_id,
+        signal=original_evaluation.signal,
+        live_submit_requested=original_evaluation.live_submit_requested,
+        armed=original_evaluation.armed,
+        decision="blocked",
+        blockers=[blocker],
+        warnings=list(original_evaluation.warnings),
+        orders=[],
+    )
+
+
+def _compare_live_canary_order_assumptions(
+    *,
+    original_evaluation: LiveCanaryEvaluation,
+    refreshed_evaluation: LiveCanaryEvaluation,
+) -> list[str]:
+    original_by_symbol = {order.symbol: order for order in original_evaluation.orders}
+    refreshed_by_symbol = {order.symbol: order for order in refreshed_evaluation.orders}
+    blockers: list[str] = []
+
+    for symbol in sorted(set(original_by_symbol) - set(refreshed_by_symbol)):
+        blockers.append(f"live_canary_pre_submit_order_missing:{symbol}")
+    for symbol in sorted(set(refreshed_by_symbol) - set(original_by_symbol)):
+        blockers.append(f"live_canary_pre_submit_order_extra:{symbol}")
+
+    compared_fields = (
+        "side",
+        "executable_qty",
+        "current_broker_shares",
+        "desired_canary_shares",
+        "classification",
+    )
+    for symbol in sorted(set(original_by_symbol) & set(refreshed_by_symbol)):
+        original_order = original_by_symbol[symbol]
+        refreshed_order = refreshed_by_symbol[symbol]
+        for field_name in compared_fields:
+            original_value = getattr(original_order, field_name)
+            refreshed_value = getattr(refreshed_order, field_name)
+            if original_value != refreshed_value:
+                blockers.append(
+                    "live_canary_pre_submit_order_changed:"
+                    f"{symbol}:{field_name}:{original_value}:{refreshed_value}"
+                )
+    return blockers
+
+
+def _reconcile_live_canary_pre_submit(
+    *,
+    broker_adapter: BrokerPositionAdapter,
+    original_plan: Any,
+    original_evaluation: LiveCanaryEvaluation,
+    account_id: str,
+    arm_live_canary: str | None,
+    timestamp: datetime,
+) -> PreSubmitReconciliation:
+    try:
+        refreshed_snapshot = broker_adapter.load_snapshot()
+        refreshed_plan = build_execution_plan(
+            signal=original_plan.signal,
+            broker_snapshot=refreshed_snapshot,
+            account_scope=original_plan.account_scope,
+            managed_symbols=set(original_plan.managed_symbols_universe),
+            ack_unmanaged_holdings=original_plan.unmanaged_holdings_acknowledged,
+            source_kind=original_plan.source_kind,
+            source_label=original_plan.source_label,
+            source_ref=original_plan.source_ref,
+            broker_source_ref=original_plan.broker_source_ref,
+            data_dir=None,
+        )
+        refreshed_evaluation = evaluate_live_canary(
+            plan=refreshed_plan,
+            live_canary_account=account_id,
+            live_submit_requested=original_evaluation.live_submit_requested,
+            arm_live_canary=arm_live_canary,
+            allowed_symbols=set(DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS),
+            timestamp=timestamp,
+        )
+    except Exception as exc:
+        blocker = _reconciliation_error_blocker(exc)
+        evaluation = _synthetic_blocked_reconciliation_evaluation(
+            original_evaluation=original_evaluation,
+            blocker=blocker,
+            timestamp=timestamp,
+        )
+        return PreSubmitReconciliation(
+            plan=None,
+            evaluation=evaluation,
+            blockers=[blocker],
+            response_text=blocker,
+        )
+
+    blockers: list[str] = []
+    if refreshed_evaluation.decision != "ready_live_submit":
+        blockers.append(
+            "live_canary_pre_submit_decision_changed:"
+            f"{original_evaluation.decision}:{refreshed_evaluation.decision}"
+        )
+    blockers.extend(
+        f"live_canary_pre_submit_blocker:{blocker}" for blocker in refreshed_evaluation.blockers
+    )
+    if refreshed_evaluation.account_id != original_evaluation.account_id:
+        blockers.append(
+            "live_canary_pre_submit_account_binding_changed:"
+            f"{_normalize_reconciliation_value(original_evaluation.account_id)}:"
+            f"{_normalize_reconciliation_value(refreshed_evaluation.account_id)}"
+        )
+    if refreshed_evaluation.broker_account_id != original_evaluation.broker_account_id:
+        blockers.append(
+            "live_canary_pre_submit_broker_account_changed:"
+            f"{_normalize_reconciliation_value(original_evaluation.broker_account_id)}:"
+            f"{_normalize_reconciliation_value(refreshed_evaluation.broker_account_id)}"
+        )
+    if not blockers:
+        blockers.extend(
+            _compare_live_canary_order_assumptions(
+                original_evaluation=original_evaluation,
+                refreshed_evaluation=refreshed_evaluation,
+            )
+        )
+
+    blockers = sorted(set(blockers))
+    return PreSubmitReconciliation(
+        plan=refreshed_plan,
+        evaluation=refreshed_evaluation,
+        blockers=blockers,
+        response_text="; ".join(blockers) if blockers else "pre-submit reconciliation matched",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -369,63 +531,91 @@ def main(argv: list[str] | None = None) -> int:
                     else "live_canary_duplicate_event"
                 )
             else:
-                simulated_export = build_live_canary_submission_export(plan=plan, evaluation=evaluation)
-                live_max_order_notional, live_max_order_qty = live_canary_live_submit_limits(simulated_export)
-                try:
-                    live_submission = broker_adapter.submit_live_orders(
-                        export=simulated_export,
-                        confirm_account_id=account_id,
-                        live_allowed_account=account_id,
-                        confirm_plan_sha256=simulated_export.plan_sha256,
-                        allowed_symbols=set(DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS),
-                        live_max_order_notional=live_max_order_notional,
-                        live_max_order_qty=live_max_order_qty,
-                        ledger_path=Path(audit_path.parent) / "broker_live_submission_fingerprints.jsonl",
-                        live_submission_artifact_path=None,
-                    )
-                    response_text = response_text_from_live_submission(live_submission)
-                    final_decision = (
-                        "live_submitted"
-                        if live_submission.live_submit_attempted and live_submission.submission_succeeded
-                        else "live_submit_refused"
-                    )
-                    live_submission_payload = {
-                        "live_submit_attempted": live_submission.live_submit_attempted,
-                        "manual_clearance_required": live_submission.manual_clearance_required,
-                        "orders": [
-                            {
-                                "attempted": order.attempted,
-                                "broker_order_id": order.broker_order_id,
-                                "broker_status": order.broker_status,
-                                "error": order.error,
-                                "quantity": order.quantity,
-                                "side": order.side,
-                                "succeeded": order.succeeded,
-                                "symbol": order.symbol,
-                            }
-                            for order in live_submission.orders
-                        ],
-                        "refusal_reasons": list(live_submission.refusal_reasons),
-                        "submission_result": live_submission.submission_result,
-                        "submission_succeeded": live_submission.submission_succeeded,
-                    }
-                    finalize_live_canary_event(
-                        state_path=event_state_path,
-                        record={
-                            "account_id": account_id,
-                            "decision": final_decision,
-                            "event_id": signal.event_id,
-                            "generated_at_chicago": evaluation.timestamp_chicago,
-                            "manual_clearance_required": bool(
-                                live_submission.manual_clearance_required or not live_submission.submission_succeeded
-                            ),
-                            "response_text": response_text,
-                            "result": live_submission.submission_result,
-                        },
-                    )
-                except Exception as exc:
-                    final_decision = "live_submit_error"
-                    response_text = str(exc)
+                reconciliation = _reconcile_live_canary_pre_submit(
+                    broker_adapter=broker_adapter,
+                    original_plan=plan,
+                    original_evaluation=evaluation,
+                    account_id=account_id,
+                    arm_live_canary=args.arm_live_canary,
+                    timestamp=timestamp,
+                )
+                plan = plan if reconciliation.plan is None else reconciliation.plan
+                evaluation = reconciliation.evaluation
+                final_warnings = list(evaluation.warnings)
+                if reconciliation.matched:
+                    simulated_export = build_live_canary_submission_export(plan=plan, evaluation=evaluation)
+                    live_max_order_notional, live_max_order_qty = live_canary_live_submit_limits(simulated_export)
+                    try:
+                        live_submission = broker_adapter.submit_live_orders(
+                            export=simulated_export,
+                            confirm_account_id=account_id,
+                            live_allowed_account=account_id,
+                            confirm_plan_sha256=simulated_export.plan_sha256,
+                            allowed_symbols=set(DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS),
+                            live_max_order_notional=live_max_order_notional,
+                            live_max_order_qty=live_max_order_qty,
+                            ledger_path=Path(audit_path.parent) / "broker_live_submission_fingerprints.jsonl",
+                            live_submission_artifact_path=None,
+                        )
+                        response_text = response_text_from_live_submission(live_submission)
+                        final_decision = (
+                            "live_submitted"
+                            if live_submission.live_submit_attempted and live_submission.submission_succeeded
+                            else "live_submit_refused"
+                        )
+                        live_submission_payload = {
+                            "live_submit_attempted": live_submission.live_submit_attempted,
+                            "manual_clearance_required": live_submission.manual_clearance_required,
+                            "orders": [
+                                {
+                                    "attempted": order.attempted,
+                                    "broker_order_id": order.broker_order_id,
+                                    "broker_status": order.broker_status,
+                                    "error": order.error,
+                                    "quantity": order.quantity,
+                                    "side": order.side,
+                                    "succeeded": order.succeeded,
+                                    "symbol": order.symbol,
+                                }
+                                for order in live_submission.orders
+                            ],
+                            "refusal_reasons": list(live_submission.refusal_reasons),
+                            "submission_result": live_submission.submission_result,
+                            "submission_succeeded": live_submission.submission_succeeded,
+                        }
+                        finalize_live_canary_event(
+                            state_path=event_state_path,
+                            record={
+                                "account_id": account_id,
+                                "decision": final_decision,
+                                "event_id": signal.event_id,
+                                "generated_at_chicago": evaluation.timestamp_chicago,
+                                "manual_clearance_required": bool(
+                                    live_submission.manual_clearance_required or not live_submission.submission_succeeded
+                                ),
+                                "response_text": response_text,
+                                "result": live_submission.submission_result,
+                            },
+                        )
+                    except Exception as exc:
+                        final_decision = "live_submit_error"
+                        response_text = str(exc)
+                        finalize_live_canary_event(
+                            state_path=event_state_path,
+                            record={
+                                "account_id": account_id,
+                                "decision": final_decision,
+                                "event_id": signal.event_id,
+                                "generated_at_chicago": evaluation.timestamp_chicago,
+                                "manual_clearance_required": True,
+                                "response_text": response_text,
+                                "result": LIVE_CANARY_STATE_PENDING,
+                            },
+                        )
+                else:
+                    final_decision = "blocked"
+                    final_blockers.extend(reconciliation.blockers)
+                    response_text = reconciliation.response_text
                     finalize_live_canary_event(
                         state_path=event_state_path,
                         record={
