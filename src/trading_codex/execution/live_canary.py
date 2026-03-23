@@ -52,6 +52,7 @@ LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_MISSING = "live_canary_broker_snapshot_as_of_m
 LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_UNPARSEABLE = "live_canary_broker_snapshot_as_of_unparseable"
 LIVE_CANARY_REGULAR_SESSION_OPEN = time(hour=9, minute=30, second=0)
 LIVE_CANARY_REGULAR_SESSION_CLOSE = time(hour=16, minute=0, second=0)
+LIVE_CANARY_EARLY_SESSION_CLOSE = time(hour=13, minute=0, second=0)
 
 
 @dataclass(frozen=True)
@@ -178,12 +179,40 @@ def _nyse_market_holidays(year: int) -> frozenset[date]:
     holidays.add(_nth_weekday_of_month(year, 9, 0, 1))
     holidays.add(_nth_weekday_of_month(year, 11, 3, 4))
     holidays.add(_observed_fixed_market_holiday(date(year, 12, 25)))
+    if date(year + 1, 1, 1).weekday() == 5:
+        holidays.add(date(year, 12, 31))
 
     return frozenset(holidays)
 
 
 def _is_new_york_market_holiday(day: date) -> bool:
     return day in _nyse_market_holidays(day.year)
+
+
+@lru_cache(maxsize=None)
+def _nyse_early_close_days(year: int) -> frozenset[date]:
+    early_closes: set[date] = set()
+
+    thanksgiving = _nth_weekday_of_month(year, 11, 3, 4)
+    black_friday = thanksgiving + timedelta(days=1)
+    if _is_new_york_regular_trading_day(black_friday):
+        early_closes.add(black_friday)
+
+    independence_eve = _prior_trading_weekday(_observed_fixed_market_holiday(date(year, 7, 4)))
+    if independence_eve.year == year:
+        early_closes.add(independence_eve)
+
+    christmas_eve = date(year, 12, 24)
+    if _is_new_york_regular_trading_day(christmas_eve):
+        early_closes.add(christmas_eve)
+
+    return frozenset(early_closes)
+
+
+def _new_york_regular_session_close(day: date) -> time:
+    if day in _nyse_early_close_days(day.year):
+        return LIVE_CANARY_EARLY_SESSION_CLOSE
+    return LIVE_CANARY_REGULAR_SESSION_CLOSE
 
 
 def _is_new_york_regular_trading_day(day: date) -> bool:
@@ -194,7 +223,9 @@ def _is_new_york_regular_session_open(timestamp_new_york: datetime) -> bool:
     if not _is_new_york_regular_trading_day(timestamp_new_york.date()):
         return False
     current_time = timestamp_new_york.timetz().replace(tzinfo=None)
-    return LIVE_CANARY_REGULAR_SESSION_OPEN <= current_time <= LIVE_CANARY_REGULAR_SESSION_CLOSE
+    return LIVE_CANARY_REGULAR_SESSION_OPEN <= current_time <= _new_york_regular_session_close(
+        timestamp_new_york.date()
+    )
 
 
 def _prior_trading_weekday(day: date) -> date:
@@ -208,7 +239,7 @@ def _latest_completed_regular_session_date(timestamp_new_york: datetime) -> date
     if not _is_new_york_regular_trading_day(timestamp_new_york.date()):
         return _prior_trading_weekday(timestamp_new_york.date())
     current_time = timestamp_new_york.timetz().replace(tzinfo=None)
-    if current_time > LIVE_CANARY_REGULAR_SESSION_CLOSE:
+    if current_time > _new_york_regular_session_close(timestamp_new_york.date()):
         return timestamp_new_york.date()
     return _prior_trading_weekday(timestamp_new_york.date())
 

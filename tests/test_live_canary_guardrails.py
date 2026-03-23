@@ -340,6 +340,94 @@ def test_live_canary_blocks_market_holiday_during_nominal_session_hours() -> Non
 
 
 @pytest.mark.parametrize(
+    ("timestamp", "signal_date", "expected_decision", "expected_blocker"),
+    [
+        ("2026-11-27T13:00:00-05:00", "2026-11-25", "ready_live_submit", None),
+        ("2026-11-27T13:05:00-05:00", "2026-11-27", "blocked", "live_canary_submit_outside_regular_session"),
+    ],
+    ids=["black_friday_boundary", "black_friday_after_close"],
+)
+def test_live_canary_respects_black_friday_early_close(
+    timestamp: str,
+    signal_date: str,
+    expected_decision: str,
+    expected_blocker: str | None,
+) -> None:
+    plan = _build_plan(
+        _signal_payload(date=signal_date),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-11-27T12:55:00-05:00",
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp(timestamp),
+    )
+
+    assert evaluation.decision == expected_decision
+    if expected_blocker is None:
+        assert "live_canary_submit_outside_regular_session" not in evaluation.blockers
+    else:
+        assert expected_blocker in evaluation.blockers
+
+
+def test_live_canary_blocks_observed_new_year_closure_on_prior_year_dec_31() -> None:
+    plan = _build_plan(
+        _signal_payload(date="2027-12-30"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2027-12-31T10:40:00-05:00",
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2027-12-31T10:45:00-05:00"),
+    )
+
+    assert evaluation.decision == "blocked"
+    assert "live_canary_submit_market_holiday:2027-12-31" in evaluation.blockers
+
+
+@pytest.mark.parametrize(
+    ("signal_date", "expected_decision", "expected_blocker"),
+    [
+        ("2027-12-30", "ready_live_submit", None),
+        ("2027-12-31", "blocked", "live_canary_signal_date_mismatch:2027-12-31:2027-12-30"),
+    ],
+    ids=["cross_year_latest_completed", "cross_year_observed_holiday_skipped"],
+)
+def test_live_canary_latest_completed_session_skips_cross_year_observed_new_year_closure(
+    signal_date: str,
+    expected_decision: str,
+    expected_blocker: str | None,
+) -> None:
+    plan = _build_plan(
+        _signal_payload(date=signal_date),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2028-01-03T10:40:00-05:00",
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2028-01-03T10:45:00-05:00"),
+    )
+
+    assert evaluation.decision == expected_decision
+    if expected_blocker is None:
+        assert "live_canary_signal_date_mismatch:2027-12-31:2027-12-30" not in evaluation.blockers
+    else:
+        assert expected_blocker in evaluation.blockers
+
+
+@pytest.mark.parametrize(
     ("as_of", "expected_blocker"),
     [
         (None, "live_canary_broker_snapshot_as_of_missing"),
@@ -412,8 +500,20 @@ def test_live_canary_dry_run_warns_but_does_not_hard_block_submit_time_readiness
             "2026-07-03T10:40:00-04:00",
             "live_canary_submit_market_holiday:2026-07-03",
         ),
+        (
+            "2026-11-27",
+            "2026-11-27T13:05:00-05:00",
+            "2026-11-27T12:55:00-05:00",
+            "live_canary_submit_outside_regular_session",
+        ),
+        (
+            "2027-12-30",
+            "2027-12-31T10:45:00-05:00",
+            "2027-12-31T10:40:00-05:00",
+            "live_canary_submit_market_holiday:2027-12-31",
+        ),
     ],
-    ids=["same_day_signal", "future_signal", "market_holiday"],
+    ids=["same_day_signal", "future_signal", "market_holiday", "early_close", "cross_year_new_year"],
 )
 def test_live_canary_dry_run_preserves_usability_for_signal_mismatch_and_holiday_conditions(
     signal_date: str,
