@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +37,18 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS = ("BIL", "EFA", "IWM", "QQQ", "SPY")
 DEFAULT_LIVE_CANARY_MAX_LONG_SHARES = 1
+DEFAULT_LIVE_CANARY_BROKER_SNAPSHOT_MAX_AGE = timedelta(minutes=15)
 LIVE_CANARY_SUPPORTED_ENTER_ACTIONS = {"BUY", "ENTER", "RESIZE", "ROTATE"}
 LIVE_CANARY_SUPPORTED_EXIT_ACTIONS = {"EXIT", "SELL"}
 LIVE_CANARY_NOOP_ACTIONS = {"HOLD"}
 LIVE_CANARY_STATE_PENDING = "claim_pending_manual_clearance_required"
 LIVE_CANARY_SUBMISSION_CAP_BLOCKER = "live_canary_existing_position_exceeds_cap"
+LIVE_CANARY_REGULAR_SESSION_BLOCKER = "live_canary_submit_outside_regular_session"
+LIVE_CANARY_SIGNAL_DATE_UNPARSEABLE = "live_canary_signal_date_unparseable"
+LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_MISSING = "live_canary_broker_snapshot_as_of_missing"
+LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_UNPARSEABLE = "live_canary_broker_snapshot_as_of_unparseable"
+LIVE_CANARY_REGULAR_SESSION_OPEN = time(hour=9, minute=30, second=0)
+LIVE_CANARY_REGULAR_SESSION_CLOSE = time(hour=16, minute=0, second=0)
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,96 @@ def _chicago_now() -> datetime:
     if ZoneInfo is not None:
         return datetime.now(ZoneInfo("America/Chicago")).replace(microsecond=0)
     return datetime.now().replace(microsecond=0)
+
+
+def _normalize_timestamp(timestamp: datetime | None) -> datetime:
+    resolved = timestamp or _chicago_now()
+    if ZoneInfo is not None and resolved.tzinfo is None:
+        resolved = resolved.replace(tzinfo=ZoneInfo("America/Chicago"))
+    return resolved.replace(microsecond=0)
+
+
+def _to_new_york_time(timestamp: datetime) -> datetime:
+    if ZoneInfo is None:
+        return timestamp
+    return timestamp.astimezone(ZoneInfo("America/New_York"))
+
+
+def _parse_iso_timestamp(value: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if ZoneInfo is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("America/Chicago"))
+    return parsed
+
+
+def _is_new_york_regular_session_open(timestamp_new_york: datetime) -> bool:
+    if timestamp_new_york.weekday() >= 5:
+        return False
+    current_time = timestamp_new_york.timetz().replace(tzinfo=None)
+    return LIVE_CANARY_REGULAR_SESSION_OPEN <= current_time <= LIVE_CANARY_REGULAR_SESSION_CLOSE
+
+
+def _prior_trading_weekday(day: date) -> date:
+    current = day - timedelta(days=1)
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
+def _latest_completed_regular_session_date(timestamp_new_york: datetime) -> date:
+    if timestamp_new_york.weekday() >= 5:
+        return _prior_trading_weekday(timestamp_new_york.date())
+    current_time = timestamp_new_york.timetz().replace(tzinfo=None)
+    if current_time > LIVE_CANARY_REGULAR_SESSION_CLOSE:
+        return timestamp_new_york.date()
+    return _prior_trading_weekday(timestamp_new_york.date())
+
+
+def _live_submit_readiness_messages(
+    *,
+    plan: ExecutionPlan,
+    timestamp: datetime,
+    broker_snapshot_max_age: timedelta,
+) -> list[str]:
+    messages: list[str] = []
+    timestamp_new_york = _to_new_york_time(timestamp)
+
+    if not _is_new_york_regular_session_open(timestamp_new_york):
+        messages.append(LIVE_CANARY_REGULAR_SESSION_BLOCKER)
+
+    expected_signal_date = _latest_completed_regular_session_date(timestamp_new_york)
+    try:
+        signal_date = date.fromisoformat(plan.signal.date)
+    except ValueError:
+        messages.append(LIVE_CANARY_SIGNAL_DATE_UNPARSEABLE)
+    else:
+        if signal_date < expected_signal_date:
+            messages.append(
+                f"live_canary_signal_stale:{signal_date.isoformat()}:{expected_signal_date.isoformat()}"
+            )
+
+    broker_as_of = plan.broker_snapshot.as_of
+    if broker_as_of is None or broker_as_of.strip() == "":
+        messages.append(LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_MISSING)
+        return messages
+
+    try:
+        broker_as_of_dt = _parse_iso_timestamp(broker_as_of)
+    except ValueError:
+        messages.append(LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_UNPARSEABLE)
+        return messages
+
+    broker_snapshot_age = timestamp - broker_as_of_dt.astimezone(timestamp.tzinfo) if timestamp.tzinfo else timestamp - broker_as_of_dt
+    if broker_snapshot_age > broker_snapshot_max_age:
+        messages.append(
+            "live_canary_broker_snapshot_stale:"
+            f"{int(broker_snapshot_age.total_seconds())}:"
+            f"{int(broker_snapshot_max_age.total_seconds())}"
+        )
+    return messages
 
 
 def _dedupe_strings(items: list[str]) -> list[str]:
@@ -290,9 +387,12 @@ def evaluate_live_canary(
     allowed_symbols: set[str] | None = None,
     max_long_shares: int = DEFAULT_LIVE_CANARY_MAX_LONG_SHARES,
     timestamp: datetime | None = None,
+    broker_snapshot_max_age: timedelta = DEFAULT_LIVE_CANARY_BROKER_SNAPSHOT_MAX_AGE,
 ) -> LiveCanaryEvaluation:
     if max_long_shares <= 0:
         raise ValueError("max_long_shares must be > 0.")
+    if broker_snapshot_max_age <= timedelta(0):
+        raise ValueError("broker_snapshot_max_age must be > 0.")
 
     resolved_allowed_symbols = {
         symbol.strip().upper()
@@ -309,6 +409,7 @@ def evaluate_live_canary(
     blockers: list[str] = list(plan.blockers)
     warnings: list[str] = list(plan.warnings)
     orders: list[LiveCanaryOrder] = []
+    resolved_timestamp = _normalize_timestamp(timestamp)
 
     if account_id is None:
         blockers.append("live_canary_requires_account_binding")
@@ -320,6 +421,16 @@ def evaluate_live_canary(
     armed = bool(live_submit_requested and account_id is not None and arm_value == account_id)
     if live_submit_requested and not armed:
         blockers.append("live_canary_not_armed")
+
+    readiness_messages = _live_submit_readiness_messages(
+        plan=plan,
+        timestamp=resolved_timestamp,
+        broker_snapshot_max_age=broker_snapshot_max_age,
+    )
+    if live_submit_requested:
+        blockers.extend(readiness_messages)
+    else:
+        warnings.extend(readiness_messages)
 
     mode, action_blockers = _action_support_mode(signal, allowed_symbols=resolved_allowed_symbols)
     blockers.extend(action_blockers)
@@ -396,7 +507,7 @@ def evaluate_live_canary(
         decision = "dry_run_ready"
 
     return LiveCanaryEvaluation(
-        timestamp_chicago=(timestamp or _chicago_now()).isoformat(),
+        timestamp_chicago=resolved_timestamp.isoformat(),
         account_id=account_id,
         broker_account_id=broker_account_id,
         signal=signal,

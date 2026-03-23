@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,7 @@ from trading_codex.execution import (
     TastytradeBrokerExecutionAdapter,
     build_execution_plan,
     parse_signal_payload,
+    resolve_timestamp,
 )
 from trading_codex.execution.live_canary import (
     DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS,
@@ -36,17 +36,6 @@ from trading_codex.execution.live_canary import (
     response_text_from_live_submission,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None  # type: ignore[assignment]
-
-
-def _now_chicago_iso() -> str:
-    if ZoneInfo is not None:
-        return datetime.now(ZoneInfo("America/Chicago")).replace(microsecond=0).isoformat()
-    return datetime.now().replace(microsecond=0).isoformat()
 
 
 def _load_signal_from_file(path: Path) -> dict[str, Any]:
@@ -215,12 +204,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Optional tastytrade secrets env file. If omitted, auto-loads {DEFAULT_TASTYTRADE_SECRETS_PATH} when present.",
     )
+    parser.add_argument("--timestamp", type=str, default=None, help="Optional ISO timestamp override for deterministic tests.")
     parser.add_argument("--emit", choices=["json", "text"], default="json", help="Stdout format.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    timestamp = resolve_timestamp(args.timestamp)
     audit_path = live_canary_audit_path(args.base_dir)
 
     raw_signal = _load_signal_from_file(args.signal_json_file)
@@ -230,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     account_id = normalize_live_canary_account(args.live_canary_account)
 
     if account_id is None:
-        timestamp_chicago = _now_chicago_iso()
+        timestamp_chicago = timestamp.isoformat()
         response_text = "live_canary_requires_account_binding"
         rows = _blocked_rows_from_signal(
             timestamp_chicago=timestamp_chicago,
@@ -296,9 +287,10 @@ def main(argv: list[str] | None = None) -> int:
             live_submit_requested=bool(args.live_submit),
             arm_live_canary=args.arm_live_canary,
             allowed_symbols=set(DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS),
+            timestamp=timestamp,
         )
     except Exception as exc:
-        timestamp_chicago = _now_chicago_iso()
+        timestamp_chicago = timestamp.isoformat()
         response_text = str(exc)
         rows = _blocked_rows_from_signal(
             timestamp_chicago=timestamp_chicago,

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,7 @@ def _event_id(payload: dict[str, object]) -> str:
 
 def _signal_payload(
     *,
+    date: str = "2026-03-19",
     strategy: str = "dual_mom_vol10_cash",
     action: str = "RESIZE",
     symbol: str = "EFA",
@@ -58,7 +60,7 @@ def _signal_payload(
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema_name": "next_action",
-        "date": "2026-03-19",
+        "date": date,
         "strategy": strategy,
         "action": action,
         "symbol": symbol,
@@ -75,11 +77,13 @@ def _signal_payload(
 def _broker_snapshot(
     *positions: dict[str, object],
     account_id: str = "5WT00001",
+    as_of: str | None = None,
     buying_power: float = 20_000.0,
 ) -> dict[str, object]:
     return {
         "broker_name": "tastytrade",
         "account_id": account_id,
+        "as_of": as_of,
         "buying_power": buying_power,
         "positions": list(positions),
     }
@@ -90,9 +94,10 @@ def _build_plan(
     *,
     positions: list[dict[str, object]],
     account_id: str = "5WT00001",
+    as_of: str | None = None,
 ) -> object:
     signal = parse_signal_payload(signal_payload)
-    broker = parse_broker_snapshot(_broker_snapshot(*positions, account_id=account_id))
+    broker = parse_broker_snapshot(_broker_snapshot(*positions, account_id=account_id, as_of=as_of))
     return build_execution_plan(
         signal=signal,
         broker_snapshot=broker,
@@ -105,6 +110,10 @@ def _build_plan(
         broker_source_ref=f"tastytrade:{account_id}",
         data_dir=None,
     )
+
+
+def _timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value)
 
 
 def test_live_canary_blocks_missing_account_binding() -> None:
@@ -143,8 +152,9 @@ def test_live_canary_blocks_mismatched_account_binding() -> None:
 
 def test_live_canary_blocks_missing_arming() -> None:
     plan = _build_plan(
-        _signal_payload(),
+        _signal_payload(date="2026-03-20"),
         positions=[{"symbol": "EFA", "shares": 82, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
     )
 
     evaluation = evaluate_live_canary(
@@ -152,6 +162,7 @@ def test_live_canary_blocks_missing_arming() -> None:
         live_canary_account="5WT00001",
         live_submit_requested=True,
         arm_live_canary=None,
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
     )
 
     assert evaluation.decision == "blocked"
@@ -218,6 +229,7 @@ def test_live_canary_caps_buy_to_one_share_deterministically() -> None:
 def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> None:
     plan = _build_plan(
         _signal_payload(
+            date="2026-03-20",
             action="ROTATE",
             symbol="EFA",
             target_shares=100,
@@ -225,6 +237,7 @@ def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> No
             resize_new_shares=None,
         ),
         positions=[{"symbol": "BIL", "shares": 1, "price": 91.20, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
     )
 
     evaluation = evaluate_live_canary(
@@ -232,6 +245,7 @@ def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> No
         live_canary_account="5WT00001",
         live_submit_requested=True,
         arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
     )
 
     assert evaluation.decision == "ready_live_submit"
@@ -240,6 +254,110 @@ def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> No
         ("EFA", "BUY", 1),
     ]
     assert all(order.executable_qty <= 1 for order in evaluation.orders)
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected_decision", "expected_blocker"),
+    [
+        ("2026-03-23T10:45:00-04:00", "ready_live_submit", None),
+        ("2026-03-23T09:29:59-04:00", "blocked", "live_canary_submit_outside_regular_session"),
+    ],
+)
+def test_live_canary_live_submit_session_gate(
+    timestamp: str,
+    expected_decision: str,
+    expected_blocker: str | None,
+) -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-03-20"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp(timestamp),
+    )
+
+    assert evaluation.decision == expected_decision
+    if expected_blocker is None:
+        assert "live_canary_submit_outside_regular_session" not in evaluation.blockers
+    else:
+        assert expected_blocker in evaluation.blockers
+
+
+def test_live_canary_blocks_stale_signal_date_for_live_submit() -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-03-19"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert evaluation.decision == "blocked"
+    assert "live_canary_signal_stale:2026-03-19:2026-03-20" in evaluation.blockers
+
+
+@pytest.mark.parametrize(
+    ("as_of", "expected_blocker"),
+    [
+        (None, "live_canary_broker_snapshot_as_of_missing"),
+        ("not-a-timestamp", "live_canary_broker_snapshot_as_of_unparseable"),
+        ("2026-03-23T10:25:00-04:00", "live_canary_broker_snapshot_stale:1200:900"),
+    ],
+)
+def test_live_canary_blocks_stale_or_invalid_broker_snapshot_for_live_submit(
+    as_of: str | None,
+    expected_blocker: str,
+) -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-03-20"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of=as_of,
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert evaluation.decision == "blocked"
+    assert expected_blocker in evaluation.blockers
+
+
+def test_live_canary_dry_run_warns_but_does_not_hard_block_submit_time_readiness_gates() -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-03-18"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of=None,
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=False,
+        arm_live_canary=None,
+        timestamp=_timestamp("2026-03-23T08:00:00-04:00"),
+    )
+
+    assert evaluation.decision == "dry_run_ready"
+    assert evaluation.blockers == []
+    assert "live_canary_submit_outside_regular_session" in evaluation.warnings
+    assert "live_canary_signal_stale:2026-03-18:2026-03-20" in evaluation.warnings
+    assert "live_canary_broker_snapshot_as_of_missing" in evaluation.warnings
 
 
 @pytest.mark.parametrize(
@@ -467,3 +585,60 @@ def test_live_canary_guardrails_cli_blank_explicit_account_fails_closed_even_if_
     assert payload["decision"] == "blocked"
     assert payload["account_id"] is None
     assert payload["blockers"] == ["live_canary_requires_account_binding"]
+
+
+def test_live_canary_guardrails_cli_live_submit_blocks_stale_broker_snapshot_with_audit(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    signal_path = tmp_path / "signal.json"
+    signal_path.write_text(json.dumps(_signal_payload(date="2026-03-20")), encoding="utf-8")
+    positions_path = tmp_path / "positions.json"
+    positions_path.write_text(
+        json.dumps(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:25:00-04:00",
+            )
+        ),
+        encoding="utf-8",
+    )
+    base_dir = tmp_path / "live_canary"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "live_canary_guardrails.py"),
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "file",
+            "--positions-file",
+            str(positions_path),
+            "--live-canary-account",
+            "5WT00001",
+            "--live-submit",
+            "--arm-live-canary",
+            "5WT00001",
+            "--timestamp",
+            "2026-03-23T10:45:00-04:00",
+            "--base-dir",
+            str(base_dir),
+            "--emit",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+        env=env,
+    )
+
+    assert proc.returncode == 2, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    payload = json.loads(proc.stdout)
+    assert payload["decision"] == "blocked"
+    assert payload["blockers"] == ["live_canary_broker_snapshot_stale:1200:900"]
+    assert payload["response_text"] == "live_canary_broker_snapshot_stale:1200:900"
+
+    audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["decision"] == "blocked"
+    assert audit_rows[0]["response_text"] == "live_canary_broker_snapshot_stale:1200:900"
