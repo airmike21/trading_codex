@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -44,6 +45,8 @@ LIVE_CANARY_NOOP_ACTIONS = {"HOLD"}
 LIVE_CANARY_STATE_PENDING = "claim_pending_manual_clearance_required"
 LIVE_CANARY_SUBMISSION_CAP_BLOCKER = "live_canary_existing_position_exceeds_cap"
 LIVE_CANARY_REGULAR_SESSION_BLOCKER = "live_canary_submit_outside_regular_session"
+LIVE_CANARY_MARKET_HOLIDAY_BLOCKER_PREFIX = "live_canary_submit_market_holiday"
+LIVE_CANARY_SIGNAL_DATE_MISMATCH_PREFIX = "live_canary_signal_date_mismatch"
 LIVE_CANARY_SIGNAL_DATE_UNPARSEABLE = "live_canary_signal_date_unparseable"
 LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_MISSING = "live_canary_broker_snapshot_as_of_missing"
 LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_UNPARSEABLE = "live_canary_broker_snapshot_as_of_unparseable"
@@ -113,8 +116,82 @@ def _parse_iso_timestamp(value: str) -> datetime:
     return parsed
 
 
+def _observed_fixed_market_holiday(holiday: date) -> date:
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, occurrence: int) -> date:
+    first_day = date(year, month, 1)
+    offset = (weekday - first_day.weekday()) % 7
+    return first_day + timedelta(days=offset + (occurrence - 1) * 7)
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        last_day = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+    offset = (last_day.weekday() - weekday) % 7
+    return last_day - timedelta(days=offset)
+
+
+def _easter_sunday(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+@lru_cache(maxsize=None)
+def _nyse_market_holidays(year: int) -> frozenset[date]:
+    holidays: set[date] = set()
+
+    new_year = date(year, 1, 1)
+    if new_year.weekday() < 5:
+        holidays.add(new_year)
+    elif new_year.weekday() == 6:
+        holidays.add(date(year, 1, 2))
+
+    if year >= 1998:
+        holidays.add(_nth_weekday_of_month(year, 1, 0, 3))
+    holidays.add(_nth_weekday_of_month(year, 2, 0, 3))
+    holidays.add(_easter_sunday(year) - timedelta(days=2))
+    holidays.add(_last_weekday_of_month(year, 5, 0))
+    if year >= 2022:
+        holidays.add(_observed_fixed_market_holiday(date(year, 6, 19)))
+    holidays.add(_observed_fixed_market_holiday(date(year, 7, 4)))
+    holidays.add(_nth_weekday_of_month(year, 9, 0, 1))
+    holidays.add(_nth_weekday_of_month(year, 11, 3, 4))
+    holidays.add(_observed_fixed_market_holiday(date(year, 12, 25)))
+
+    return frozenset(holidays)
+
+
+def _is_new_york_market_holiday(day: date) -> bool:
+    return day in _nyse_market_holidays(day.year)
+
+
+def _is_new_york_regular_trading_day(day: date) -> bool:
+    return day.weekday() < 5 and not _is_new_york_market_holiday(day)
+
+
 def _is_new_york_regular_session_open(timestamp_new_york: datetime) -> bool:
-    if timestamp_new_york.weekday() >= 5:
+    if not _is_new_york_regular_trading_day(timestamp_new_york.date()):
         return False
     current_time = timestamp_new_york.timetz().replace(tzinfo=None)
     return LIVE_CANARY_REGULAR_SESSION_OPEN <= current_time <= LIVE_CANARY_REGULAR_SESSION_CLOSE
@@ -122,13 +199,13 @@ def _is_new_york_regular_session_open(timestamp_new_york: datetime) -> bool:
 
 def _prior_trading_weekday(day: date) -> date:
     current = day - timedelta(days=1)
-    while current.weekday() >= 5:
+    while not _is_new_york_regular_trading_day(current):
         current -= timedelta(days=1)
     return current
 
 
 def _latest_completed_regular_session_date(timestamp_new_york: datetime) -> date:
-    if timestamp_new_york.weekday() >= 5:
+    if not _is_new_york_regular_trading_day(timestamp_new_york.date()):
         return _prior_trading_weekday(timestamp_new_york.date())
     current_time = timestamp_new_york.timetz().replace(tzinfo=None)
     if current_time > LIVE_CANARY_REGULAR_SESSION_CLOSE:
@@ -144,8 +221,11 @@ def _live_submit_readiness_messages(
 ) -> list[str]:
     messages: list[str] = []
     timestamp_new_york = _to_new_york_time(timestamp)
+    session_day = timestamp_new_york.date()
 
-    if not _is_new_york_regular_session_open(timestamp_new_york):
+    if _is_new_york_market_holiday(session_day):
+        messages.append(f"{LIVE_CANARY_MARKET_HOLIDAY_BLOCKER_PREFIX}:{session_day.isoformat()}")
+    elif not _is_new_york_regular_session_open(timestamp_new_york):
         messages.append(LIVE_CANARY_REGULAR_SESSION_BLOCKER)
 
     expected_signal_date = _latest_completed_regular_session_date(timestamp_new_york)
@@ -154,9 +234,10 @@ def _live_submit_readiness_messages(
     except ValueError:
         messages.append(LIVE_CANARY_SIGNAL_DATE_UNPARSEABLE)
     else:
-        if signal_date < expected_signal_date:
+        if signal_date != expected_signal_date:
             messages.append(
-                f"live_canary_signal_stale:{signal_date.isoformat()}:{expected_signal_date.isoformat()}"
+                f"{LIVE_CANARY_SIGNAL_DATE_MISMATCH_PREFIX}:"
+                f"{signal_date.isoformat()}:{expected_signal_date.isoformat()}"
             )
 
     broker_as_of = plan.broker_snapshot.as_of

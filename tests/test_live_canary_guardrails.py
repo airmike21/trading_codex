@@ -289,9 +289,21 @@ def test_live_canary_live_submit_session_gate(
         assert expected_blocker in evaluation.blockers
 
 
-def test_live_canary_blocks_stale_signal_date_for_live_submit() -> None:
+@pytest.mark.parametrize(
+    ("signal_date", "expected_blocker"),
+    [
+        ("2026-03-19", "live_canary_signal_date_mismatch:2026-03-19:2026-03-20"),
+        ("2026-03-23", "live_canary_signal_date_mismatch:2026-03-23:2026-03-20"),
+        ("2026-03-24", "live_canary_signal_date_mismatch:2026-03-24:2026-03-20"),
+    ],
+    ids=["older", "same_day", "future_dated"],
+)
+def test_live_canary_blocks_non_latest_completed_signal_date_for_live_submit(
+    signal_date: str,
+    expected_blocker: str,
+) -> None:
     plan = _build_plan(
-        _signal_payload(date="2026-03-19"),
+        _signal_payload(date=signal_date),
         positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
         as_of="2026-03-23T10:40:00-04:00",
     )
@@ -305,7 +317,26 @@ def test_live_canary_blocks_stale_signal_date_for_live_submit() -> None:
     )
 
     assert evaluation.decision == "blocked"
-    assert "live_canary_signal_stale:2026-03-19:2026-03-20" in evaluation.blockers
+    assert expected_blocker in evaluation.blockers
+
+
+def test_live_canary_blocks_market_holiday_during_nominal_session_hours() -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-07-02"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-07-03T10:40:00-04:00",
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-07-03T10:45:00-04:00"),
+    )
+
+    assert evaluation.decision == "blocked"
+    assert "live_canary_submit_market_holiday:2026-07-03" in evaluation.blockers
 
 
 @pytest.mark.parametrize(
@@ -356,8 +387,57 @@ def test_live_canary_dry_run_warns_but_does_not_hard_block_submit_time_readiness
     assert evaluation.decision == "dry_run_ready"
     assert evaluation.blockers == []
     assert "live_canary_submit_outside_regular_session" in evaluation.warnings
-    assert "live_canary_signal_stale:2026-03-18:2026-03-20" in evaluation.warnings
+    assert "live_canary_signal_date_mismatch:2026-03-18:2026-03-20" in evaluation.warnings
     assert "live_canary_broker_snapshot_as_of_missing" in evaluation.warnings
+
+
+@pytest.mark.parametrize(
+    ("signal_date", "timestamp", "as_of", "expected_warning"),
+    [
+        (
+            "2026-03-23",
+            "2026-03-23T10:45:00-04:00",
+            "2026-03-23T10:40:00-04:00",
+            "live_canary_signal_date_mismatch:2026-03-23:2026-03-20",
+        ),
+        (
+            "2026-03-24",
+            "2026-03-23T10:45:00-04:00",
+            "2026-03-23T10:40:00-04:00",
+            "live_canary_signal_date_mismatch:2026-03-24:2026-03-20",
+        ),
+        (
+            "2026-07-02",
+            "2026-07-03T10:45:00-04:00",
+            "2026-07-03T10:40:00-04:00",
+            "live_canary_submit_market_holiday:2026-07-03",
+        ),
+    ],
+    ids=["same_day_signal", "future_signal", "market_holiday"],
+)
+def test_live_canary_dry_run_preserves_usability_for_signal_mismatch_and_holiday_conditions(
+    signal_date: str,
+    timestamp: str,
+    as_of: str,
+    expected_warning: str,
+) -> None:
+    plan = _build_plan(
+        _signal_payload(date=signal_date),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of=as_of,
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=False,
+        arm_live_canary=None,
+        timestamp=_timestamp(timestamp),
+    )
+
+    assert evaluation.decision == "dry_run_ready"
+    assert evaluation.blockers == []
+    assert expected_warning in evaluation.warnings
 
 
 @pytest.mark.parametrize(
