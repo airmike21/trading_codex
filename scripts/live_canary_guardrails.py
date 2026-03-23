@@ -48,6 +48,7 @@ class PreSubmitReconciliation:
     evaluation: LiveCanaryEvaluation
     blockers: list[str]
     response_text: str
+    details: dict[str, Any] | None = None
 
     @property
     def matched(self) -> bool:
@@ -77,9 +78,10 @@ def _signal_result(
     event_state_path: Path | None,
     orders: list[dict[str, Any]] | None = None,
     live_submission: dict[str, Any] | None = None,
+    pre_submit_reconciliation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rendered_orders = list(orders or [])
-    return {
+    payload = {
         "schema_name": "live_canary_guardrail_result",
         "schema_version": 1,
         "timestamp_chicago": timestamp_chicago,
@@ -102,6 +104,25 @@ def _signal_result(
         "response_text": response_text,
         "symbol": signal.symbol,
         "warnings": list(warnings),
+    }
+    if pre_submit_reconciliation is not None:
+        payload["pre_submit_reconciliation"] = pre_submit_reconciliation
+    return payload
+
+
+def _render_live_canary_order(order: Any) -> dict[str, Any]:
+    return {
+        "cap_applied": order.cap_applied,
+        "classification": order.classification,
+        "current_broker_shares": order.current_broker_shares,
+        "desired_canary_shares": order.desired_canary_shares,
+        "desired_signal_shares": order.desired_signal_shares,
+        "estimated_notional": order.estimated_notional,
+        "executable_qty": order.executable_qty,
+        "reference_price": order.reference_price,
+        "requested_qty": order.requested_qty,
+        "side": order.side,
+        "symbol": order.symbol,
     }
 
 
@@ -190,19 +211,26 @@ def _synthetic_blocked_reconciliation_evaluation(
     )
 
 
-def _compare_live_canary_order_assumptions(
+def _reconciliation_order_drift(
     *,
     original_evaluation: LiveCanaryEvaluation,
     refreshed_evaluation: LiveCanaryEvaluation,
-) -> list[str]:
+) -> tuple[list[str], dict[str, Any] | None]:
     original_by_symbol = {order.symbol: order for order in original_evaluation.orders}
     refreshed_by_symbol = {order.symbol: order for order in refreshed_evaluation.orders}
     blockers: list[str] = []
+    drift: dict[str, Any] = {
+        "changed_orders": [],
+        "extra_orders": [],
+        "missing_orders": [],
+    }
 
     for symbol in sorted(set(original_by_symbol) - set(refreshed_by_symbol)):
         blockers.append(f"live_canary_pre_submit_order_missing:{symbol}")
+        drift["missing_orders"].append(_render_live_canary_order(original_by_symbol[symbol]))
     for symbol in sorted(set(refreshed_by_symbol) - set(original_by_symbol)):
         blockers.append(f"live_canary_pre_submit_order_extra:{symbol}")
+        drift["extra_orders"].append(_render_live_canary_order(refreshed_by_symbol[symbol]))
 
     compared_fields = (
         "side",
@@ -214,6 +242,7 @@ def _compare_live_canary_order_assumptions(
     for symbol in sorted(set(original_by_symbol) & set(refreshed_by_symbol)):
         original_order = original_by_symbol[symbol]
         refreshed_order = refreshed_by_symbol[symbol]
+        changes: list[dict[str, Any]] = []
         for field_name in compared_fields:
             original_value = getattr(original_order, field_name)
             refreshed_value = getattr(refreshed_order, field_name)
@@ -222,7 +251,102 @@ def _compare_live_canary_order_assumptions(
                     "live_canary_pre_submit_order_changed:"
                     f"{symbol}:{field_name}:{original_value}:{refreshed_value}"
                 )
-    return blockers
+                changes.append(
+                    {
+                        "field": field_name,
+                        "original_value": original_value,
+                        "refreshed_value": refreshed_value,
+                    }
+                )
+        if changes:
+            drift["changed_orders"].append(
+                {
+                    "changes": changes,
+                    "original_order": _render_live_canary_order(original_order),
+                    "refreshed_order": _render_live_canary_order(refreshed_order),
+                    "symbol": symbol,
+                }
+            )
+
+    if not any(drift.values()):
+        return blockers, None
+    return blockers, drift
+
+
+def _build_reconciliation_details(
+    *,
+    original_evaluation: LiveCanaryEvaluation,
+    refreshed_evaluation: LiveCanaryEvaluation,
+    blockers: list[str],
+    order_drift: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "blockers": list(blockers),
+        "matched": not blockers,
+        "original_decision": original_evaluation.decision,
+        "refreshed_decision": refreshed_evaluation.decision,
+    }
+    if refreshed_evaluation.blockers:
+        details["refreshed_blockers"] = list(refreshed_evaluation.blockers)
+    if original_evaluation.account_id != refreshed_evaluation.account_id:
+        details["account_binding"] = {
+            "original": original_evaluation.account_id,
+            "refreshed": refreshed_evaluation.account_id,
+        }
+    if original_evaluation.broker_account_id != refreshed_evaluation.broker_account_id:
+        details["broker_account"] = {
+            "original": original_evaluation.broker_account_id,
+            "refreshed": refreshed_evaluation.broker_account_id,
+        }
+    if order_drift is not None:
+        details["order_drift"] = order_drift
+    if error is not None:
+        details["error"] = error
+    return details
+
+
+def _reconciliation_error_result(
+    *,
+    original_evaluation: LiveCanaryEvaluation,
+    stage: str,
+    exc: Exception,
+    timestamp: datetime,
+) -> PreSubmitReconciliation:
+    blocker = _reconciliation_error_blocker(exc)
+    evaluation = _synthetic_blocked_reconciliation_evaluation(
+        original_evaluation=original_evaluation,
+        blocker=blocker,
+        timestamp=timestamp,
+    )
+    blockers = [blocker]
+    return PreSubmitReconciliation(
+        plan=None,
+        evaluation=evaluation,
+        blockers=blockers,
+        response_text=blocker,
+        details=_build_reconciliation_details(
+            original_evaluation=original_evaluation,
+            refreshed_evaluation=evaluation,
+            blockers=blockers,
+            error={
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+                "stage": stage,
+            },
+        ),
+    )
+
+
+def _compare_live_canary_order_assumptions(
+    *,
+    original_evaluation: LiveCanaryEvaluation,
+    refreshed_evaluation: LiveCanaryEvaluation,
+) -> tuple[list[str], dict[str, Any] | None]:
+    return _reconciliation_order_drift(
+        original_evaluation=original_evaluation,
+        refreshed_evaluation=refreshed_evaluation,
+    )
 
 
 def _reconcile_live_canary_pre_submit(
@@ -236,6 +360,14 @@ def _reconcile_live_canary_pre_submit(
 ) -> PreSubmitReconciliation:
     try:
         refreshed_snapshot = broker_adapter.load_snapshot()
+    except Exception as exc:
+        return _reconciliation_error_result(
+            original_evaluation=original_evaluation,
+            stage="refreshed_snapshot",
+            exc=exc,
+            timestamp=timestamp,
+        )
+    try:
         refreshed_plan = build_execution_plan(
             signal=original_plan.signal,
             broker_snapshot=refreshed_snapshot,
@@ -248,6 +380,14 @@ def _reconcile_live_canary_pre_submit(
             broker_source_ref=original_plan.broker_source_ref,
             data_dir=None,
         )
+    except Exception as exc:
+        return _reconciliation_error_result(
+            original_evaluation=original_evaluation,
+            stage="refreshed_plan_build",
+            exc=exc,
+            timestamp=timestamp,
+        )
+    try:
         refreshed_evaluation = evaluate_live_canary(
             plan=refreshed_plan,
             live_canary_account=account_id,
@@ -257,17 +397,11 @@ def _reconcile_live_canary_pre_submit(
             timestamp=timestamp,
         )
     except Exception as exc:
-        blocker = _reconciliation_error_blocker(exc)
-        evaluation = _synthetic_blocked_reconciliation_evaluation(
+        return _reconciliation_error_result(
             original_evaluation=original_evaluation,
-            blocker=blocker,
+            stage="refreshed_evaluation",
+            exc=exc,
             timestamp=timestamp,
-        )
-        return PreSubmitReconciliation(
-            plan=None,
-            evaluation=evaluation,
-            blockers=[blocker],
-            response_text=blocker,
         )
 
     blockers: list[str] = []
@@ -291,13 +425,12 @@ def _reconcile_live_canary_pre_submit(
             f"{_normalize_reconciliation_value(original_evaluation.broker_account_id)}:"
             f"{_normalize_reconciliation_value(refreshed_evaluation.broker_account_id)}"
         )
+    order_blockers, order_drift = _compare_live_canary_order_assumptions(
+        original_evaluation=original_evaluation,
+        refreshed_evaluation=refreshed_evaluation,
+    )
     if not blockers:
-        blockers.extend(
-            _compare_live_canary_order_assumptions(
-                original_evaluation=original_evaluation,
-                refreshed_evaluation=refreshed_evaluation,
-            )
-        )
+        blockers.extend(order_blockers)
 
     blockers = sorted(set(blockers))
     return PreSubmitReconciliation(
@@ -305,7 +438,38 @@ def _reconcile_live_canary_pre_submit(
         evaluation=refreshed_evaluation,
         blockers=blockers,
         response_text="; ".join(blockers) if blockers else "pre-submit reconciliation matched",
+        details=_build_reconciliation_details(
+            original_evaluation=original_evaluation,
+            refreshed_evaluation=refreshed_evaluation,
+            blockers=blockers,
+            order_drift=order_drift,
+        ),
     )
+
+
+def _live_canary_event_record(
+    *,
+    account_id: str,
+    signal: Any,
+    generated_at_chicago: str,
+    decision: str,
+    manual_clearance_required: bool,
+    response_text: str,
+    result: str,
+    pre_submit_reconciliation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    record = {
+        "account_id": account_id,
+        "decision": decision,
+        "event_id": signal.event_id,
+        "generated_at_chicago": generated_at_chicago,
+        "manual_clearance_required": manual_clearance_required,
+        "response_text": response_text,
+        "result": result,
+    }
+    if pre_submit_reconciliation is not None:
+        record["pre_submit_reconciliation"] = pre_submit_reconciliation
+    return record
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -486,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
     duplicate = False
     event_state_path: Path | None = None
     live_submission_payload: dict[str, Any] | None = None
+    pre_submit_reconciliation: dict[str, Any] | None = None
     response_text = "dry-run only"
 
     if final_blockers:
@@ -542,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
                 plan = plan if reconciliation.plan is None else reconciliation.plan
                 evaluation = reconciliation.evaluation
                 final_warnings = list(evaluation.warnings)
+                pre_submit_reconciliation = reconciliation.details
                 if reconciliation.matched:
                     simulated_export = build_live_canary_submission_export(plan=plan, evaluation=evaluation)
                     live_max_order_notional, live_max_order_qty = live_canary_live_submit_limits(simulated_export)
@@ -585,32 +751,34 @@ def main(argv: list[str] | None = None) -> int:
                         }
                         finalize_live_canary_event(
                             state_path=event_state_path,
-                            record={
-                                "account_id": account_id,
-                                "decision": final_decision,
-                                "event_id": signal.event_id,
-                                "generated_at_chicago": evaluation.timestamp_chicago,
-                                "manual_clearance_required": bool(
+                            record=_live_canary_event_record(
+                                account_id=account_id,
+                                signal=signal,
+                                generated_at_chicago=evaluation.timestamp_chicago,
+                                decision=final_decision,
+                                manual_clearance_required=bool(
                                     live_submission.manual_clearance_required or not live_submission.submission_succeeded
                                 ),
-                                "response_text": response_text,
-                                "result": live_submission.submission_result,
-                            },
+                                response_text=response_text,
+                                result=live_submission.submission_result,
+                                pre_submit_reconciliation=pre_submit_reconciliation,
+                            ),
                         )
                     except Exception as exc:
                         final_decision = "live_submit_error"
                         response_text = str(exc)
                         finalize_live_canary_event(
                             state_path=event_state_path,
-                            record={
-                                "account_id": account_id,
-                                "decision": final_decision,
-                                "event_id": signal.event_id,
-                                "generated_at_chicago": evaluation.timestamp_chicago,
-                                "manual_clearance_required": True,
-                                "response_text": response_text,
-                                "result": LIVE_CANARY_STATE_PENDING,
-                            },
+                            record=_live_canary_event_record(
+                                account_id=account_id,
+                                signal=signal,
+                                generated_at_chicago=evaluation.timestamp_chicago,
+                                decision=final_decision,
+                                manual_clearance_required=True,
+                                response_text=response_text,
+                                result=LIVE_CANARY_STATE_PENDING,
+                                pre_submit_reconciliation=pre_submit_reconciliation,
+                            ),
                         )
                 else:
                     final_decision = "blocked"
@@ -618,15 +786,16 @@ def main(argv: list[str] | None = None) -> int:
                     response_text = reconciliation.response_text
                     finalize_live_canary_event(
                         state_path=event_state_path,
-                        record={
-                            "account_id": account_id,
-                            "decision": final_decision,
-                            "event_id": signal.event_id,
-                            "generated_at_chicago": evaluation.timestamp_chicago,
-                            "manual_clearance_required": True,
-                            "response_text": response_text,
-                            "result": LIVE_CANARY_STATE_PENDING,
-                        },
+                        record=_live_canary_event_record(
+                            account_id=account_id,
+                            signal=signal,
+                            generated_at_chicago=evaluation.timestamp_chicago,
+                            decision=final_decision,
+                            manual_clearance_required=True,
+                            response_text=response_text,
+                            result=LIVE_CANARY_STATE_PENDING,
+                            pre_submit_reconciliation=pre_submit_reconciliation,
+                        ),
                     )
 
     final_blockers = sorted(set(final_blockers))
@@ -636,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
         decision=final_decision,
         duplicate=duplicate,
         response_text=response_text,
+        pre_submit_reconciliation=pre_submit_reconciliation,
     )
     append_live_canary_audit(audit_path=audit_path, rows=rows)
     if event_state_path is None and account_id:
@@ -661,22 +831,11 @@ def main(argv: list[str] | None = None) -> int:
         audit_path=audit_path,
         event_state_path=event_state_path,
         orders=[
-            {
-                "cap_applied": order.cap_applied,
-                "classification": order.classification,
-                "current_broker_shares": order.current_broker_shares,
-                "desired_canary_shares": order.desired_canary_shares,
-                "desired_signal_shares": order.desired_signal_shares,
-                "estimated_notional": order.estimated_notional,
-                "executable_qty": order.executable_qty,
-                "reference_price": order.reference_price,
-                "requested_qty": order.requested_qty,
-                "side": order.side,
-                "symbol": order.symbol,
-            }
+            _render_live_canary_order(order)
             for order in evaluation.orders
         ],
         live_submission=live_submission_payload,
+        pre_submit_reconciliation=pre_submit_reconciliation,
     )
     payload["broker_account_id"] = evaluation.broker_account_id
     _emit_result(payload=payload, emit=args.emit)
