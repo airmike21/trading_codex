@@ -32,6 +32,16 @@ from trading_codex.run_archive import build_run_id
 
 LIVE_CANARY_LAUNCH_SCHEMA_NAME = "live_canary_launch_result"
 LIVE_CANARY_LAUNCH_SCHEMA_VERSION = 1
+LIVE_CANARY_LAUNCH_DUPLICATE_ONLY_GATES = (
+    "input_readiness",
+    "account_binding",
+    "manual_arming",
+    "session_readiness",
+    "canary_order_readiness",
+    "affordability",
+    "operator_state_ops",
+    "other_guardrails",
+)
 
 
 def _add_scope_args(parser: argparse.ArgumentParser) -> None:
@@ -584,6 +594,33 @@ def _build_launch_result_path(
     return resolved_base_dir / "launches" / timestamp.date().isoformat() / f"{run_id}.json"
 
 
+def _launch_should_invoke_guardrails(*, requested_live_submit: bool, readiness: dict[str, Any]) -> bool:
+    if not requested_live_submit:
+        return False
+    if readiness.get("verdict") == "ready":
+        return True
+
+    evaluation = readiness.get("evaluation")
+    if not isinstance(evaluation, dict) or evaluation.get("decision") != "ready_live_submit":
+        return False
+
+    gates_by_name = {
+        str(gate.get("gate")): gate
+        for gate in readiness.get("gates", [])
+        if isinstance(gate, dict) and gate.get("gate") is not None
+    }
+    duplicate_gate = gates_by_name.get("duplicate_state") or {}
+    duplicate_blockers = duplicate_gate.get("blocking_reasons") or []
+    if not duplicate_blockers:
+        return False
+
+    for gate_name in LIVE_CANARY_LAUNCH_DUPLICATE_ONLY_GATES:
+        gate_payload = gates_by_name.get(gate_name) or {}
+        if gate_payload.get("blocking_reasons"):
+            return False
+    return True
+
+
 def _run_launch(args: argparse.Namespace, *, timestamp: Any) -> tuple[int, dict[str, Any]]:
     resolved_base_dir = resolve_live_canary_state_base_dir(args.base_dir, create=True)
     readiness = build_live_canary_readiness(
@@ -602,7 +639,11 @@ def _run_launch(args: argparse.Namespace, *, timestamp: Any) -> tuple[int, dict[
 
     submit_exit_code: int | None = None
     submit_payload: dict[str, Any] | None = None
-    if args.live_submit and readiness["verdict"] == "ready":
+    invoke_guardrails = _launch_should_invoke_guardrails(
+        requested_live_submit=bool(args.live_submit),
+        readiness=readiness,
+    )
+    if invoke_guardrails:
         guardrails_args = live_canary_guardrails.build_parser().parse_args(
             _launch_guardrails_argv(args, resolved_base_dir=resolved_base_dir, timestamp=timestamp)
         )
@@ -610,7 +651,7 @@ def _run_launch(args: argparse.Namespace, *, timestamp: Any) -> tuple[int, dict[
 
     if not args.live_submit:
         submit_outcome = "not_requested"
-    elif readiness["verdict"] != "ready":
+    elif submit_payload is None:
         submit_outcome = "not_attempted_readiness_blocked"
     else:
         submit_outcome = str((submit_payload or {}).get("decision") or "submit_path_invoked_without_result")

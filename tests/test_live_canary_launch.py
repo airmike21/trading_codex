@@ -260,6 +260,48 @@ def _run_launch(
     return result, json.loads(captured.out), resolved_base_dir
 
 
+def _patch_launch_tastytrade_adapters(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    readiness_snapshot: dict[str, object],
+    execution_snapshots: tuple[dict[str, object], ...],
+    submit_result: object | None = None,
+    submit_error: Exception | None = None,
+) -> tuple[list[object], list[_SnapshotSequenceAdapter]]:
+    created_position_adapters: list[object] = []
+    created_execution_adapters: list[_SnapshotSequenceAdapter] = []
+
+    class FakeTastytradeBrokerPositionAdapter:
+        def __init__(self, *, account_id: str, client: object | None = None) -> None:
+            del account_id, client
+            self.load_calls = 0
+            created_position_adapters.append(self)
+
+        def load_snapshot(self):
+            self.load_calls += 1
+            return parse_broker_snapshot(readiness_snapshot)
+
+    class FakeTastytradeBrokerExecutionAdapter(_SnapshotSequenceAdapter):
+        def __init__(self, *, account_id: str, client: object | None = None) -> None:
+            del account_id, client
+            super().__init__(*execution_snapshots, submit_result=submit_result, submit_error=submit_error)
+            created_execution_adapters.append(self)
+
+    monkeypatch.setattr(live_canary_readiness_module, "load_tastytrade_secrets", lambda *, secrets_file=None: None)
+    monkeypatch.setattr(live_canary_guardrails, "load_tastytrade_secrets", lambda *, secrets_file=None: None)
+    monkeypatch.setattr(
+        live_canary_readiness_module,
+        "TastytradeBrokerPositionAdapter",
+        FakeTastytradeBrokerPositionAdapter,
+    )
+    monkeypatch.setattr(
+        live_canary_guardrails,
+        "TastytradeBrokerExecutionAdapter",
+        FakeTastytradeBrokerExecutionAdapter,
+    )
+    return created_position_adapters, created_execution_adapters
+
+
 def test_live_canary_launch_live_submit_success_path_records_preflight_and_submit_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -290,36 +332,11 @@ def test_live_canary_launch_live_submit_success_path_records_preflight_and_submi
         },
     )
 
-    created_position_adapters: list[object] = []
-    created_execution_adapters: list[_SnapshotSequenceAdapter] = []
-
-    class FakeTastytradeBrokerPositionAdapter:
-        def __init__(self, *, account_id: str, client: object | None = None) -> None:
-            del account_id, client
-            self.load_calls = 0
-            created_position_adapters.append(self)
-
-        def load_snapshot(self):
-            self.load_calls += 1
-            return parse_broker_snapshot(ready_snapshot)
-
-    class FakeTastytradeBrokerExecutionAdapter(_SnapshotSequenceAdapter):
-        def __init__(self, *, account_id: str, client: object | None = None) -> None:
-            del account_id, client
-            super().__init__(ready_snapshot, refreshed_snapshot, submit_result=submit_result)
-            created_execution_adapters.append(self)
-
-    monkeypatch.setattr(live_canary_readiness_module, "load_tastytrade_secrets", lambda *, secrets_file=None: None)
-    monkeypatch.setattr(live_canary_guardrails, "load_tastytrade_secrets", lambda *, secrets_file=None: None)
-    monkeypatch.setattr(
-        live_canary_readiness_module,
-        "TastytradeBrokerPositionAdapter",
-        FakeTastytradeBrokerPositionAdapter,
-    )
-    monkeypatch.setattr(
-        live_canary_guardrails,
-        "TastytradeBrokerExecutionAdapter",
-        FakeTastytradeBrokerExecutionAdapter,
+    created_position_adapters, created_execution_adapters = _patch_launch_tastytrade_adapters(
+        monkeypatch,
+        readiness_snapshot=ready_snapshot,
+        execution_snapshots=(ready_snapshot, refreshed_snapshot),
+        submit_result=submit_result,
     )
 
     result, payload, _resolved_base_dir = _run_launch(
@@ -428,44 +445,11 @@ def test_live_canary_launch_malformed_state_fails_closed_without_submit_attempt(
     assert "Expecting property name enclosed in double quotes" in blocker
 
 
-@pytest.mark.parametrize(
-    ("protection", "configured_account_id", "broker_account_id", "seed_kind", "expected_blocker"),
-    [
-        ("binding", "5WT99999", ACCOUNT_ID, None, "live_canary_account_binding_mismatch"),
-        (
-            "duplicate_event",
-            ACCOUNT_ID,
-            ACCOUNT_ID,
-            "event",
-            "existing event state blocks exact-event retries for this account/event_id",
-        ),
-        (
-            "session_lock",
-            ACCOUNT_ID,
-            ACCOUNT_ID,
-            "session",
-            "existing session state blocks same-session retries for this account/strategy/signal_date",
-        ),
-    ],
-)
-def test_live_canary_launch_honors_existing_binding_duplicate_and_session_protections(
+def test_live_canary_launch_keeps_binding_mismatch_fail_closed_without_submit_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    protection: str,
-    configured_account_id: str,
-    broker_account_id: str,
-    seed_kind: str | None,
-    expected_blocker: str,
 ) -> None:
-    del protection
-    signal_payload = _signal_payload()
-    base_dir = tmp_path / "live_canary"
-    if seed_kind == "event":
-        _seed_event_state(base_dir, signal_payload)
-    elif seed_kind == "session":
-        _seed_session_state(base_dir, signal_payload)
-
     monkeypatch.setattr(
         live_canary_guardrails,
         "run_guardrails",
@@ -476,22 +460,241 @@ def test_live_canary_launch_honors_existing_binding_duplicate_and_session_protec
         capsys,
         tmp_path=tmp_path,
         broker="file",
-        signal_payload=signal_payload,
+        signal_payload=_signal_payload(),
         positions_payload=_broker_snapshot(
             {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
-            account_id=broker_account_id,
+            account_id=ACCOUNT_ID,
         ),
-        account_id=configured_account_id,
-        base_dir=base_dir,
+        account_id="5WT99999",
+        base_dir=tmp_path / "live_canary",
         live_submit=True,
-        arm_live_canary=configured_account_id,
+        arm_live_canary="5WT99999",
     )
 
     assert result == 2
     assert payload["readiness_verdict"] == "not_ready"
     assert payload["submit_path_invoked"] is False
     assert payload["submit_outcome"] == "not_attempted_readiness_blocked"
-    assert expected_blocker in payload["readiness"]["blocking_reasons"]
+    assert "live_canary_account_binding_mismatch" in payload["readiness"]["blocking_reasons"]
+
+
+@pytest.mark.parametrize(
+    ("seed_kind", "expected_decision", "expected_response"),
+    [
+        ("event", "blocked_duplicate", "submitted"),
+        ("session", "blocked", "live_canary_same_session_submit_locked"),
+    ],
+)
+def test_live_canary_launch_preserves_guarded_duplicate_and_session_lock_protections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    seed_kind: str,
+    expected_decision: str,
+    expected_response: str,
+) -> None:
+    signal_payload = _signal_payload()
+    base_dir = tmp_path / "live_canary"
+    ready_snapshot = _broker_snapshot(
+        {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+        account_id=ACCOUNT_ID,
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+    if seed_kind == "event":
+        _seed_event_state(base_dir, signal_payload)
+    else:
+        _seed_session_state(base_dir, signal_payload)
+
+    _patch_launch_tastytrade_adapters(
+        monkeypatch,
+        readiness_snapshot=ready_snapshot,
+        execution_snapshots=(ready_snapshot,),
+    )
+    result, payload, _resolved_base_dir = _run_launch(
+        capsys,
+        tmp_path=tmp_path,
+        broker="tastytrade",
+        signal_payload=signal_payload,
+        base_dir=base_dir,
+        live_submit=True,
+        arm_live_canary=ACCOUNT_ID,
+    )
+
+    assert result == 2
+    assert payload["readiness_verdict"] == "not_ready"
+    assert payload["submit_path_invoked"] is True
+    assert payload["submit_outcome"] == expected_decision
+    assert payload["submit_result"]["decision"] == expected_decision
+    assert payload["submit_result"]["response_text"] == expected_response
+    if seed_kind == "session":
+        assert payload["submit_result"]["session_guard"]["outcome"] == "blocked_existing"
+
+
+def test_live_canary_launch_exact_retry_uses_session_state_when_event_finalize_failed_after_live_submit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original_finalize_live_canary_event = live_canary_guardrails.finalize_live_canary_event
+    finalize_calls = {"count": 0}
+
+    def fail_once(*args: object, **kwargs: object) -> None:
+        finalize_calls["count"] += 1
+        if finalize_calls["count"] == 1:
+            raise OSError("simulated event finalize failure")
+        original_finalize_live_canary_event(*args, **kwargs)
+
+    monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_event", fail_once)
+
+    base_dir = tmp_path / "live_canary"
+    signal_payload = _signal_payload(date="2026-03-20")
+    ready_snapshot = _broker_snapshot(
+        {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+        account_id=ACCOUNT_ID,
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+    refreshed_snapshot = _broker_snapshot(
+        {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+        account_id=ACCOUNT_ID,
+        as_of="2026-03-23T10:44:00-04:00",
+    )
+    submit_result = _live_submission_response(
+        attempted=True,
+        succeeded=True,
+        submission_result="submitted",
+        live_submission_fingerprint="live-fingerprint-retry-submit",
+        durable_state={
+            "claim_path": str(base_dir / "claims" / "live-fingerprint-retry-submit.json"),
+            "ledger_path": str(base_dir / "broker_live_submission_fingerprints.jsonl"),
+            "lock_path": str(base_dir / "live_submission_state.lock"),
+            "state_dir": str(base_dir),
+        },
+    )
+
+    _patch_launch_tastytrade_adapters(
+        monkeypatch,
+        readiness_snapshot=ready_snapshot,
+        execution_snapshots=(ready_snapshot, refreshed_snapshot),
+        submit_result=submit_result,
+    )
+    first_result, first_payload, _resolved_base_dir = _run_launch(
+        capsys,
+        tmp_path=tmp_path,
+        broker="tastytrade",
+        signal_payload=signal_payload,
+        base_dir=base_dir,
+        live_submit=True,
+        arm_live_canary=ACCOUNT_ID,
+    )
+
+    assert first_result == 2
+    assert first_payload["readiness_verdict"] == "ready"
+    assert first_payload["submit_path_invoked"] is True
+    assert first_payload["submit_outcome"] == "live_submitted"
+    assert first_payload["submit_result"]["decision"] == "live_submitted"
+    assert first_payload["submit_result"]["durability_failures"][0]["stage"] == "finalize_live_canary_event"
+
+    _patch_launch_tastytrade_adapters(
+        monkeypatch,
+        readiness_snapshot=ready_snapshot,
+        execution_snapshots=(ready_snapshot,),
+    )
+    second_result, second_payload, _resolved_base_dir = _run_launch(
+        capsys,
+        tmp_path=tmp_path,
+        broker="tastytrade",
+        signal_payload=signal_payload,
+        base_dir=base_dir,
+        live_submit=True,
+        arm_live_canary=ACCOUNT_ID,
+    )
+
+    assert second_result == 2
+    assert second_payload["readiness_verdict"] == "not_ready"
+    assert second_payload["submit_path_invoked"] is True
+    assert second_payload["submit_outcome"] == "blocked_duplicate"
+    assert second_payload["submit_result"]["decision"] == "blocked_duplicate"
+    assert second_payload["submit_result"]["response_text"] == "submitted"
+    assert second_payload["submit_result"]["session_guard"]["record"]["decision"] == "live_submitted"
+    assert second_payload["submit_result"]["session_guard"]["record"]["event_id"] == signal_payload["event_id"]
+    assert second_payload["submit_result"]["session_guard"]["record"]["live_submission"]["submission_succeeded"] is True
+
+
+def test_live_canary_launch_exact_retry_uses_session_state_when_event_finalize_failed_after_reconciliation_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original_finalize_live_canary_event = live_canary_guardrails.finalize_live_canary_event
+    finalize_calls = {"count": 0}
+
+    def fail_once(*args: object, **kwargs: object) -> None:
+        finalize_calls["count"] += 1
+        if finalize_calls["count"] == 1:
+            raise OSError("simulated event finalize failure")
+        original_finalize_live_canary_event(*args, **kwargs)
+
+    monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_event", fail_once)
+
+    base_dir = tmp_path / "live_canary"
+    signal_payload = _signal_payload(date="2026-03-20")
+    ready_snapshot = _broker_snapshot(
+        {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+        account_id=ACCOUNT_ID,
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+    drifted_snapshot = _broker_snapshot(
+        {"symbol": "EFA", "shares": 1, "price": 99.16, "instrument_type": "Equity"},
+        account_id=ACCOUNT_ID,
+        as_of="2026-03-23T10:44:00-04:00",
+    )
+
+    _patch_launch_tastytrade_adapters(
+        monkeypatch,
+        readiness_snapshot=ready_snapshot,
+        execution_snapshots=(ready_snapshot, drifted_snapshot),
+    )
+    first_result, first_payload, _resolved_base_dir = _run_launch(
+        capsys,
+        tmp_path=tmp_path,
+        broker="tastytrade",
+        signal_payload=signal_payload,
+        base_dir=base_dir,
+        live_submit=True,
+        arm_live_canary=ACCOUNT_ID,
+    )
+
+    assert first_result == 2
+    assert first_payload["readiness_verdict"] == "ready"
+    assert first_payload["submit_path_invoked"] is True
+    assert first_payload["submit_outcome"] == "blocked"
+    assert first_payload["submit_result"]["decision"] == "blocked"
+    assert first_payload["submit_result"]["durability_failures"][0]["stage"] == "finalize_live_canary_event"
+
+    _patch_launch_tastytrade_adapters(
+        monkeypatch,
+        readiness_snapshot=ready_snapshot,
+        execution_snapshots=(ready_snapshot,),
+    )
+    second_result, second_payload, _resolved_base_dir = _run_launch(
+        capsys,
+        tmp_path=tmp_path,
+        broker="tastytrade",
+        signal_payload=signal_payload,
+        base_dir=base_dir,
+        live_submit=True,
+        arm_live_canary=ACCOUNT_ID,
+    )
+
+    assert second_result == 2
+    assert second_payload["readiness_verdict"] == "not_ready"
+    assert second_payload["submit_path_invoked"] is True
+    assert second_payload["submit_outcome"] == "blocked_duplicate"
+    assert second_payload["submit_result"]["decision"] == "blocked_duplicate"
+    assert second_payload["submit_result"]["response_text"] == "live_canary_pre_submit_decision_changed:ready_live_submit:noop"
+    assert second_payload["submit_result"]["session_guard"]["record"]["decision"] == "blocked"
+    assert second_payload["submit_result"]["session_guard"]["record"]["event_id"] == signal_payload["event_id"]
+    assert second_payload["submit_result"]["session_guard"]["record"]["pre_submit_reconciliation"]["matched"] is False
 
 
 def test_live_canary_launch_preserves_event_id_contract_when_no_submit_is_requested(
