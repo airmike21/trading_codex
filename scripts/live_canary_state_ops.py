@@ -13,11 +13,13 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from trading_codex.execution import resolve_timestamp
+from trading_codex.execution.live_canary_readiness import build_live_canary_readiness
 from trading_codex.execution.live_canary_state_ops import (
     apply_live_canary_state_clear,
     build_live_canary_state_status,
     preview_live_canary_state_clear,
 )
+from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH
 
 
 def _add_scope_args(parser: argparse.ArgumentParser) -> None:
@@ -33,16 +35,20 @@ def _add_scope_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Inspect and explicitly archive scoped live-canary state and related submit-tracking state."
-    )
+def _add_base_dir_arg(parser: argparse.ArgumentParser, *, default: object = None) -> None:
     parser.add_argument(
         "--base-dir",
         type=Path,
-        default=None,
+        default=default,
         help="Optional live-canary state directory. Default follows the Trading Codex archive-root fallback chain.",
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Inspect live-canary readiness/state and explicitly archive scoped live-canary state when required."
+    )
+    _add_base_dir_arg(parser, default=None)
     parser.add_argument("--timestamp", type=str, default=None, help="Optional ISO timestamp override for deterministic tests.")
     parser.add_argument("--emit", choices=["json", "text"], default="text", help="Stdout format.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -52,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["inspect"],
         help="Read-only live-canary state inspection.",
     )
+    _add_base_dir_arg(status_parser, default=argparse.SUPPRESS)
     _add_scope_args(status_parser)
 
     clear_parser = subparsers.add_parser(
@@ -59,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["reset"],
         help="Dry-run by default. Explicitly archive scoped state and append submit-tracking clear markers.",
     )
+    _add_base_dir_arg(clear_parser, default=argparse.SUPPRESS)
     _add_scope_args(clear_parser)
     clear_parser.add_argument(
         "--clear",
@@ -75,6 +83,58 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Required with --apply. Must exactly match the preview confirmation token.",
+    )
+
+    readiness_parser = subparsers.add_parser(
+        "readiness",
+        aliases=["preflight"],
+        help="Read-only live-canary readiness/preflight verdict with exact blockers and next actions.",
+    )
+    _add_base_dir_arg(readiness_parser, default=argparse.SUPPRESS)
+    readiness_parser.add_argument("--signal-json-file", type=Path, required=True, help="Existing next_action JSON payload.")
+    readiness_parser.add_argument(
+        "--broker",
+        choices=["file", "tastytrade"],
+        default="file",
+        help="Broker snapshot source. Use 'file' for tests/reviews; 'tastytrade' for live-capable preflight.",
+    )
+    readiness_parser.add_argument("--positions-file", type=Path, default=None, help="Required with --broker file.")
+    readiness_parser.add_argument(
+        "--account-id",
+        "--live-canary-account",
+        dest="account_id",
+        type=str,
+        required=True,
+        help="Required explicit live-canary account binding to evaluate.",
+    )
+    readiness_parser.add_argument(
+        "--arm-live-canary",
+        type=str,
+        default=None,
+        help="Manual arming token. Must exactly match the bound account for a ready verdict.",
+    )
+    readiness_parser.add_argument(
+        "--ack-unmanaged-holdings",
+        action="store_true",
+        help="Allow managed-sleeve planning when unmanaged holdings exist. Readiness still remains fail-closed.",
+    )
+    readiness_parser.add_argument(
+        "--tastytrade-challenge-code",
+        type=str,
+        default=None,
+        help="Optional device-challenge code for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_CODE.",
+    )
+    readiness_parser.add_argument(
+        "--tastytrade-challenge-token",
+        type=str,
+        default=None,
+        help="Optional device-challenge token override for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_TOKEN.",
+    )
+    readiness_parser.add_argument(
+        "--secrets-file",
+        type=Path,
+        default=None,
+        help=f"Optional tastytrade secrets env file. If omitted, auto-loads {DEFAULT_TASTYTRADE_SECRETS_PATH} when present.",
     )
     return parser
 
@@ -181,12 +241,85 @@ def _render_clear_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_readiness_gate_line(gate: dict[str, Any]) -> str:
+    bits = [f"{gate['gate']}={gate['status']}"]
+    if gate["blocking_reasons"]:
+        bits.append("blockers=" + "; ".join(str(reason) for reason in gate["blocking_reasons"]))
+    affordability = (gate.get("details") or {}).get("affordability")
+    if isinstance(affordability, dict) and affordability.get("status") is not None:
+        bits.append(f"affordability={affordability['status']}")
+    orders = (gate.get("details") or {}).get("orders")
+    if isinstance(orders, list) and orders:
+        order_summaries = [f"{order['side']} {order['executable_qty']} {order['symbol']}" for order in orders]
+        bits.append("orders=" + "; ".join(order_summaries))
+    blocking_artifacts = (gate.get("details") or {}).get("blocking_artifacts")
+    if isinstance(blocking_artifacts, list) and blocking_artifacts:
+        artifact_kinds = [str(artifact.get("artifact_kind")) for artifact in blocking_artifacts]
+        bits.append("artifacts=" + ",".join(artifact_kinds))
+    return "- " + " | ".join(bits)
+
+
+def _render_readiness_action_line(action: dict[str, Any]) -> str:
+    summary = str(action.get("summary") or action.get("action_id") or "next_action")
+    command = action.get("command")
+    if isinstance(command, str) and command.strip():
+        return f"- {summary} | command={command}"
+    return f"- {summary}"
+
+
+def _render_readiness_text(payload: dict[str, Any]) -> str:
+    scope = payload["scope"]
+    lines = [
+        f"Verdict {payload['verdict']}",
+        (
+            "Scope "
+            f"account={scope.get('account_id') or '-'} "
+            f"strategy={scope.get('strategy') or '-'} "
+            f"signal_date={scope.get('signal_date') or '-'} "
+            f"event_id={scope.get('event_id') or '-'}"
+        ),
+        (
+            "Summary "
+            f"blocking_reasons={payload['summary']['blocking_reason_count']} "
+            f"warnings={payload['summary']['warning_count']}"
+        ),
+    ]
+
+    blocking_reasons = payload.get("blocking_reasons", [])
+    if blocking_reasons:
+        lines.append("Blocking reasons:")
+        lines.extend(f"- {reason}" for reason in blocking_reasons)
+    else:
+        lines.append("Blocking reasons: none")
+
+    warnings = payload.get("warnings", [])
+    if warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("Warnings: none")
+
+    next_actions = payload.get("next_actions", [])
+    if next_actions:
+        lines.append("Next actions:")
+        lines.extend(_render_readiness_action_line(action) for action in next_actions)
+    else:
+        lines.append("Next actions: none")
+
+    lines.append("Gates:")
+    lines.extend(_render_readiness_gate_line(gate) for gate in payload.get("gates", []))
+    return "\n".join(lines)
+
+
 def _emit(payload: dict[str, Any], *, emit: str) -> None:
     if emit == "json":
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
         return
     if payload["schema_name"] == "live_canary_state_status":
         print(_render_status_text(payload))
+        return
+    if payload["schema_name"] == "live_canary_readiness":
+        print(_render_readiness_text(payload))
         return
     print(_render_clear_text(payload))
 
@@ -203,6 +336,20 @@ def main(argv: list[str] | None = None) -> int:
                 signal_date=args.signal_date,
                 event_id=args.event_id,
                 live_submission_fingerprint=args.live_submission_fingerprint,
+            )
+        elif args.command in {"readiness", "preflight"}:
+            payload = build_live_canary_readiness(
+                signal_json_file=args.signal_json_file,
+                broker=args.broker,
+                positions_file=args.positions_file,
+                account_id=args.account_id,
+                arm_live_canary=args.arm_live_canary,
+                ack_unmanaged_holdings=bool(args.ack_unmanaged_holdings),
+                base_dir=args.base_dir,
+                timestamp=timestamp,
+                tastytrade_challenge_code=args.tastytrade_challenge_code,
+                tastytrade_challenge_token=args.tastytrade_challenge_token,
+                secrets_file=args.secrets_file,
             )
         else:
             clear_scopes = set(args.clear_scopes or [])
