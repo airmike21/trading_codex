@@ -100,6 +100,9 @@ def _render_artifact_line(artifact: dict[str, Any]) -> str:
     fingerprint = artifact.get("live_submission_fingerprint")
     if fingerprint:
         bits.append(f"fingerprint={fingerprint}")
+    scope_precision = artifact.get("scope_precision")
+    if scope_precision:
+        bits.append(f"scope_precision={scope_precision}")
     summary = artifact.get("summary") or {}
     result = summary.get("result")
     if result:
@@ -110,6 +113,9 @@ def _render_artifact_line(artifact: dict[str, Any]) -> str:
     blocking_reason = artifact.get("blocking_reason")
     if blocking_reason:
         bits.append(f"blocking_reason={blocking_reason}")
+    recovery_hint = artifact.get("recovery_hint")
+    if recovery_hint:
+        bits.append(f"recovery_hint={recovery_hint}")
     return "- " + " | ".join(bits)
 
 

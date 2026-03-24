@@ -55,6 +55,13 @@ def _normalize_text(value: object) -> str | None:
     return stripped or None
 
 
+def _optional_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _normalize_scope(
     *,
     account_id: object,
@@ -128,6 +135,46 @@ def parse_live_canary_event_scope(event_id: str) -> tuple[str | None, str | None
     signal_date = parts[0].strip() or None
     strategy = parts[1].strip() or None
     return signal_date, strategy
+
+
+def _record_scope_fields(record: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    event_id = _optional_text(record.get("event_id"))
+    signal_date = _optional_text(record.get("signal_date"))
+    strategy = _optional_text(record.get("strategy"))
+    if (signal_date is None or strategy is None) and event_id is not None:
+        parsed_signal_date, parsed_strategy = parse_live_canary_event_scope(event_id)
+        signal_date = signal_date or parsed_signal_date
+        strategy = strategy or parsed_strategy
+    return event_id, signal_date, strategy
+
+
+def _legacy_submit_tracking_reason(scope: LiveCanaryStateScope) -> str:
+    if scope.event_id is not None:
+        return (
+            "legacy submit-tracking record for this account lacks event_id metadata; "
+            "duplicate protection may still block retry"
+        )
+    if scope.signal_date is not None:
+        return (
+            "legacy submit-tracking record for this account lacks signal-date metadata; "
+            "duplicate protection may still block retry"
+        )
+    if scope.strategy is not None:
+        return (
+            "legacy submit-tracking record for this account lacks strategy metadata; "
+            "duplicate protection may still block retry"
+        )
+    return (
+        "legacy submit-tracking record for this account lacks event/strategy/date metadata; "
+        "duplicate protection may still block retry"
+    )
+
+
+def _legacy_submit_tracking_hint() -> str:
+    return (
+        "Use --live-submission-fingerprint to inspect and clear only the specific submit-tracking fingerprint "
+        "after confirming it is the blocker for the intended retry."
+    )
 
 
 def resolve_live_canary_state_base_dir(base_dir: Path | None = None, *, create: bool) -> Path:
@@ -295,6 +342,12 @@ def _event_artifacts(base_dir: Path, scope: LiveCanaryStateScope) -> list[dict[s
         record = _read_json_object(path)
         if record.get("account_id") != scope.account_id:
             continue
+        record_fingerprints = _record_fingerprints(record)
+        if (
+            scope.live_submission_fingerprint is not None
+            and scope.live_submission_fingerprint not in record_fingerprints
+        ):
+            continue
         event_id = record.get("event_id")
         if not isinstance(event_id, str) or not event_id.strip():
             continue
@@ -333,9 +386,15 @@ def _session_artifacts(base_dir: Path, scope: LiveCanaryStateScope) -> list[dict
         record = _read_json_object(path)
         if record.get("account_id") != scope.account_id:
             continue
-        strategy = record.get("strategy")
-        signal_date = record.get("signal_date")
-        event_id = record.get("event_id")
+        record_fingerprints = _record_fingerprints(record)
+        if (
+            scope.live_submission_fingerprint is not None
+            and scope.live_submission_fingerprint not in record_fingerprints
+        ):
+            continue
+        strategy = _optional_text(record.get("strategy"))
+        signal_date = _optional_text(record.get("signal_date"))
+        event_id = _optional_text(record.get("event_id"))
         if scope.strategy is not None and strategy != scope.strategy:
             continue
         if scope.signal_date is not None and signal_date != scope.signal_date:
@@ -361,19 +420,16 @@ def _session_artifacts(base_dir: Path, scope: LiveCanaryStateScope) -> list[dict
 
 
 def _claim_record_matches_scope(record: dict[str, Any], scope: LiveCanaryStateScope) -> bool:
-    if record.get("account_id") != scope.account_id:
-        return False
-    fingerprint = record.get("live_submission_fingerprint")
+    fingerprint = _optional_text(record.get("live_submission_fingerprint"))
     if scope.live_submission_fingerprint is not None and fingerprint != scope.live_submission_fingerprint:
         return False
+    account_id = _optional_text(record.get("account_id"))
+    if account_id is not None and account_id != scope.account_id:
+        return False
+    if account_id is None and scope.live_submission_fingerprint is None:
+        return False
 
-    event_id = record.get("event_id")
-    signal_date = record.get("signal_date")
-    strategy = record.get("strategy")
-    if (signal_date is None or strategy is None) and isinstance(event_id, str):
-        parsed_signal_date, parsed_strategy = parse_live_canary_event_scope(event_id)
-        signal_date = signal_date or parsed_signal_date
-        strategy = strategy or parsed_strategy
+    event_id, signal_date, strategy = _record_scope_fields(record)
 
     if scope.event_id is not None and event_id != scope.event_id:
         return False
@@ -385,19 +441,14 @@ def _claim_record_matches_scope(record: dict[str, Any], scope: LiveCanaryStateSc
 
 
 def _ledger_record_matches_scope(record: dict[str, Any], scope: LiveCanaryStateScope) -> bool:
-    if record.get("account_id") != scope.account_id:
-        return False
-    fingerprint = record.get("live_submission_fingerprint")
+    fingerprint = _optional_text(record.get("live_submission_fingerprint"))
     if scope.live_submission_fingerprint is not None and fingerprint != scope.live_submission_fingerprint:
         return False
+    account_id = _optional_text(record.get("account_id"))
+    if account_id is None or account_id != scope.account_id:
+        return False
 
-    event_id = record.get("event_id")
-    signal_date = record.get("signal_date")
-    strategy = record.get("strategy")
-    if (signal_date is None or strategy is None) and isinstance(event_id, str):
-        parsed_signal_date, parsed_strategy = parse_live_canary_event_scope(event_id)
-        signal_date = signal_date or parsed_signal_date
-        strategy = strategy or parsed_strategy
+    event_id, signal_date, strategy = _record_scope_fields(record)
 
     if scope.event_id is not None and event_id != scope.event_id:
         return False
@@ -406,6 +457,25 @@ def _ledger_record_matches_scope(record: dict[str, Any], scope: LiveCanaryStateS
     if scope.strategy is not None and strategy != scope.strategy:
         return False
     return True
+
+
+def _legacy_submit_tracking_candidate(record: dict[str, Any], scope: LiveCanaryStateScope) -> bool:
+    if scope.live_submission_fingerprint is not None:
+        return False
+    account_id = _optional_text(record.get("account_id"))
+    if account_id is None or account_id != scope.account_id:
+        return False
+
+    event_id, signal_date, strategy = _record_scope_fields(record)
+    if scope.event_id is not None:
+        return event_id is None
+    if scope.signal_date is not None:
+        if strategy is not None and scope.strategy is not None and strategy != scope.strategy:
+            return False
+        return signal_date is None
+    if scope.strategy is not None:
+        return strategy is None
+    return False
 
 
 def _blocking_ledger_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -428,13 +498,24 @@ def _submit_tracking_artifacts(
     ledger_path = live_canary_submit_tracking_ledger_path(base_dir, create=False)
     ledger_entries = _load_live_submission_ledger(ledger_path) if ledger_path.exists() else []
 
-    fingerprints = {fingerprint for fingerprint in seed_fingerprints if fingerprint}
+    ledger_entries_by_fingerprint: dict[str, list[dict[str, Any]]] = {}
+    precise_fingerprints = {fingerprint for fingerprint in seed_fingerprints if fingerprint}
+    legacy_fingerprints: set[str] = set()
     for entry in ledger_entries:
-        fingerprint = entry.get("live_submission_fingerprint")
-        if not isinstance(fingerprint, str) or not fingerprint.strip():
+        fingerprint = _optional_text(entry.get("live_submission_fingerprint"))
+        if fingerprint is None:
             continue
+        ledger_entries_by_fingerprint.setdefault(fingerprint, []).append(entry)
         if _ledger_record_matches_scope(entry, scope):
-            fingerprints.add(fingerprint.strip())
+            precise_fingerprints.add(fingerprint)
+
+    for fingerprint, matching_entries in ledger_entries_by_fingerprint.items():
+        if fingerprint in precise_fingerprints:
+            continue
+        if _blocking_ledger_entry(matching_entries) is None:
+            continue
+        if any(_legacy_submit_tracking_candidate(entry, scope) for entry in matching_entries):
+            legacy_fingerprints.add(fingerprint)
 
     claims_dir = ledger_path.parent / "claims"
     claim_records: dict[str, dict[str, Any]] = {}
@@ -443,59 +524,72 @@ def _submit_tracking_artifacts(
             record = _load_live_submission_claim(claim_path)
             if record is None:
                 continue
-            if not _claim_record_matches_scope(record, scope):
-                continue
-            fingerprint = record.get("live_submission_fingerprint")
-            if not isinstance(fingerprint, str) or not fingerprint.strip():
-                fingerprint = claim_path.stem
+            fingerprint = _optional_text(record.get("live_submission_fingerprint")) or claim_path.stem
             normalized_fingerprint = fingerprint.strip()
             claim_records[normalized_fingerprint] = {
                 "path": claim_path,
                 "record": record,
             }
-            fingerprints.add(normalized_fingerprint)
+            if _claim_record_matches_scope(record, scope):
+                precise_fingerprints.add(normalized_fingerprint)
 
     artifacts: list[dict[str, Any]] = []
-    for fingerprint in sorted(fingerprints):
+    fingerprints = sorted(precise_fingerprints | legacy_fingerprints)
+    for fingerprint in fingerprints:
+        scope_precision = "precise" if fingerprint in precise_fingerprints else "legacy_unscoped"
+        recovery_hint = _legacy_submit_tracking_hint() if scope_precision == "legacy_unscoped" else None
+        blocking_reason = (
+            _legacy_submit_tracking_reason(scope)
+            if scope_precision == "legacy_unscoped"
+            else "existing submit claim blocks duplicate fingerprint retries until explicitly cleared"
+        )
         claim_info = claim_records.get(fingerprint)
         if claim_info is not None:
             claim_record = claim_info["record"]
+            claim_event_id, claim_signal_date, claim_strategy = _record_scope_fields(claim_record)
             artifacts.append(
                 {
                     "artifact_kind": "submit_tracking_claim",
                     "blocking": True,
-                    "blocking_reason": "existing submit claim blocks duplicate fingerprint retries until explicitly cleared",
+                    "blocking_reason": blocking_reason,
                     "clear_scope": "submit-tracking",
                     "live_submission_fingerprint": fingerprint,
                     "path": str(claim_info["path"]),
                     "record": claim_record,
+                    "recovery_hint": recovery_hint,
                     "scope": {
-                        "account_id": claim_record.get("account_id"),
-                        "event_id": claim_record.get("event_id"),
-                        "signal_date": claim_record.get("signal_date"),
-                        "strategy": claim_record.get("strategy"),
+                        "account_id": _optional_text(claim_record.get("account_id")),
+                        "event_id": claim_event_id,
+                        "signal_date": claim_signal_date,
+                        "strategy": claim_strategy,
                     },
+                    "scope_precision": scope_precision,
                     "summary": _safe_record_summary(claim_record),
                 }
             )
 
-        matching_entries = [
-            entry
-            for entry in ledger_entries
-            if entry.get("live_submission_fingerprint") == fingerprint
-        ]
+        matching_entries = ledger_entries_by_fingerprint.get(fingerprint, [])
         if matching_entries or scope.live_submission_fingerprint == fingerprint:
             latest_entry = matching_entries[-1] if matching_entries else None
             blocking_entry = _blocking_ledger_entry(matching_entries)
             latest_result = None if latest_entry is None else latest_entry.get("result")
+            latest_event_id = None
+            latest_signal_date = None
+            latest_strategy = None
+            if latest_entry is not None:
+                latest_event_id, latest_signal_date, latest_strategy = _record_scope_fields(latest_entry)
             artifacts.append(
                 {
                     "artifact_kind": "submit_tracking_ledger",
                     "blocking": blocking_entry is not None,
                     "blocking_reason": (
-                        "latest blocking ledger record will refuse duplicate fingerprint retries until explicitly cleared"
-                        if blocking_entry is not None
-                        else None
+                        _legacy_submit_tracking_reason(scope)
+                        if blocking_entry is not None and scope_precision == "legacy_unscoped"
+                        else (
+                            "latest blocking ledger record will refuse duplicate fingerprint retries until explicitly cleared"
+                            if blocking_entry is not None
+                            else None
+                        )
                     ),
                     "clear_scope": "submit-tracking",
                     "entries": matching_entries,
@@ -504,12 +598,14 @@ def _submit_tracking_artifacts(
                     "live_submission_fingerprint": fingerprint,
                     "path": str(ledger_path),
                     "record": blocking_entry,
+                    "recovery_hint": recovery_hint,
                     "scope": {
-                        "account_id": scope.account_id,
-                        "event_id": None if latest_entry is None else latest_entry.get("event_id"),
-                        "signal_date": None if latest_entry is None else latest_entry.get("signal_date"),
-                        "strategy": None if latest_entry is None else latest_entry.get("strategy"),
+                        "account_id": None if latest_entry is None else _optional_text(latest_entry.get("account_id")),
+                        "event_id": latest_event_id,
+                        "signal_date": latest_signal_date,
+                        "strategy": latest_strategy,
                     },
+                    "scope_precision": scope_precision,
                     "summary": (
                         {
                             "entry_count": len(matching_entries),
@@ -585,7 +681,9 @@ def build_live_canary_state_status(
             "clear_scope": artifact.get("clear_scope"),
             "live_submission_fingerprint": artifact.get("live_submission_fingerprint"),
             "path": artifact["path"],
+            "recovery_hint": artifact.get("recovery_hint"),
             "scope": artifact["scope"],
+            "scope_precision": artifact.get("scope_precision"),
             "summary": artifact["summary"],
         }
         for artifact in artifacts
@@ -630,6 +728,19 @@ def _submit_tracking_fingerprints_for_clear(
 ) -> list[str]:
     if scope.live_submission_fingerprint is not None:
         return [scope.live_submission_fingerprint]
+
+    legacy_blockers = [
+        artifact
+        for artifact in status_payload["artifacts"]
+        if artifact["artifact_kind"] in {"submit_tracking_claim", "submit_tracking_ledger"}
+        and artifact.get("blocking")
+        and artifact.get("scope_precision") == "legacy_unscoped"
+    ]
+    if legacy_blockers:
+        raise ValueError(
+            "Submit-tracking clear matched legacy records without exact scope metadata. "
+            "Provide --live-submission-fingerprint explicitly."
+        )
 
     fingerprints: set[str] = set()
     for artifact in target_artifacts:

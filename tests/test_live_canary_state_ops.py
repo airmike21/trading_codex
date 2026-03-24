@@ -266,6 +266,67 @@ def _run_state_ops_cli(
     return result, payload, captured.err
 
 
+def _run_state_ops_text_cli(
+    capsys: pytest.CaptureFixture[str],
+    *,
+    base_dir: Path,
+    args: list[str],
+) -> tuple[int, str, str]:
+    result = live_canary_state_ops.main(
+        [
+            "--emit",
+            "text",
+            "--base-dir",
+            str(base_dir),
+            "--timestamp",
+            TIMESTAMP,
+            *args,
+        ]
+    )
+    captured = capsys.readouterr()
+    return result, captured.out, captured.err
+
+
+def _seed_legacy_submit_tracking(base_dir: Path, *, fingerprint: str) -> tuple[Path, Path]:
+    ledger_path = base_dir / "broker_live_submission_fingerprints.jsonl"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "account_id": ACCOUNT_ID,
+                "generated_at_chicago": TIMESTAMP,
+                "live_submission_fingerprint": fingerprint,
+                "manual_clearance_required": True,
+                "plan_sha256": "legacy-plan-sha",
+                "result": "ambiguous_attempted_submit_manual_clearance_required",
+                "submission_succeeded": False,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    claim_path = ledger_path.parent / "claims" / f"{fingerprint}.json"
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_path.write_text(
+        json.dumps(
+            {
+                "claim_path": str(claim_path),
+                "generated_at_chicago": TIMESTAMP,
+                "live_submission_fingerprint": fingerprint,
+                "manual_clearance_required": True,
+                "plan_sha256": "legacy-plan-sha",
+                "result": "claim_pending_manual_clearance_required",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return ledger_path, claim_path
+
+
 def test_live_canary_state_ops_status_reports_populated_blocking_state(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -351,6 +412,98 @@ def test_live_canary_state_ops_clear_requires_explicit_scope_and_confirmation(
     assert result == 2
     assert "--apply requires --confirm" in stderr
     assert session_path.exists()
+
+
+def test_live_canary_state_ops_status_surfaces_legacy_submit_tracking_blockers(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+    fingerprint = "legacy-fingerprint-001"
+    ledger_path, claim_path = _seed_legacy_submit_tracking(base_dir, fingerprint=fingerprint)
+
+    result, payload, stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "status",
+            "--account-id",
+            ACCOUNT_ID,
+            "--strategy",
+            STRATEGY,
+            "--signal-date",
+            SIGNAL_DATE,
+        ],
+    )
+
+    assert result == 0
+    assert stderr == ""
+    assert payload is not None
+    assert payload["summary"]["blocking_artifact_count"] == 2
+    assert {artifact["artifact_kind"] for artifact in payload["blocking_artifacts"]} == {
+        "submit_tracking_claim",
+        "submit_tracking_ledger",
+    }
+    assert {artifact["path"] for artifact in payload["blocking_artifacts"]} == {
+        str(claim_path),
+        str(ledger_path),
+    }
+    assert {artifact["scope_precision"] for artifact in payload["blocking_artifacts"]} == {"legacy_unscoped"}
+    assert all(
+        "--live-submission-fingerprint" in str(artifact["recovery_hint"])
+        for artifact in payload["blocking_artifacts"]
+    )
+    assert all(
+        "duplicate protection may still block retry" in str(artifact["blocking_reason"])
+        for artifact in payload["blocking_artifacts"]
+    )
+
+    text_result, stdout, text_stderr = _run_state_ops_text_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "status",
+            "--account-id",
+            ACCOUNT_ID,
+            "--strategy",
+            STRATEGY,
+            "--signal-date",
+            SIGNAL_DATE,
+        ],
+    )
+    assert text_result == 0
+    assert text_stderr == ""
+    assert "Blocking: none" not in stdout
+    assert "scope_precision=legacy_unscoped" in stdout
+    assert "--live-submission-fingerprint" in stdout
+
+
+def test_live_canary_state_ops_legacy_submit_tracking_clear_requires_fingerprint_scope(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+    _ledger_path, claim_path = _seed_legacy_submit_tracking(base_dir, fingerprint="legacy-fingerprint-002")
+
+    result, _payload, stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "clear",
+            "--account-id",
+            ACCOUNT_ID,
+            "--strategy",
+            STRATEGY,
+            "--signal-date",
+            SIGNAL_DATE,
+            "--clear",
+            "submit-tracking",
+        ],
+    )
+
+    assert result == 2
+    assert "Provide --live-submission-fingerprint explicitly" in stderr
+    assert claim_path.exists()
 
 
 def test_live_canary_state_ops_clear_preview_is_dry_run_and_narrow_scope(
@@ -569,6 +722,127 @@ def test_live_canary_state_ops_partial_persistence_failure_can_be_inspected_and_
     assert after_stderr == ""
     assert after_payload is not None
     assert after_payload["summary"]["blocking_artifact_count"] == 0
+
+
+def test_live_canary_state_ops_fingerprint_scope_is_precise_for_status_and_clear_preview(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+
+    first_signal_payload = _signal_payload()
+    first_export, first_live_submission, first_ledger_path, first_claim_path, _client = _create_ambiguous_submit_tracking(
+        base_dir, first_signal_payload
+    )
+    _seed_pending_claim(first_claim_path, export=first_export, signal_payload=first_signal_payload)
+    first_event_path, first_session_path = _write_event_and_session_state(base_dir, first_signal_payload, first_live_submission)
+    first_fingerprint = first_claim_path.stem
+
+    second_signal_payload = _signal_payload(
+        strategy="dual_mom_alt_cash",
+        price=101.05,
+        target_shares=1,
+        resize_prev_shares=0,
+        resize_new_shares=1,
+        next_rebalance="2026-03-31",
+    )
+    second_export, second_live_submission, _second_ledger_path, second_claim_path, _client = _create_ambiguous_submit_tracking(
+        base_dir, second_signal_payload
+    )
+    _seed_pending_claim(second_claim_path, export=second_export, signal_payload=second_signal_payload)
+    second_event_path, second_session_path = _write_event_and_session_state(base_dir, second_signal_payload, second_live_submission)
+
+    status_result, status_payload, status_stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "status",
+            "--account-id",
+            ACCOUNT_ID,
+            "--live-submission-fingerprint",
+            first_fingerprint,
+        ],
+    )
+
+    assert status_result == 0
+    assert status_stderr == ""
+    assert status_payload is not None
+    assert status_payload["summary"]["event_state_count"] == 1
+    assert status_payload["summary"]["session_state_count"] == 1
+    assert {
+        artifact["path"]
+        for artifact in status_payload["artifacts"]
+        if artifact["artifact_kind"] in {"event_state", "session_state"}
+    } == {
+        str(first_event_path),
+        str(first_session_path),
+    }
+    assert str(second_event_path) not in {artifact["path"] for artifact in status_payload["artifacts"]}
+    assert str(second_session_path) not in {artifact["path"] for artifact in status_payload["artifacts"]}
+    assert {
+        artifact["live_submission_fingerprint"]
+        for artifact in status_payload["artifacts"]
+        if artifact["artifact_kind"] in {"submit_tracking_claim", "submit_tracking_ledger"}
+    } == {first_fingerprint}
+
+    preview_result, preview_payload, preview_stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "clear",
+            "--account-id",
+            ACCOUNT_ID,
+            "--live-submission-fingerprint",
+            first_fingerprint,
+            "--clear",
+            "submit-tracking",
+        ],
+    )
+
+    assert preview_result == 0
+    assert preview_stderr == ""
+    assert preview_payload is not None
+    assert {
+        artifact["path"]
+        for artifact in preview_payload["status"]["artifacts"]
+        if artifact["artifact_kind"] in {"event_state", "session_state"}
+    } == {
+        str(first_event_path),
+        str(first_session_path),
+    }
+    assert [operation["live_submission_fingerprint"] for operation in preview_payload["planned_operations"]] == [
+        first_fingerprint,
+        first_fingerprint,
+    ]
+
+    apply_result, apply_payload, apply_stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "clear",
+            "--account-id",
+            ACCOUNT_ID,
+            "--live-submission-fingerprint",
+            first_fingerprint,
+            "--clear",
+            "submit-tracking",
+            "--apply",
+            "--confirm",
+            str(preview_payload["confirmation_token"]),
+        ],
+    )
+
+    assert apply_result == 0
+    assert apply_stderr == ""
+    assert apply_payload is not None
+    assert first_claim_path.exists() is False
+    assert second_claim_path.exists()
+    ledger_records = [json.loads(line) for line in first_ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert ledger_records[-1]["result"] == "operator_cleared"
+    assert ledger_records[-1]["live_submission_fingerprint"] == first_fingerprint
+    assert any(record["live_submission_fingerprint"] == second_claim_path.stem for record in ledger_records[:-1])
+    assert second_event_path.exists()
+    assert second_session_path.exists()
 
 
 def test_live_canary_operator_clear_marker_unblocks_duplicate_retry(tmp_path: Path) -> None:
