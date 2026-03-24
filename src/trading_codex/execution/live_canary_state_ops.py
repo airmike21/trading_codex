@@ -148,24 +148,25 @@ def _record_scope_fields(record: dict[str, Any]) -> tuple[str | None, str | None
     return event_id, signal_date, strategy
 
 
-def _legacy_submit_tracking_reason(scope: LiveCanaryStateScope) -> str:
+def _legacy_submit_tracking_reason(scope: LiveCanaryStateScope, *, account_known: bool = True) -> str:
+    record_subject = "legacy submit-tracking record for this account" if account_known else "legacy submit-tracking record"
     if scope.event_id is not None:
         return (
-            "legacy submit-tracking record for this account lacks event_id metadata; "
+            f"{record_subject} lacks event_id metadata; "
             "duplicate protection may still block retry"
         )
     if scope.signal_date is not None:
         return (
-            "legacy submit-tracking record for this account lacks signal-date metadata; "
+            f"{record_subject} lacks signal-date metadata; "
             "duplicate protection may still block retry"
         )
     if scope.strategy is not None:
         return (
-            "legacy submit-tracking record for this account lacks strategy metadata; "
+            f"{record_subject} lacks strategy metadata; "
             "duplicate protection may still block retry"
         )
     return (
-        "legacy submit-tracking record for this account lacks event/strategy/date metadata; "
+        f"{record_subject} lacks event/strategy/date metadata; "
         "duplicate protection may still block retry"
     )
 
@@ -478,6 +479,37 @@ def _legacy_submit_tracking_candidate(record: dict[str, Any], scope: LiveCanaryS
     return False
 
 
+def _legacy_claim_record_candidate(record: dict[str, Any], scope: LiveCanaryStateScope) -> bool:
+    if scope.live_submission_fingerprint is not None:
+        return False
+
+    account_id = _optional_text(record.get("account_id"))
+    event_id, signal_date, strategy = _record_scope_fields(record)
+
+    if account_id is not None:
+        if account_id != scope.account_id:
+            return False
+        if scope.event_id is not None:
+            return event_id is None
+        if scope.signal_date is not None:
+            if strategy is not None and scope.strategy is not None and strategy != scope.strategy:
+                return False
+            return signal_date is None
+        if scope.strategy is not None:
+            return strategy is None
+        return False
+
+    if scope.event_id is not None:
+        return event_id is None or event_id == scope.event_id
+    if scope.signal_date is not None:
+        if strategy is not None and scope.strategy is not None and strategy != scope.strategy:
+            return False
+        return signal_date is None or signal_date == scope.signal_date
+    if scope.strategy is not None:
+        return strategy is None or strategy == scope.strategy
+    return False
+
+
 def _blocking_ledger_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
     for entry in reversed(entries):
         if entry.get("result") == LIVE_SUBMISSION_RESULT_OPERATOR_CLEARED or entry.get("operator_action") == "clear":
@@ -532,6 +564,8 @@ def _submit_tracking_artifacts(
             }
             if _claim_record_matches_scope(record, scope):
                 precise_fingerprints.add(normalized_fingerprint)
+            elif _legacy_claim_record_candidate(record, scope):
+                legacy_fingerprints.add(normalized_fingerprint)
 
     artifacts: list[dict[str, Any]] = []
     fingerprints = sorted(precise_fingerprints | legacy_fingerprints)
@@ -547,18 +581,26 @@ def _submit_tracking_artifacts(
         if claim_info is not None:
             claim_record = claim_info["record"]
             claim_event_id, claim_signal_date, claim_strategy = _record_scope_fields(claim_record)
+            claim_account_id = _optional_text(claim_record.get("account_id"))
             artifacts.append(
                 {
                     "artifact_kind": "submit_tracking_claim",
                     "blocking": True,
-                    "blocking_reason": blocking_reason,
+                    "blocking_reason": (
+                        _legacy_submit_tracking_reason(
+                            scope,
+                            account_known=claim_account_id == scope.account_id,
+                        )
+                        if scope_precision == "legacy_unscoped"
+                        else blocking_reason
+                    ),
                     "clear_scope": "submit-tracking",
                     "live_submission_fingerprint": fingerprint,
                     "path": str(claim_info["path"]),
                     "record": claim_record,
                     "recovery_hint": recovery_hint,
                     "scope": {
-                        "account_id": _optional_text(claim_record.get("account_id")),
+                        "account_id": claim_account_id,
                         "event_id": claim_event_id,
                         "signal_date": claim_signal_date,
                         "strategy": claim_strategy,

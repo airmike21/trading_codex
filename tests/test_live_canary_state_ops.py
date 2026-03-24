@@ -327,6 +327,27 @@ def _seed_legacy_submit_tracking(base_dir: Path, *, fingerprint: str) -> tuple[P
     return ledger_path, claim_path
 
 
+def _seed_legacy_claim_only(base_dir: Path, *, fingerprint: str) -> Path:
+    claim_path = base_dir / "claims" / f"{fingerprint}.json"
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_path.write_text(
+        json.dumps(
+            {
+                "claim_path": str(claim_path),
+                "generated_at_chicago": TIMESTAMP,
+                "live_submission_fingerprint": fingerprint,
+                "manual_clearance_required": True,
+                "plan_sha256": "legacy-plan-sha",
+                "result": "claim_pending_manual_clearance_required",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return claim_path
+
+
 def test_live_canary_state_ops_status_reports_populated_blocking_state(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -504,6 +525,121 @@ def test_live_canary_state_ops_legacy_submit_tracking_clear_requires_fingerprint
     assert result == 2
     assert "Provide --live-submission-fingerprint explicitly" in stderr
     assert claim_path.exists()
+
+
+def test_live_canary_state_ops_status_surfaces_legacy_claim_only_blocker_for_strategy_date_scope(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+    claim_path = _seed_legacy_claim_only(base_dir, fingerprint="legacy-claim-only-001")
+
+    result, payload, stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "status",
+            "--account-id",
+            ACCOUNT_ID,
+            "--strategy",
+            STRATEGY,
+            "--signal-date",
+            SIGNAL_DATE,
+        ],
+    )
+
+    assert result == 0
+    assert stderr == ""
+    assert payload is not None
+    assert payload["summary"]["blocking_artifact_count"] == 1
+    assert payload["summary"]["blocking_artifact_kinds"] == ["submit_tracking_claim"]
+    assert payload["blocking_artifacts"][0]["artifact_kind"] == "submit_tracking_claim"
+    assert payload["blocking_artifacts"][0]["path"] == str(claim_path)
+    assert payload["blocking_artifacts"][0]["scope_precision"] == "legacy_unscoped"
+    assert payload["blocking_artifacts"][0]["scope"]["account_id"] is None
+    assert "--live-submission-fingerprint" in str(payload["blocking_artifacts"][0]["recovery_hint"])
+    assert "lacks signal-date metadata" in str(payload["blocking_artifacts"][0]["blocking_reason"])
+
+    text_result, stdout, text_stderr = _run_state_ops_text_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "status",
+            "--account-id",
+            ACCOUNT_ID,
+            "--strategy",
+            STRATEGY,
+            "--signal-date",
+            SIGNAL_DATE,
+        ],
+    )
+    assert text_result == 0
+    assert text_stderr == ""
+    assert "Blocking: none" not in stdout
+    assert "submit_tracking_claim" in stdout
+    assert "scope_precision=legacy_unscoped" in stdout
+    assert "--live-submission-fingerprint" in stdout
+
+
+def test_live_canary_state_ops_status_surfaces_legacy_claim_only_blocker_for_event_scope(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+    claim_path = _seed_legacy_claim_only(base_dir, fingerprint="legacy-claim-only-002")
+    signal_payload = _signal_payload()
+
+    result, payload, stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "status",
+            "--account-id",
+            ACCOUNT_ID,
+            "--event-id",
+            str(signal_payload["event_id"]),
+        ],
+    )
+
+    assert result == 0
+    assert stderr == ""
+    assert payload is not None
+    assert payload["summary"]["blocking_artifact_count"] == 1
+    assert payload["blocking_artifacts"][0]["artifact_kind"] == "submit_tracking_claim"
+    assert payload["blocking_artifacts"][0]["path"] == str(claim_path)
+    assert payload["blocking_artifacts"][0]["scope_precision"] == "legacy_unscoped"
+    assert "--live-submission-fingerprint" in str(payload["blocking_artifacts"][0]["recovery_hint"])
+    assert "lacks event_id metadata" in str(payload["blocking_artifacts"][0]["blocking_reason"])
+
+
+def test_live_canary_state_ops_fingerprint_status_finds_exact_legacy_claim_only_blocker(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+    fingerprint = "legacy-claim-only-003"
+    claim_path = _seed_legacy_claim_only(base_dir, fingerprint=fingerprint)
+
+    result, payload, stderr = _run_state_ops_cli(
+        capsys,
+        base_dir=base_dir,
+        args=[
+            "status",
+            "--account-id",
+            ACCOUNT_ID,
+            "--live-submission-fingerprint",
+            fingerprint,
+        ],
+    )
+
+    assert result == 0
+    assert stderr == ""
+    assert payload is not None
+    assert payload["summary"]["blocking_artifact_count"] == 1
+    assert {artifact["artifact_kind"] for artifact in payload["blocking_artifacts"]} == {"submit_tracking_claim"}
+    assert payload["blocking_artifacts"][0]["path"] == str(claim_path)
+    assert payload["blocking_artifacts"][0]["scope_precision"] == "precise"
+    assert payload["blocking_artifacts"][0]["live_submission_fingerprint"] == fingerprint
 
 
 def test_live_canary_state_ops_clear_preview_is_dry_run_and_narrow_scope(
