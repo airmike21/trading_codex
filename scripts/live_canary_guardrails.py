@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import sys
@@ -143,7 +144,7 @@ def _render_live_submission_order(order: Any) -> dict[str, Any]:
 
 
 def _render_live_submission_receipt(live_submission: Any) -> dict[str, Any]:
-    return {
+    receipt = {
         "live_submit_attempted": live_submission.live_submit_attempted,
         "manual_clearance_required": live_submission.manual_clearance_required,
         "orders": [
@@ -154,6 +155,13 @@ def _render_live_submission_receipt(live_submission: Any) -> dict[str, Any]:
         "submission_result": live_submission.submission_result,
         "submission_succeeded": live_submission.submission_succeeded,
     }
+    if getattr(live_submission, "live_submission_fingerprint", None) is not None:
+        receipt["live_submission_fingerprint"] = live_submission.live_submission_fingerprint
+    if getattr(live_submission, "durable_state", None) is not None:
+        receipt["durable_state"] = deepcopy(live_submission.durable_state)
+    if getattr(live_submission, "duplicate_submit_refusal", None) is not None:
+        receipt["duplicate_submit_refusal"] = deepcopy(live_submission.duplicate_submit_refusal)
+    return receipt
 
 
 def _render_submit_error(*, exc: Exception, stage: str) -> dict[str, Any]:

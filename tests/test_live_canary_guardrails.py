@@ -167,6 +167,9 @@ def _live_submission_response(
     refusal_reasons: list[str] | None = None,
     manual_clearance_required: bool = False,
     order_error: str | None = None,
+    live_submission_fingerprint: str | None = None,
+    duplicate_submit_refusal: dict[str, object] | None = None,
+    durable_state: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         live_submit_attempted=attempted,
@@ -184,6 +187,9 @@ def _live_submission_response(
             )
         ],
         refusal_reasons=list(refusal_reasons or []),
+        live_submission_fingerprint=live_submission_fingerprint,
+        duplicate_submit_refusal=duplicate_submit_refusal,
+        durable_state=durable_state,
         submission_result=submission_result,
         submission_succeeded=succeeded,
     )
@@ -1241,6 +1247,13 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    fingerprint = "live-fingerprint-success"
+    durable_state = {
+        "claim_path": str(tmp_path / "live_canary" / "claims" / f"{fingerprint}.json"),
+        "ledger_path": str(tmp_path / "live_canary" / "broker_live_submission_fingerprints.jsonl"),
+        "lock_path": str(tmp_path / "live_canary" / "live_submission_state.lock"),
+        "state_dir": str(tmp_path / "live_canary"),
+    }
     result, payload, base_dir, adapter = _run_live_submit_guardrails(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
@@ -1261,6 +1274,8 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
             attempted=True,
             succeeded=True,
             submission_result="submitted",
+            live_submission_fingerprint=fingerprint,
+            durable_state=durable_state,
         ),
     )
 
@@ -1276,6 +1291,8 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert payload["response_text"] == "submitted"
     assert payload["live_submission"]["live_submit_attempted"] is True
     assert payload["live_submission"]["submission_succeeded"] is True
+    assert payload["live_submission"]["live_submission_fingerprint"] == fingerprint
+    assert payload["live_submission"]["durable_state"] == durable_state
     assert payload["pre_submit_reconciliation"] == {
         "blockers": [],
         "matched": True,
@@ -1299,11 +1316,33 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert state["pre_submit_reconciliation"]["matched"] is True
 
 
-def test_live_canary_submit_path_fails_closed_on_submit_refusal_after_matched_reconciliation(
+def test_live_canary_submit_path_persists_duplicate_refusal_provenance_after_matched_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    fingerprint = "live-fingerprint-duplicate"
+    durable_state = {
+        "claim_path": str(tmp_path / "live_canary" / "claims" / f"{fingerprint}.json"),
+        "ledger_path": str(tmp_path / "live_canary" / "broker_live_submission_fingerprints.jsonl"),
+        "lock_path": str(tmp_path / "live_canary" / "live_submission_state.lock"),
+        "state_dir": str(tmp_path / "live_canary"),
+    }
+    duplicate_submit_refusal = {
+        "durable_state": durable_state,
+        "ledger_path": durable_state["ledger_path"],
+        "live_submission_fingerprint": fingerprint,
+        "prior_record": {
+            "artifact_path": None,
+            "generated_at_chicago": "2026-03-23T10:44:30-04:00",
+            "live_submission_fingerprint": fingerprint,
+            "manual_clearance_required": True,
+            "plan_sha256": "plan-sha-123",
+            "refusal_reasons": [],
+            "result": "ambiguous_attempted_submit_manual_clearance_required",
+            "submission_succeeded": False,
+        },
+    }
     result, payload, base_dir, adapter = _run_live_submit_guardrails(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
@@ -1323,17 +1362,23 @@ def test_live_canary_submit_path_fails_closed_on_submit_refusal_after_matched_re
         submit_result=_live_submission_response(
             attempted=False,
             succeeded=False,
-            refusal_reasons=["broker refused canary submit"],
-            submission_result="refused_pre_submit",
-            order_error="broker refused canary submit",
+            refusal_reasons=["live_submit_duplicate_fingerprint"],
+            submission_result="refused_duplicate",
+            order_error="live_submit_duplicate_fingerprint",
+            live_submission_fingerprint=fingerprint,
+            duplicate_submit_refusal=duplicate_submit_refusal,
+            durable_state=durable_state,
         ),
     )
 
     assert result == 2
     assert adapter.submit_calls == 1
     assert payload["decision"] == "live_submit_refused"
-    assert payload["response_text"] == "broker refused canary submit"
+    assert payload["response_text"] == "live_submit_duplicate_fingerprint"
     assert payload["live_submission"]["submission_succeeded"] is False
+    assert payload["live_submission"]["live_submission_fingerprint"] == fingerprint
+    assert payload["live_submission"]["durable_state"] == durable_state
+    assert payload["live_submission"]["duplicate_submit_refusal"] == duplicate_submit_refusal
     assert payload["pre_submit_reconciliation"]["matched"] is True
 
     audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -1346,7 +1391,7 @@ def test_live_canary_submit_path_fails_closed_on_submit_refusal_after_matched_re
     state = json.loads(event_state_path.read_text(encoding="utf-8"))
     assert state["decision"] == "live_submit_refused"
     assert state["manual_clearance_required"] is True
-    assert state["result"] == "refused_pre_submit"
+    assert state["result"] == "refused_duplicate"
     assert state["live_submission"] == payload["live_submission"]
     assert state["pre_submit_reconciliation"]["matched"] is True
 
