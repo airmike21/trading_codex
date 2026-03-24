@@ -44,6 +44,7 @@ LIVE_SUBMISSION_RESULT_REFUSED_DUPLICATE = "refused_duplicate"
 LIVE_SUBMISSION_RESULT_SUBMITTED = "submitted"
 LIVE_SUBMISSION_RESULT_AMBIGUOUS = "ambiguous_attempted_submit_manual_clearance_required"
 LIVE_SUBMISSION_RESULT_CLAIM_PENDING = "claim_pending_manual_clearance_required"
+LIVE_SUBMISSION_RESULT_OPERATOR_CLEARED = "operator_cleared"
 LIVE_SUBMISSION_BLOCKING_RESULTS = {
     "accepted",
     LIVE_SUBMISSION_RESULT_SUBMITTED,
@@ -460,6 +461,36 @@ def _live_submission_durable_state(
     }
 
 
+def _live_submission_scope_from_export(
+    export: SimulatedSubmissionExport | LiveSubmissionExport,
+) -> tuple[str | None, str | None, str | None]:
+    event_id = None
+    strategy = None
+
+    if export.orders:
+        first_order = export.orders[0]
+        event_id = first_order.event_id
+        strategy = first_order.strategy
+
+    if event_id is None and isinstance(export.plan_preview, dict):
+        raw_event_id = export.plan_preview.get("event_id")
+        if isinstance(raw_event_id, str) and raw_event_id.strip():
+            event_id = raw_event_id.strip()
+        raw_strategy = export.plan_preview.get("strategy")
+        if isinstance(raw_strategy, str) and raw_strategy.strip():
+            strategy = raw_strategy.strip()
+
+    signal_date = None
+    if event_id:
+        parts = event_id.split(":", 6)
+        if len(parts) == 7 and parts[0].strip():
+            signal_date = parts[0].strip()
+        if strategy is None and len(parts) >= 2 and parts[1].strip():
+            strategy = parts[1].strip()
+
+    return event_id, signal_date, strategy
+
+
 def _fsync_directory(path: Path) -> None:
     try:
         dir_fd = os.open(str(path), os.O_RDONLY)
@@ -537,6 +568,11 @@ def _find_duplicate_live_submission_record(path: Path, *, fingerprint: str) -> d
     for entry in reversed(_load_live_submission_ledger(path)):
         if entry.get("live_submission_fingerprint") != fingerprint:
             continue
+        if (
+            entry.get("result") == LIVE_SUBMISSION_RESULT_OPERATOR_CLEARED
+            or entry.get("operator_action") == "clear"
+        ):
+            return None
         if _live_submission_record_blocks_retry(entry):
             return entry
     return None
@@ -886,18 +922,22 @@ def _live_submission_ledger_record(
     live_submission_fingerprint: str | None,
     artifact_path: Path | None,
 ) -> dict[str, Any]:
+    event_id, signal_date, strategy = _live_submission_scope_from_export(export)
     return {
         "accepted_order_count": _accepted_order_count(export.orders),
         "account_id": export.account_id,
         "artifact_path": None if artifact_path is None else str(artifact_path),
         "attempted_order_count": sum(1 for order in export.orders if order.attempted),
         "broker_name": export.broker_name,
+        "event_id": event_id,
         "generated_at_chicago": export.generated_at_chicago,
         "live_submission_fingerprint": live_submission_fingerprint,
         "manual_clearance_required": export.manual_clearance_required,
         "plan_sha256": export.plan_sha256,
         "refusal_reasons": list(export.refusal_reasons),
         "result": _live_submission_result_label(export),
+        "signal_date": signal_date,
+        "strategy": strategy,
         "submission_succeeded": export.submission_succeeded,
     }
 
@@ -1300,17 +1340,21 @@ class TastytradeBrokerExecutionAdapter(TastytradeBrokerPositionAdapter):
                 return refused_export
 
             if claim_path is not None:
+                event_id, signal_date, strategy = _live_submission_scope_from_export(export)
                 _create_live_submission_claim(
                     claim_path,
                     record={
                         "account_id": export.account_id,
                         "artifact_path": None if live_submission_artifact_path is None else str(live_submission_artifact_path),
                         "claim_path": str(claim_path),
+                        "event_id": event_id,
                         "generated_at_chicago": _chicago_now().isoformat(),
                         "live_submission_fingerprint": live_submission_fingerprint,
                         "manual_clearance_required": True,
                         "plan_sha256": export.plan_sha256,
                         "result": LIVE_SUBMISSION_RESULT_CLAIM_PENDING,
+                        "signal_date": signal_date,
+                        "strategy": strategy,
                     },
                 )
 
