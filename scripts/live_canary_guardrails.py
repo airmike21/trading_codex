@@ -203,6 +203,57 @@ def _render_live_canary_session_guard(
     return detail
 
 
+def _read_live_canary_state_record(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _is_initial_pending_live_canary_claim(record: dict[str, Any] | None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    return (
+        record.get("decision") == "pending_live_submit"
+        and record.get("response_text") == LIVE_CANARY_STATE_PENDING
+        and record.get("result") == LIVE_CANARY_STATE_PENDING
+    )
+
+
+def _resolve_duplicate_stale_event_claim(
+    *,
+    base_dir: Path | None,
+    account_id: str,
+    signal: Any,
+    prior_event_record: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not _is_initial_pending_live_canary_claim(prior_event_record):
+        return prior_event_record, None
+    session_state_path = live_canary_session_state_path(
+        base_dir=base_dir,
+        account_id=account_id,
+        strategy=signal.strategy,
+        signal_date=signal.date,
+    )
+    session_record = _read_live_canary_state_record(session_state_path)
+    if not isinstance(session_record, dict):
+        return prior_event_record, None
+    if session_record.get("event_id") != signal.event_id:
+        return prior_event_record, None
+    if _is_initial_pending_live_canary_claim(session_record):
+        return prior_event_record, None
+    return session_record, _render_live_canary_session_guard(
+        account_id=account_id,
+        signal=signal,
+        outcome="claimed",
+        state_path=session_state_path,
+        record=session_record,
+    )
+
+
 def _render_error_detail(*, exc: Exception, stage: str) -> dict[str, Any]:
     return {
         "exception_type": type(exc).__name__,
@@ -915,12 +966,19 @@ def main(argv: list[str] | None = None) -> int:
                 record=claim_record,
             )
             if not claimed:
+                prior_duplicate_record, duplicate_session_guard = _resolve_duplicate_stale_event_claim(
+                    base_dir=args.base_dir,
+                    account_id=account_id,
+                    signal=signal,
+                    prior_event_record=prior_record,
+                )
                 duplicate = True
                 final_decision = "blocked_duplicate"
                 final_blockers.append("live_canary_duplicate_event")
+                session_guard_payload = duplicate_session_guard
                 response_text = (
-                    str(prior_record.get("response_text"))
-                    if isinstance(prior_record, dict) and prior_record.get("response_text") is not None
+                    str(prior_duplicate_record.get("response_text"))
+                    if isinstance(prior_duplicate_record, dict) and prior_duplicate_record.get("response_text") is not None
                     else "live_canary_duplicate_event"
                 )
             else:

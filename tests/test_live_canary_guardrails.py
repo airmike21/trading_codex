@@ -1706,6 +1706,148 @@ def test_live_canary_submit_path_preserves_exact_event_duplicate_protection_befo
     assert "session_guard" not in payload
 
 
+def test_live_canary_exact_retry_uses_session_state_when_event_finalize_failed_after_live_submit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original = live_canary_guardrails.finalize_live_canary_event
+    calls = {"count": 0}
+
+    def fail_once(*args: object, **kwargs: object) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError("simulated event finalize failure")
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_event", fail_once)
+
+    signal_payload = _signal_payload(date="2026-03-20")
+    first_result, first_payload, _base_dir, first_adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:44:00-04:00",
+            ),
+        ),
+        submit_result=_live_submission_response(
+            attempted=True,
+            succeeded=True,
+            submission_result="submitted",
+            live_submission_fingerprint="live-fingerprint-retry-submit",
+            durable_state={
+                "claim_path": str(tmp_path / "live_canary" / "claims" / "live-fingerprint-retry-submit.json"),
+                "ledger_path": str(tmp_path / "live_canary" / "broker_live_submission_fingerprints.jsonl"),
+                "lock_path": str(tmp_path / "live_canary" / "live_submission_state.lock"),
+                "state_dir": str(tmp_path / "live_canary"),
+            },
+        ),
+        signal_payload=signal_payload,
+    )
+
+    assert first_result == 2
+    assert first_adapter.submit_calls == 1
+    assert first_payload["decision"] == "live_submitted"
+    assert first_payload["durability_failures"][0]["stage"] == "finalize_live_canary_event"
+
+    second_result, second_payload, _second_base_dir, second_adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+        ),
+        signal_payload=signal_payload,
+    )
+
+    assert second_result == 2
+    assert second_adapter.submit_calls == 0
+    assert second_payload["decision"] == "blocked_duplicate"
+    assert second_payload["duplicate"] is True
+    assert second_payload["response_text"] == "submitted"
+    assert second_payload["session_guard"]["record"]["decision"] == "live_submitted"
+    assert second_payload["session_guard"]["record"]["event_id"] == signal_payload["event_id"]
+    assert second_payload["session_guard"]["record"]["live_submission"]["submission_succeeded"] is True
+
+
+def test_live_canary_exact_retry_uses_session_state_when_event_finalize_failed_after_reconciliation_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original = live_canary_guardrails.finalize_live_canary_event
+    calls = {"count": 0}
+
+    def fail_once(*args: object, **kwargs: object) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError("simulated event finalize failure")
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_event", fail_once)
+
+    signal_payload = _signal_payload(date="2026-03-20")
+    first_result, first_payload, _base_dir, first_adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 1, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:44:00-04:00",
+            ),
+        ),
+        signal_payload=signal_payload,
+    )
+
+    assert first_result == 2
+    assert first_adapter.submit_calls == 0
+    assert first_payload["decision"] == "blocked"
+    assert first_payload["durability_failures"][0]["stage"] == "finalize_live_canary_event"
+
+    second_result, second_payload, _second_base_dir, second_adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+        ),
+        signal_payload=signal_payload,
+    )
+
+    assert second_result == 2
+    assert second_adapter.submit_calls == 0
+    assert second_payload["decision"] == "blocked_duplicate"
+    assert second_payload["duplicate"] is True
+    assert second_payload["response_text"] == "live_canary_pre_submit_decision_changed:ready_live_submit:noop"
+    assert second_payload["session_guard"]["record"]["decision"] == "blocked"
+    assert second_payload["session_guard"]["record"]["event_id"] == signal_payload["event_id"]
+    assert second_payload["session_guard"]["record"]["pre_submit_reconciliation"]["matched"] is False
+
+
 def test_live_canary_submit_path_reconciles_before_broker_submit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
