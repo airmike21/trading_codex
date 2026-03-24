@@ -1645,7 +1645,7 @@ def test_live_canary_dry_run_remains_usable_when_same_session_guard_exists(
     assert payload["decision"] == "dry_run_ready"
     assert payload["blockers"] == []
     assert payload["response_text"] == "dry-run only"
-    assert payload["session_guard"] is None
+    assert "session_guard" not in payload
 
 
 def test_live_canary_submit_path_preserves_exact_event_duplicate_protection_before_session_guard(
@@ -1703,7 +1703,7 @@ def test_live_canary_submit_path_preserves_exact_event_duplicate_protection_befo
     assert payload["duplicate"] is True
     assert payload["blockers"] == ["live_canary_duplicate_event"]
     assert payload["response_text"] == "submitted"
-    assert payload["session_guard"] is None
+    assert "session_guard" not in payload
 
 
 def test_live_canary_submit_path_reconciles_before_broker_submit(
@@ -1907,6 +1907,113 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert state["pre_submit_reconciliation"]["matched"] is True
 
 
+@pytest.mark.parametrize(
+    ("stage", "expected_pending_path"),
+    [
+        ("finalize_live_canary_session", "session"),
+        ("finalize_live_canary_event", "event"),
+        ("append_live_canary_audit", "audit"),
+    ],
+)
+def test_live_canary_submit_path_surfaces_post_submit_durability_failures_without_losing_submit_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stage: str,
+    expected_pending_path: str,
+) -> None:
+    if stage == "finalize_live_canary_session":
+        original = live_canary_guardrails.finalize_live_canary_session
+        calls = {"count": 0}
+
+        def fail_once(*args: object, **kwargs: object) -> None:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("simulated session finalize failure")
+            original(*args, **kwargs)
+
+        monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_session", fail_once)
+    elif stage == "finalize_live_canary_event":
+        original = live_canary_guardrails.finalize_live_canary_event
+        calls = {"count": 0}
+
+        def fail_once(*args: object, **kwargs: object) -> None:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("simulated event finalize failure")
+            original(*args, **kwargs)
+
+        monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_event", fail_once)
+    else:
+        monkeypatch.setattr(
+            live_canary_guardrails,
+            "append_live_canary_audit",
+            lambda **_kwargs: (_ for _ in ()).throw(OSError("simulated audit append failure")),
+        )
+
+    result, payload, base_dir, adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:44:00-04:00",
+            ),
+        ),
+        submit_result=_live_submission_response(
+            attempted=True,
+            succeeded=True,
+            submission_result="submitted",
+            live_submission_fingerprint="live-fingerprint-durable",
+            durable_state={
+                "claim_path": str(tmp_path / "live_canary" / "claims" / "live-fingerprint-durable.json"),
+                "ledger_path": str(tmp_path / "live_canary" / "broker_live_submission_fingerprints.jsonl"),
+                "lock_path": str(tmp_path / "live_canary" / "live_submission_state.lock"),
+                "state_dir": str(tmp_path / "live_canary"),
+            },
+        ),
+    )
+
+    assert result == 2
+    assert adapter.submit_calls == 1
+    assert payload["decision"] == "live_submitted"
+    assert payload["live_submission"]["submission_succeeded"] is True
+    assert payload["durability_failures"][0]["stage"] == stage
+    assert payload["durability_failures"][0]["exception_type"] == "OSError"
+    assert f"live_canary_durability_failure:{stage}" in payload["response_text"]
+
+    session_state_path = Path(payload["session_guard"]["state_path"])
+    event_state_path = Path(payload["event_state_path"])
+    session_state = json.loads(session_state_path.read_text(encoding="utf-8"))
+    event_state = json.loads(event_state_path.read_text(encoding="utf-8"))
+
+    if expected_pending_path == "session":
+        assert session_state["decision"] == "pending_live_submit"
+        assert event_state["decision"] == "live_submitted"
+        assert event_state["durability_failures"][0]["stage"] == stage
+    elif expected_pending_path == "event":
+        assert session_state["decision"] == "live_submitted"
+        assert event_state["decision"] == "pending_live_submit"
+    else:
+        assert session_state["decision"] == "live_submitted"
+        assert event_state["decision"] == "live_submitted"
+        assert not (base_dir / "audit.jsonl").exists()
+        return
+
+    audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["decision"] == "live_submitted"
+    assert audit_rows[0]["durability_failures"][0]["stage"] == stage
+    assert audit_rows[0]["live_submission"]["submission_succeeded"] is True
+
+
 def test_live_canary_submit_path_persists_duplicate_refusal_provenance_after_matched_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1989,6 +2096,80 @@ def test_live_canary_submit_path_persists_duplicate_refusal_provenance_after_mat
     assert state["live_submission"] == payload["live_submission"]
     assert state["session_guard"] == payload["session_guard"]
     assert state["pre_submit_reconciliation"]["matched"] is True
+
+
+@pytest.mark.parametrize("stage", ["finalize_live_canary_session", "finalize_live_canary_event"])
+def test_live_canary_reconciliation_block_path_surfaces_finalize_failures_without_raw_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stage: str,
+) -> None:
+    if stage == "finalize_live_canary_session":
+        original = live_canary_guardrails.finalize_live_canary_session
+        calls = {"count": 0}
+
+        def fail_once(*args: object, **kwargs: object) -> None:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("simulated session finalize failure")
+            original(*args, **kwargs)
+
+        monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_session", fail_once)
+    else:
+        original = live_canary_guardrails.finalize_live_canary_event
+        calls = {"count": 0}
+
+        def fail_once(*args: object, **kwargs: object) -> None:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("simulated event finalize failure")
+            original(*args, **kwargs)
+
+        monkeypatch.setattr(live_canary_guardrails, "finalize_live_canary_event", fail_once)
+
+    result, payload, base_dir, adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 1, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:44:00-04:00",
+            ),
+        ),
+    )
+
+    assert result == 2
+    assert adapter.submit_calls == 0
+    assert payload["decision"] == "blocked"
+    assert payload["pre_submit_reconciliation"]["matched"] is False
+    assert payload["durability_failures"][0]["stage"] == stage
+    assert f"live_canary_durability_failure:{stage}" in payload["response_text"]
+
+    session_state_path = Path(payload["session_guard"]["state_path"])
+    event_state_path = Path(payload["event_state_path"])
+    session_state = json.loads(session_state_path.read_text(encoding="utf-8"))
+    event_state = json.loads(event_state_path.read_text(encoding="utf-8"))
+
+    if stage == "finalize_live_canary_session":
+        assert session_state["decision"] == "pending_live_submit"
+        assert event_state["decision"] == "blocked"
+        assert event_state["durability_failures"][0]["stage"] == stage
+    else:
+        assert session_state["decision"] == "blocked"
+        assert event_state["decision"] == "pending_live_submit"
+
+    audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["decision"] == "blocked"
+    assert audit_rows[0]["durability_failures"][0]["stage"] == stage
 
 
 def test_live_canary_submit_path_fails_closed_on_submit_error_after_matched_reconciliation(

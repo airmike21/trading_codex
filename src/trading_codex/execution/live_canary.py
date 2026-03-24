@@ -1014,6 +1014,7 @@ def audit_rows_for_result(
     live_submission: dict[str, Any] | None = None,
     pre_submit_reconciliation: dict[str, Any] | None = None,
     session_guard: dict[str, Any] | None = None,
+    durability_failures: list[dict[str, Any]] | None = None,
     submit_error: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     base = {
@@ -1035,6 +1036,8 @@ def audit_rows_for_result(
         base["pre_submit_reconciliation"] = pre_submit_reconciliation
     if session_guard is not None:
         base["session_guard"] = session_guard
+    if durability_failures:
+        base["durability_failures"] = durability_failures
     if submit_error is not None:
         base["submit_error"] = submit_error
     if not evaluation.orders:
