@@ -44,6 +44,7 @@ LIVE_CANARY_SUPPORTED_ENTER_ACTIONS = {"BUY", "ENTER", "RESIZE", "ROTATE"}
 LIVE_CANARY_SUPPORTED_EXIT_ACTIONS = {"EXIT", "SELL"}
 LIVE_CANARY_NOOP_ACTIONS = {"HOLD"}
 LIVE_CANARY_STATE_PENDING = "claim_pending_manual_clearance_required"
+LIVE_CANARY_SESSION_GUARD_BLOCKER = "live_canary_same_session_submit_locked"
 LIVE_CANARY_SUBMISSION_CAP_BLOCKER = "live_canary_existing_position_exceeds_cap"
 LIVE_CANARY_REGULAR_SESSION_BLOCKER = "live_canary_submit_outside_regular_session"
 LIVE_CANARY_MARKET_HOLIDAY_BLOCKER_PREFIX = "live_canary_submit_market_holiday"
@@ -540,22 +541,49 @@ def live_canary_audit_path(base_dir: Path | None = None) -> Path:
     return live_canary_state_dir(base_dir) / "audit.jsonl"
 
 
-def _live_canary_event_key(*, account_id: str, event_id: str) -> str:
-    payload = json.dumps(
-        {
-            "account_id": account_id,
-            "event_id": event_id,
-        },
+def _stable_live_canary_key(payload: dict[str, Any]) -> str:
+    serialized = json.dumps(
+        payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _live_canary_event_key(*, account_id: str, event_id: str) -> str:
+    return _stable_live_canary_key(
+        {
+            "account_id": account_id,
+            "event_id": event_id,
+        }
+    )
+
+
+def _live_canary_session_key(*, account_id: str, strategy: str, signal_date: str) -> str:
+    return _stable_live_canary_key(
+        {
+            "account_id": account_id,
+            "signal_date": signal_date,
+            "strategy": strategy,
+        }
+    )
 
 
 def live_canary_event_state_path(*, base_dir: Path | None = None, account_id: str, event_id: str) -> Path:
     state_dir = live_canary_state_dir(base_dir)
     return state_dir / "events" / f"{_live_canary_event_key(account_id=account_id, event_id=event_id)}.json"
+
+
+def live_canary_session_state_path(
+    *,
+    base_dir: Path | None = None,
+    account_id: str,
+    strategy: str,
+    signal_date: str,
+) -> Path:
+    state_dir = live_canary_state_dir(base_dir)
+    return state_dir / "sessions" / f"{_live_canary_session_key(account_id=account_id, strategy=strategy, signal_date=signal_date)}.json"
 
 
 def _fsync_directory(path: Path) -> None:
@@ -620,14 +648,12 @@ def live_canary_state_lock(base_dir: Path | None = None):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def claim_live_canary_event(
+def _claim_live_canary_state(
     *,
     base_dir: Path | None,
-    account_id: str,
-    event_id: str,
+    state_path: Path,
     record: dict[str, Any],
 ) -> tuple[bool, dict[str, Any] | None, Path]:
-    state_path = live_canary_event_state_path(base_dir=base_dir, account_id=account_id, event_id=event_id)
     lock_context = live_canary_state_lock(base_dir) if base_dir is not None or fcntl is not None else nullcontext()
     with lock_context:
         existing = _read_json_file(state_path)
@@ -650,7 +676,43 @@ def claim_live_canary_event(
     return True, None, state_path
 
 
+def claim_live_canary_event(
+    *,
+    base_dir: Path | None,
+    account_id: str,
+    event_id: str,
+    record: dict[str, Any],
+) -> tuple[bool, dict[str, Any] | None, Path]:
+    state_path = live_canary_event_state_path(base_dir=base_dir, account_id=account_id, event_id=event_id)
+    return _claim_live_canary_state(base_dir=base_dir, state_path=state_path, record=record)
+
+
+def claim_live_canary_session(
+    *,
+    base_dir: Path | None,
+    account_id: str,
+    strategy: str,
+    signal_date: str,
+    record: dict[str, Any],
+) -> tuple[bool, dict[str, Any] | None, Path]:
+    state_path = live_canary_session_state_path(
+        base_dir=base_dir,
+        account_id=account_id,
+        strategy=strategy,
+        signal_date=signal_date,
+    )
+    return _claim_live_canary_state(base_dir=base_dir, state_path=state_path, record=record)
+
+
 def finalize_live_canary_event(
+    *,
+    state_path: Path,
+    record: dict[str, Any],
+) -> None:
+    _atomic_write_json(state_path, record)
+
+
+def finalize_live_canary_session(
     *,
     state_path: Path,
     record: dict[str, Any],
@@ -951,6 +1013,7 @@ def audit_rows_for_result(
     response_text: str,
     live_submission: dict[str, Any] | None = None,
     pre_submit_reconciliation: dict[str, Any] | None = None,
+    session_guard: dict[str, Any] | None = None,
     submit_error: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     base = {
@@ -970,6 +1033,8 @@ def audit_rows_for_result(
         base["live_submission"] = live_submission
     if pre_submit_reconciliation is not None:
         base["pre_submit_reconciliation"] = pre_submit_reconciliation
+    if session_guard is not None:
+        base["session_guard"] = session_guard
     if submit_error is not None:
         base["submit_error"] = submit_error
     if not evaluation.orders:

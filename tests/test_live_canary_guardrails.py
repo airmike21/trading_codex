@@ -19,6 +19,7 @@ from trading_codex.execution.live_canary import (
     append_live_canary_audit,
     audit_rows_for_result,
     claim_live_canary_event,
+    claim_live_canary_session,
     evaluate_live_canary,
     evaluate_live_canary_affordability,
     finalize_live_canary_event,
@@ -184,8 +185,10 @@ def _live_submission_response(
     live_submission_fingerprint: str | None = None,
     duplicate_submit_refusal: dict[str, object] | None = None,
     durable_state: dict[str, object] | None = None,
+    generated_at_chicago: str = "2026-03-23T10:45:30-04:00",
 ) -> SimpleNamespace:
     return SimpleNamespace(
+        generated_at_chicago=generated_at_chicago,
         live_submit_attempted=attempted,
         manual_clearance_required=manual_clearance_required,
         orders=[
@@ -209,6 +212,32 @@ def _live_submission_response(
     )
 
 
+def _session_guard_record(
+    *,
+    account_id: str = "5WT00001",
+    strategy: str = "dual_mom_vol10_cash",
+    signal_date: str = "2026-03-20",
+    event_id: str = "2026-03-20:dual_mom_vol10_cash:ROTATE:BIL:100::2026-03-31",
+    decision: str = "live_submitted",
+    manual_clearance_required: bool = False,
+    response_text: str = "submitted",
+    result: str = "submitted",
+) -> dict[str, object]:
+    return {
+        "account_id": account_id,
+        "claimed_at_chicago": "2026-03-23T10:45:00-04:00",
+        "decision": decision,
+        "event_id": event_id,
+        "generated_at_chicago": "2026-03-23T10:45:00-04:00",
+        "manual_clearance_required": manual_clearance_required,
+        "response_text": response_text,
+        "result": result,
+        "signal_date": signal_date,
+        "strategy": strategy,
+        "updated_at_chicago": "2026-03-23T10:45:30-04:00",
+    }
+
+
 def _run_live_submit_guardrails(
     *,
     tmp_path: Path,
@@ -219,6 +248,8 @@ def _run_live_submit_guardrails(
     submit_result: object | None = None,
     submit_error: Exception | None = None,
     signal_payload: dict[str, object] | None = None,
+    live_submit: bool = True,
+    arm_live_canary: str | None = "5WT00001",
 ) -> tuple[int, dict[str, object], Path, _SnapshotSequenceAdapter]:
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(
@@ -246,25 +277,26 @@ def _run_live_submit_guardrails(
         FakeTastytradeBrokerExecutionAdapter,
     )
 
-    result = live_canary_guardrails.main(
-        [
-            "--signal-json-file",
-            str(signal_path),
-            "--broker",
-            "tastytrade",
-            "--live-canary-account",
-            "5WT00001",
-            "--live-submit",
-            "--arm-live-canary",
-            "5WT00001",
-            "--timestamp",
-            "2026-03-23T10:45:00-04:00",
-            "--base-dir",
-            str(base_dir),
-            "--emit",
-            "json",
-        ]
-    )
+    argv = [
+        "--signal-json-file",
+        str(signal_path),
+        "--broker",
+        "tastytrade",
+        "--live-canary-account",
+        "5WT00001",
+        "--timestamp",
+        "2026-03-23T10:45:00-04:00",
+        "--base-dir",
+        str(base_dir),
+        "--emit",
+        "json",
+    ]
+    if live_submit:
+        argv.append("--live-submit")
+    if arm_live_canary is not None:
+        argv.extend(["--arm-live-canary", arm_live_canary])
+
+    result = live_canary_guardrails.main(argv)
 
     captured = capsys.readouterr()
     assert len(created_adapters) == 1
@@ -1258,6 +1290,61 @@ def test_live_canary_duplicate_event_state_blocks_repeat_event_for_same_account(
     assert prior_record["event_id"] == record["event_id"]
 
 
+@pytest.mark.parametrize(
+    ("second_account_id", "second_strategy", "second_signal_date", "expected_claimed"),
+    [
+        ("5WT00001", "dual_mom_vol10_cash", "2026-03-20", False),
+        ("5WT00001", "dual_mom_vol10_cash", "2026-03-21", True),
+        ("5WT00001", "valmom_v1", "2026-03-20", True),
+        ("5WT00002", "dual_mom_vol10_cash", "2026-03-20", True),
+    ],
+    ids=["same_session_blocked", "different_date_allowed", "different_strategy_allowed", "different_account_allowed"],
+)
+def test_live_canary_session_state_keys_by_account_strategy_and_signal_date(
+    tmp_path: Path,
+    second_account_id: str,
+    second_strategy: str,
+    second_signal_date: str,
+    expected_claimed: bool,
+) -> None:
+    first_record = _session_guard_record()
+    claimed, prior_record, state_path = claim_live_canary_session(
+        base_dir=tmp_path,
+        account_id=str(first_record["account_id"]),
+        strategy=str(first_record["strategy"]),
+        signal_date=str(first_record["signal_date"]),
+        record=first_record,
+    )
+
+    assert claimed is True
+    assert prior_record is None
+
+    second_record = _session_guard_record(
+        account_id=second_account_id,
+        strategy=second_strategy,
+        signal_date=second_signal_date,
+        event_id="2026-03-20:dual_mom_vol10_cash:RESIZE:EFA:100:100:2026-03-31",
+    )
+    second_claimed, second_prior_record, second_path = claim_live_canary_session(
+        base_dir=tmp_path,
+        account_id=second_account_id,
+        strategy=second_strategy,
+        signal_date=second_signal_date,
+        record=second_record,
+    )
+
+    assert second_claimed is expected_claimed
+    if expected_claimed:
+        assert second_prior_record is None
+        assert second_path != state_path
+    else:
+        assert second_path == state_path
+        assert second_prior_record is not None
+        assert second_prior_record["event_id"] == first_record["event_id"]
+        assert second_prior_record["strategy"] == first_record["strategy"]
+        assert second_prior_record["signal_date"] == first_record["signal_date"]
+
+
 def test_live_canary_audit_writes_expected_fields(tmp_path: Path) -> None:
     plan = _build_plan(
         _signal_payload(),
@@ -1464,6 +1551,161 @@ def test_live_canary_guardrails_cli_live_submit_blocks_stale_broker_snapshot_wit
     assert audit_rows[0]["response_text"] == "live_canary_broker_snapshot_stale:1200:900"
 
 
+def test_live_canary_submit_path_blocks_same_session_before_reconciliation_or_broker_submit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+    prior_record = _session_guard_record(
+        event_id="2026-03-20:dual_mom_vol10_cash:ROTATE:BIL:100::2026-03-31",
+        response_text="submitted",
+        result="submitted",
+    )
+    claimed, existing, _state_path = claim_live_canary_session(
+        base_dir=base_dir,
+        account_id=str(prior_record["account_id"]),
+        strategy=str(prior_record["strategy"]),
+        signal_date=str(prior_record["signal_date"]),
+        record=prior_record,
+    )
+    assert claimed is True
+    assert existing is None
+
+    result, payload, _base_dir, adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+        ),
+        signal_payload=_signal_payload(date="2026-03-20"),
+    )
+
+    assert result == 2
+    assert adapter.load_calls == 1
+    assert adapter.submit_calls == 0
+    assert payload["decision"] == "blocked"
+    assert payload["blockers"] == ["live_canary_same_session_submit_locked"]
+    assert payload["response_text"] == "live_canary_same_session_submit_locked"
+    assert payload["live_submission"] is None
+    assert payload.get("pre_submit_reconciliation") is None
+    assert payload["session_guard"]["outcome"] == "blocked_existing"
+    assert payload["session_guard"]["record"]["event_id"] == prior_record["event_id"]
+    assert payload["session_guard"]["record"]["strategy"] == prior_record["strategy"]
+    assert payload["session_guard"]["record"]["signal_date"] == prior_record["signal_date"]
+
+    event_state_path = Path(payload["event_state_path"])
+    state = json.loads(event_state_path.read_text(encoding="utf-8"))
+    assert state["decision"] == "blocked"
+    assert state["result"] == "live_canary_same_session_submit_locked"
+    assert state["session_guard"] == payload["session_guard"]
+
+
+def test_live_canary_dry_run_remains_usable_when_same_session_guard_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base_dir = tmp_path / "live_canary"
+    prior_record = _session_guard_record()
+    claimed, existing, _state_path = claim_live_canary_session(
+        base_dir=base_dir,
+        account_id=str(prior_record["account_id"]),
+        strategy=str(prior_record["strategy"]),
+        signal_date=str(prior_record["signal_date"]),
+        record=prior_record,
+    )
+    assert claimed is True
+    assert existing is None
+
+    result, payload, _base_dir, adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+        ),
+        signal_payload=_signal_payload(date="2026-03-20"),
+        live_submit=False,
+        arm_live_canary=None,
+    )
+
+    assert result == 0
+    assert adapter.load_calls == 1
+    assert adapter.submit_calls == 0
+    assert payload["decision"] == "dry_run_ready"
+    assert payload["blockers"] == []
+    assert payload["response_text"] == "dry-run only"
+    assert payload["session_guard"] is None
+
+
+def test_live_canary_submit_path_preserves_exact_event_duplicate_protection_before_session_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    signal_payload = _signal_payload(date="2026-03-20")
+    event_record = {
+        "account_id": "5WT00001",
+        "decision": "live_submitted",
+        "event_id": signal_payload["event_id"],
+        "generated_at_chicago": "2026-03-23T10:45:00-04:00",
+        "manual_clearance_required": False,
+        "response_text": "submitted",
+        "result": "submitted",
+    }
+    event_claimed, event_prior, _event_path = claim_live_canary_event(
+        base_dir=tmp_path / "live_canary",
+        account_id="5WT00001",
+        event_id=str(signal_payload["event_id"]),
+        record=event_record,
+    )
+    assert event_claimed is True
+    assert event_prior is None
+
+    session_claimed, session_prior, _session_path = claim_live_canary_session(
+        base_dir=tmp_path / "live_canary",
+        account_id="5WT00001",
+        strategy=str(signal_payload["strategy"]),
+        signal_date=str(signal_payload["date"]),
+        record=_session_guard_record(event_id=str(signal_payload["event_id"])),
+    )
+    assert session_claimed is True
+    assert session_prior is None
+
+    result, payload, _base_dir, adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+        ),
+        signal_payload=signal_payload,
+    )
+
+    assert result == 2
+    assert adapter.load_calls == 1
+    assert adapter.submit_calls == 0
+    assert payload["decision"] == "blocked_duplicate"
+    assert payload["duplicate"] is True
+    assert payload["blockers"] == ["live_canary_duplicate_event"]
+    assert payload["response_text"] == "submitted"
+    assert payload["session_guard"] is None
+
+
 def test_live_canary_submit_path_reconciles_before_broker_submit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1634,6 +1876,11 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert payload["live_submission"]["submission_succeeded"] is True
     assert payload["live_submission"]["live_submission_fingerprint"] == fingerprint
     assert payload["live_submission"]["durable_state"] == durable_state
+    assert payload["session_guard"]["outcome"] == "claimed"
+    assert payload["session_guard"]["record"]["event_id"] == payload["event_id"]
+    assert payload["session_guard"]["record"]["result"] == "submitted"
+    assert payload["session_guard"]["record"]["strategy"] == "dual_mom_vol10_cash"
+    assert payload["session_guard"]["record"]["signal_date"] == "2026-03-20"
     assert payload["pre_submit_reconciliation"]["blockers"] == []
     assert payload["pre_submit_reconciliation"]["matched"] is True
     assert payload["pre_submit_reconciliation"]["original_decision"] == "ready_live_submit"
@@ -1647,6 +1894,7 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert audit_rows[0]["decision"] == "live_submitted"
     assert audit_rows[0]["response_text"] == "submitted"
     assert audit_rows[0]["live_submission"] == payload["live_submission"]
+    assert audit_rows[0]["session_guard"] == payload["session_guard"]
     assert audit_rows[0]["pre_submit_reconciliation"]["matched"] is True
 
     event_state_path = Path(payload["event_state_path"])
@@ -1655,6 +1903,7 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert state["manual_clearance_required"] is False
     assert state["result"] == "submitted"
     assert state["live_submission"] == payload["live_submission"]
+    assert state["session_guard"] == payload["session_guard"]
     assert state["pre_submit_reconciliation"]["matched"] is True
 
 
@@ -1721,12 +1970,15 @@ def test_live_canary_submit_path_persists_duplicate_refusal_provenance_after_mat
     assert payload["live_submission"]["live_submission_fingerprint"] == fingerprint
     assert payload["live_submission"]["durable_state"] == durable_state
     assert payload["live_submission"]["duplicate_submit_refusal"] == duplicate_submit_refusal
+    assert payload["session_guard"]["outcome"] == "claimed"
+    assert payload["session_guard"]["record"]["result"] == "refused_duplicate"
     assert payload["pre_submit_reconciliation"]["matched"] is True
 
     audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(audit_rows) == 1
     assert audit_rows[0]["decision"] == "live_submit_refused"
     assert audit_rows[0]["live_submission"] == payload["live_submission"]
+    assert audit_rows[0]["session_guard"] == payload["session_guard"]
     assert audit_rows[0]["pre_submit_reconciliation"]["matched"] is True
 
     event_state_path = Path(payload["event_state_path"])
@@ -1735,6 +1987,7 @@ def test_live_canary_submit_path_persists_duplicate_refusal_provenance_after_mat
     assert state["manual_clearance_required"] is True
     assert state["result"] == "refused_duplicate"
     assert state["live_submission"] == payload["live_submission"]
+    assert state["session_guard"] == payload["session_guard"]
     assert state["pre_submit_reconciliation"]["matched"] is True
 
 
