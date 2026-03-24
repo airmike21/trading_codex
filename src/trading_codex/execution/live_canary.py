@@ -716,7 +716,9 @@ def audit_rows_for_result(
     decision: str,
     duplicate: bool,
     response_text: str,
+    live_submission: dict[str, Any] | None = None,
     pre_submit_reconciliation: dict[str, Any] | None = None,
+    submit_error: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     base = {
         "account": evaluation.account_id,
@@ -728,8 +730,12 @@ def audit_rows_for_result(
         "response_text": response_text,
         "ts_chicago": evaluation.timestamp_chicago,
     }
+    if live_submission is not None:
+        base["live_submission"] = live_submission
     if pre_submit_reconciliation is not None:
         base["pre_submit_reconciliation"] = pre_submit_reconciliation
+    if submit_error is not None:
+        base["submit_error"] = submit_error
     if not evaluation.orders:
         return [
             {

@@ -79,6 +79,7 @@ def _signal_result(
     orders: list[dict[str, Any]] | None = None,
     live_submission: dict[str, Any] | None = None,
     pre_submit_reconciliation: dict[str, Any] | None = None,
+    submit_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rendered_orders = list(orders or [])
     payload = {
@@ -107,6 +108,8 @@ def _signal_result(
     }
     if pre_submit_reconciliation is not None:
         payload["pre_submit_reconciliation"] = pre_submit_reconciliation
+    if submit_error is not None:
+        payload["submit_error"] = submit_error
     return payload
 
 
@@ -123,6 +126,41 @@ def _render_live_canary_order(order: Any) -> dict[str, Any]:
         "requested_qty": order.requested_qty,
         "side": order.side,
         "symbol": order.symbol,
+    }
+
+
+def _render_live_submission_order(order: Any) -> dict[str, Any]:
+    return {
+        "attempted": order.attempted,
+        "broker_order_id": order.broker_order_id,
+        "broker_status": order.broker_status,
+        "error": order.error,
+        "quantity": order.quantity,
+        "side": order.side,
+        "succeeded": order.succeeded,
+        "symbol": order.symbol,
+    }
+
+
+def _render_live_submission_receipt(live_submission: Any) -> dict[str, Any]:
+    return {
+        "live_submit_attempted": live_submission.live_submit_attempted,
+        "manual_clearance_required": live_submission.manual_clearance_required,
+        "orders": [
+            _render_live_submission_order(order)
+            for order in live_submission.orders
+        ],
+        "refusal_reasons": list(live_submission.refusal_reasons),
+        "submission_result": live_submission.submission_result,
+        "submission_succeeded": live_submission.submission_succeeded,
+    }
+
+
+def _render_submit_error(*, exc: Exception, stage: str) -> dict[str, Any]:
+    return {
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+        "stage": stage,
     }
 
 
@@ -456,7 +494,9 @@ def _live_canary_event_record(
     manual_clearance_required: bool,
     response_text: str,
     result: str,
+    live_submission: dict[str, Any] | None = None,
     pre_submit_reconciliation: dict[str, Any] | None = None,
+    submit_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     record = {
         "account_id": account_id,
@@ -467,8 +507,12 @@ def _live_canary_event_record(
         "response_text": response_text,
         "result": result,
     }
+    if live_submission is not None:
+        record["live_submission"] = live_submission
     if pre_submit_reconciliation is not None:
         record["pre_submit_reconciliation"] = pre_submit_reconciliation
+    if submit_error is not None:
+        record["submit_error"] = submit_error
     return record
 
 
@@ -651,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
     event_state_path: Path | None = None
     live_submission_payload: dict[str, Any] | None = None
     pre_submit_reconciliation: dict[str, Any] | None = None
+    submit_error: dict[str, Any] | None = None
     response_text = "dry-run only"
 
     if final_blockers:
@@ -729,26 +774,7 @@ def main(argv: list[str] | None = None) -> int:
                             if live_submission.live_submit_attempted and live_submission.submission_succeeded
                             else "live_submit_refused"
                         )
-                        live_submission_payload = {
-                            "live_submit_attempted": live_submission.live_submit_attempted,
-                            "manual_clearance_required": live_submission.manual_clearance_required,
-                            "orders": [
-                                {
-                                    "attempted": order.attempted,
-                                    "broker_order_id": order.broker_order_id,
-                                    "broker_status": order.broker_status,
-                                    "error": order.error,
-                                    "quantity": order.quantity,
-                                    "side": order.side,
-                                    "succeeded": order.succeeded,
-                                    "symbol": order.symbol,
-                                }
-                                for order in live_submission.orders
-                            ],
-                            "refusal_reasons": list(live_submission.refusal_reasons),
-                            "submission_result": live_submission.submission_result,
-                            "submission_succeeded": live_submission.submission_succeeded,
-                        }
+                        live_submission_payload = _render_live_submission_receipt(live_submission)
                         finalize_live_canary_event(
                             state_path=event_state_path,
                             record=_live_canary_event_record(
@@ -761,12 +787,14 @@ def main(argv: list[str] | None = None) -> int:
                                 ),
                                 response_text=response_text,
                                 result=live_submission.submission_result,
+                                live_submission=live_submission_payload,
                                 pre_submit_reconciliation=pre_submit_reconciliation,
                             ),
                         )
                     except Exception as exc:
                         final_decision = "live_submit_error"
                         response_text = str(exc)
+                        submit_error = _render_submit_error(exc=exc, stage="submit_live_orders")
                         finalize_live_canary_event(
                             state_path=event_state_path,
                             record=_live_canary_event_record(
@@ -778,6 +806,7 @@ def main(argv: list[str] | None = None) -> int:
                                 response_text=response_text,
                                 result=LIVE_CANARY_STATE_PENDING,
                                 pre_submit_reconciliation=pre_submit_reconciliation,
+                                submit_error=submit_error,
                             ),
                         )
                 else:
@@ -805,7 +834,9 @@ def main(argv: list[str] | None = None) -> int:
         decision=final_decision,
         duplicate=duplicate,
         response_text=response_text,
+        live_submission=live_submission_payload,
         pre_submit_reconciliation=pre_submit_reconciliation,
+        submit_error=submit_error,
     )
     append_live_canary_audit(audit_path=audit_path, rows=rows)
     if event_state_path is None and account_id:
@@ -836,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
         ],
         live_submission=live_submission_payload,
         pre_submit_reconciliation=pre_submit_reconciliation,
+        submit_error=submit_error,
     )
     payload["broker_account_id"] = evaluation.broker_account_id
     _emit_result(payload=payload, emit=args.emit)

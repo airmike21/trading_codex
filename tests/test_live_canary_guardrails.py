@@ -1287,6 +1287,7 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert len(audit_rows) == 1
     assert audit_rows[0]["decision"] == "live_submitted"
     assert audit_rows[0]["response_text"] == "submitted"
+    assert audit_rows[0]["live_submission"] == payload["live_submission"]
     assert audit_rows[0]["pre_submit_reconciliation"]["matched"] is True
 
     event_state_path = Path(payload["event_state_path"])
@@ -1294,6 +1295,7 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert state["decision"] == "live_submitted"
     assert state["manual_clearance_required"] is False
     assert state["result"] == "submitted"
+    assert state["live_submission"] == payload["live_submission"]
     assert state["pre_submit_reconciliation"]["matched"] is True
 
 
@@ -1337,6 +1339,7 @@ def test_live_canary_submit_path_fails_closed_on_submit_refusal_after_matched_re
     audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(audit_rows) == 1
     assert audit_rows[0]["decision"] == "live_submit_refused"
+    assert audit_rows[0]["live_submission"] == payload["live_submission"]
     assert audit_rows[0]["pre_submit_reconciliation"]["matched"] is True
 
     event_state_path = Path(payload["event_state_path"])
@@ -1344,6 +1347,7 @@ def test_live_canary_submit_path_fails_closed_on_submit_refusal_after_matched_re
     assert state["decision"] == "live_submit_refused"
     assert state["manual_clearance_required"] is True
     assert state["result"] == "refused_pre_submit"
+    assert state["live_submission"] == payload["live_submission"]
     assert state["pre_submit_reconciliation"]["matched"] is True
 
 
@@ -1376,12 +1380,18 @@ def test_live_canary_submit_path_fails_closed_on_submit_error_after_matched_reco
     assert payload["decision"] == "live_submit_error"
     assert payload["response_text"] == "simulated live submit failure"
     assert payload["live_submission"] is None
+    assert payload["submit_error"] == {
+        "exception_type": "RuntimeError",
+        "message": "simulated live submit failure",
+        "stage": "submit_live_orders",
+    }
     assert payload["pre_submit_reconciliation"]["matched"] is True
 
     audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(audit_rows) == 1
     assert audit_rows[0]["decision"] == "live_submit_error"
     assert audit_rows[0]["response_text"] == "simulated live submit failure"
+    assert audit_rows[0]["submit_error"] == payload["submit_error"]
     assert audit_rows[0]["pre_submit_reconciliation"]["matched"] is True
 
     event_state_path = Path(payload["event_state_path"])
@@ -1389,6 +1399,7 @@ def test_live_canary_submit_path_fails_closed_on_submit_error_after_matched_reco
     assert state["decision"] == "live_submit_error"
     assert state["manual_clearance_required"] is True
     assert state["result"] == "claim_pending_manual_clearance_required"
+    assert state["submit_error"] == payload["submit_error"]
     assert state["pre_submit_reconciliation"]["matched"] is True
 
 
