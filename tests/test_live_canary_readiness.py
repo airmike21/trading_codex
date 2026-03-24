@@ -16,6 +16,7 @@ from trading_codex.execution.live_canary import (
     live_canary_event_state_path,
     live_canary_session_state_path,
 )
+from trading_codex.execution import live_canary_readiness as live_canary_readiness_module
 from trading_codex.execution.live_canary_readiness import build_live_canary_readiness
 from trading_codex.execution.live_canary import DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS
 
@@ -282,6 +283,44 @@ def test_live_canary_readiness_fail_closed_when_positions_file_is_missing(tmp_pa
     assert payload["gates"][0]["status"] == "fail"
     assert payload["blocking_reasons"][0].startswith("live_canary_broker_snapshot_load_error:")
     assert payload["gates"][3]["status"] == "not_assessed"
+
+
+def test_live_canary_readiness_rejects_tastytrade_with_positions_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signal_path = _write_signal_file(tmp_path, _signal_payload())
+    positions_path = _write_positions_file(
+        tmp_path,
+        _broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}),
+    )
+
+    def _unexpected_secret_load(*, secrets_file: Path | None = None) -> None:
+        raise AssertionError(f"load_tastytrade_secrets should not be called: {secrets_file!r}")
+
+    monkeypatch.setattr(live_canary_readiness_module, "load_tastytrade_secrets", _unexpected_secret_load)
+
+    payload = build_live_canary_readiness(
+        signal_json_file=signal_path,
+        broker="tastytrade",
+        positions_file=positions_path,
+        account_id=ACCOUNT_ID,
+        arm_live_canary=ACCOUNT_ID,
+        base_dir=tmp_path / "live_canary",
+        timestamp=_timestamp(),
+    )
+
+    assert payload["verdict"] == "not_ready"
+    assert payload["evaluation"] is None
+    assert payload["source"]["broker"] == "tastytrade"
+    assert payload["source"]["positions_file"] is None
+    input_gate = next(gate for gate in payload["gates"] if gate["gate"] == "input_readiness")
+    assert input_gate["status"] == "fail"
+    assert input_gate["details"]["positions_file"] is None
+    assert input_gate["blocking_reasons"] == [
+        "live_canary_broker_snapshot_load_error:--positions-file cannot be used with --broker tastytrade."
+    ]
+    assert payload["blocking_reasons"] == input_gate["blocking_reasons"]
 
 
 def test_live_canary_readiness_manual_arming_blocker(tmp_path: Path) -> None:

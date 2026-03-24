@@ -701,6 +701,7 @@ def build_live_canary_readiness(
     plan = None
     evaluation = None
     state_status = None
+    used_positions_file: Path | None = None
     input_errors: list[str] = []
     state_status_error: str | None = None
 
@@ -718,6 +719,8 @@ def build_live_canary_readiness(
                 broker_adapter = FileBrokerPositionAdapter(resolved_positions_file)
                 broker_source_ref = str(resolved_positions_file)
             elif broker == "tastytrade":
+                if resolved_positions_file is not None:
+                    raise ValueError("--positions-file cannot be used with --broker tastytrade.")
                 if configured_account_id is None:
                     raise ValueError("live_canary_requires_account_binding")
                 load_tastytrade_secrets(secrets_file=secrets_file)
@@ -732,6 +735,8 @@ def build_live_canary_readiness(
             else:
                 raise ValueError(f"Unsupported broker: {broker}")
             broker_snapshot = broker_adapter.load_snapshot()
+            if broker == "file":
+                used_positions_file = resolved_positions_file
         except Exception as exc:
             rendered_error = str(exc)
             if rendered_error == "live_canary_requires_account_binding":
@@ -783,7 +788,7 @@ def build_live_canary_readiness(
         details={
             "base_dir": None if resolved_base_dir is None else str(resolved_base_dir),
             "broker": broker,
-            "positions_file": None if resolved_positions_file is None else str(resolved_positions_file),
+            "positions_file": None if used_positions_file is None else str(used_positions_file),
             "signal_json_file": str(resolved_signal_json_file),
         },
     )
@@ -1026,7 +1031,7 @@ def build_live_canary_readiness(
         "source": {
             "base_dir": None if resolved_base_dir is None else str(resolved_base_dir),
             "broker": broker,
-            "positions_file": None if resolved_positions_file is None else str(resolved_positions_file),
+            "positions_file": None if used_positions_file is None else str(used_positions_file),
             "signal_json_file": str(resolved_signal_json_file),
         },
         "scope": {
