@@ -38,6 +38,7 @@ from trading_codex.execution.live_canary import (
     live_canary_event_state_path,
     live_canary_live_submit_limits,
     normalize_live_canary_account,
+    render_live_canary_affordability,
     response_text_from_live_submission,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
@@ -77,6 +78,7 @@ def _signal_result(
     response_text: str,
     audit_path: Path,
     event_state_path: Path | None,
+    affordability: dict[str, Any] | None = None,
     orders: list[dict[str, Any]] | None = None,
     live_submission: dict[str, Any] | None = None,
     pre_submit_reconciliation: dict[str, Any] | None = None,
@@ -107,6 +109,8 @@ def _signal_result(
         "symbol": signal.symbol,
         "warnings": list(warnings),
     }
+    if affordability is not None:
+        payload["affordability"] = affordability
     if pre_submit_reconciliation is not None:
         payload["pre_submit_reconciliation"] = pre_submit_reconciliation
     if submit_error is not None:
@@ -345,6 +349,13 @@ def _build_reconciliation_details(
             "original": original_evaluation.broker_account_id,
             "refreshed": refreshed_evaluation.broker_account_id,
         }
+    original_affordability = render_live_canary_affordability(original_evaluation.affordability)
+    refreshed_affordability = render_live_canary_affordability(refreshed_evaluation.affordability)
+    if original_affordability is not None or refreshed_affordability is not None:
+        details["affordability"] = {
+            "original": original_affordability,
+            "refreshed": refreshed_affordability,
+        }
     if order_drift is not None:
         details["order_drift"] = order_drift
     if error is not None:
@@ -502,6 +513,7 @@ def _live_canary_event_record(
     manual_clearance_required: bool,
     response_text: str,
     result: str,
+    affordability: dict[str, Any] | None = None,
     live_submission: dict[str, Any] | None = None,
     pre_submit_reconciliation: dict[str, Any] | None = None,
     submit_error: dict[str, Any] | None = None,
@@ -515,6 +527,8 @@ def _live_canary_event_record(
         "response_text": response_text,
         "result": result,
     }
+    if affordability is not None:
+        record["affordability"] = affordability
     if live_submission is not None:
         record["live_submission"] = live_submission
     if pre_submit_reconciliation is not None:
@@ -623,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
             response_text=response_text,
             audit_path=audit_path,
             event_state_path=None,
+            affordability=None,
         )
         _emit_result(payload=payload, emit=args.emit)
         return 2
@@ -692,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
             response_text=response_text,
             audit_path=audit_path,
             event_state_path=None,
+            affordability=None,
         )
         _emit_result(payload=payload, emit=args.emit)
         return 2
@@ -795,6 +811,7 @@ def main(argv: list[str] | None = None) -> int:
                                 ),
                                 response_text=response_text,
                                 result=live_submission.submission_result,
+                                affordability=render_live_canary_affordability(evaluation.affordability),
                                 live_submission=live_submission_payload,
                                 pre_submit_reconciliation=pre_submit_reconciliation,
                             ),
@@ -813,6 +830,7 @@ def main(argv: list[str] | None = None) -> int:
                                 manual_clearance_required=True,
                                 response_text=response_text,
                                 result=LIVE_CANARY_STATE_PENDING,
+                                affordability=render_live_canary_affordability(evaluation.affordability),
                                 pre_submit_reconciliation=pre_submit_reconciliation,
                                 submit_error=submit_error,
                             ),
@@ -831,6 +849,7 @@ def main(argv: list[str] | None = None) -> int:
                             manual_clearance_required=True,
                             response_text=response_text,
                             result=LIVE_CANARY_STATE_PENDING,
+                            affordability=render_live_canary_affordability(evaluation.affordability),
                             pre_submit_reconciliation=pre_submit_reconciliation,
                         ),
                     )
@@ -869,6 +888,7 @@ def main(argv: list[str] | None = None) -> int:
         response_text=response_text,
         audit_path=audit_path,
         event_state_path=event_state_path,
+        affordability=render_live_canary_affordability(evaluation.affordability),
         orders=[
             _render_live_canary_order(order)
             for order in evaluation.orders

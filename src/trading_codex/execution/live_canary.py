@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import json
+import math
 import os
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -53,6 +54,9 @@ LIVE_CANARY_BROKER_SNAPSHOT_AS_OF_UNPARSEABLE = "live_canary_broker_snapshot_as_
 LIVE_CANARY_REGULAR_SESSION_OPEN = time(hour=9, minute=30, second=0)
 LIVE_CANARY_REGULAR_SESSION_CLOSE = time(hour=16, minute=0, second=0)
 LIVE_CANARY_EARLY_SESSION_CLOSE = time(hour=13, minute=0, second=0)
+LIVE_CANARY_PLAN_AFFORDABILITY_BLOCKERS = frozenset({"buy_notional_exceeds_buying_power"})
+LIVE_CANARY_PLAN_AFFORDABILITY_WARNINGS = frozenset({"buy_notional_exceeds_cash"})
+LIVE_CANARY_BUY_CLASSIFICATIONS = frozenset({"BUY", "RESIZE_BUY"})
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,30 @@ class LiveCanaryOrder:
 
 
 @dataclass(frozen=True)
+class LiveCanaryAffordabilityOrder:
+    symbol: str
+    side: str
+    classification: str
+    estimated_notional: float | None
+    affordable: bool | None
+    status: str
+
+
+@dataclass(frozen=True)
+class LiveCanaryAffordability:
+    applicable: bool
+    status: str
+    source: str | None
+    selected_amount: float | None
+    available_amount: float | None
+    required_buy_notional_total: float
+    required_buy_notional_complete: bool
+    sufficient: bool | None
+    issues: list[str]
+    order_details: list[LiveCanaryAffordabilityOrder]
+
+
+@dataclass(frozen=True)
 class LiveCanaryEvaluation:
     timestamp_chicago: str
     account_id: str | None
@@ -82,6 +110,7 @@ class LiveCanaryEvaluation:
     blockers: list[str]
     warnings: list[str]
     orders: list[LiveCanaryOrder]
+    affordability: LiveCanaryAffordability | None = None
 
     @property
     def duplicate(self) -> bool:
@@ -309,6 +338,194 @@ def normalize_live_canary_account(value: object) -> str | None:
     return _coerce_optional_non_empty_string(value)
 
 
+def _coerce_affordability_amount(value: object) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    amount = round(float(value), 2)
+    if not math.isfinite(amount):
+        return None
+    return amount
+
+
+def resolve_live_canary_affordability_source(
+    broker_snapshot: Any,
+) -> tuple[str | None, float | None, float | None, str | None]:
+    if broker_snapshot.buying_power is not None:
+        selected_amount = _coerce_affordability_amount(broker_snapshot.buying_power)
+        if selected_amount is None:
+            return "buying_power", None, None, "buying_power_unusable"
+        if selected_amount <= 0:
+            return "buying_power", selected_amount, None, "buying_power_non_positive"
+        return "buying_power", selected_amount, selected_amount, None
+
+    if broker_snapshot.cash is not None:
+        selected_amount = _coerce_affordability_amount(broker_snapshot.cash)
+        if selected_amount is None:
+            return "cash", None, None, "cash_unusable"
+        if selected_amount <= 0:
+            return "cash", selected_amount, None, "cash_non_positive"
+        return "cash", selected_amount, selected_amount, None
+
+    return None, None, None, "buying_power_missing_and_cash_missing"
+
+
+def evaluate_live_canary_affordability(
+    *,
+    broker_snapshot: Any,
+    orders: list[LiveCanaryOrder],
+) -> tuple[LiveCanaryAffordability, list[str]]:
+    buy_orders = [
+        order
+        for order in orders
+        if order.side == "BUY" and order.classification in LIVE_CANARY_BUY_CLASSIFICATIONS
+    ]
+    if not buy_orders:
+        return (
+            LiveCanaryAffordability(
+                applicable=False,
+                status="not_applicable",
+                source=None,
+                selected_amount=None,
+                available_amount=None,
+                required_buy_notional_total=0.0,
+                required_buy_notional_complete=True,
+                sufficient=None,
+                issues=[],
+                order_details=[],
+            ),
+            [],
+        )
+
+    source, selected_amount, available_amount, source_issue = resolve_live_canary_affordability_source(broker_snapshot)
+    issues: list[str] = []
+    messages: list[str] = []
+    if source_issue is not None:
+        issues.append(source_issue)
+        messages.append(f"live_canary_affordability_unavailable:{source_issue}")
+
+    order_details: list[LiveCanaryAffordabilityOrder] = []
+    required_buy_notional_total = 0.0
+    required_buy_notional_complete = True
+    order_insufficient = False
+
+    for order in buy_orders:
+        if order.estimated_notional is None:
+            required_buy_notional_complete = False
+            missing_issue = f"missing_estimated_notional:{order.symbol}"
+            issues.append(missing_issue)
+            messages.append(f"live_canary_missing_estimated_notional:{order.symbol}")
+            order_details.append(
+                LiveCanaryAffordabilityOrder(
+                    symbol=order.symbol,
+                    side=order.side,
+                    classification=order.classification,
+                    estimated_notional=None,
+                    affordable=None,
+                    status="estimated_notional_unavailable",
+                )
+            )
+            continue
+
+        required_buy_notional_total += order.estimated_notional
+        if available_amount is None:
+            order_details.append(
+                LiveCanaryAffordabilityOrder(
+                    symbol=order.symbol,
+                    side=order.side,
+                    classification=order.classification,
+                    estimated_notional=order.estimated_notional,
+                    affordable=None,
+                    status="affordability_unavailable",
+                )
+            )
+            continue
+
+        affordable = order.estimated_notional <= available_amount
+        if not affordable:
+            order_insufficient = True
+            insufficient_issue = f"buy_order_exceeds_available:{order.symbol}"
+            issues.append(insufficient_issue)
+            messages.append(
+                "live_canary_buy_order_notional_exceeds_available:"
+                f"{order.symbol}:{order.estimated_notional:.2f}:{available_amount:.2f}"
+            )
+        order_details.append(
+            LiveCanaryAffordabilityOrder(
+                symbol=order.symbol,
+                side=order.side,
+                classification=order.classification,
+                estimated_notional=order.estimated_notional,
+                affordable=affordable,
+                status="affordable" if affordable else "insufficient",
+            )
+        )
+
+    required_buy_notional_total = round(required_buy_notional_total, 2)
+    total_insufficient = False
+    sufficient: bool | None
+    if source_issue is not None or not required_buy_notional_complete:
+        status = "unavailable"
+        sufficient = None
+    else:
+        total_insufficient = bool(
+            available_amount is not None and required_buy_notional_total > available_amount
+        )
+        if total_insufficient and available_amount is not None:
+            issues.append("total_buy_notional_exceeds_available")
+            messages.append(
+                "live_canary_total_buy_notional_exceeds_available:"
+                f"{required_buy_notional_total:.2f}:{available_amount:.2f}"
+            )
+        insufficient = order_insufficient or total_insufficient
+        status = "insufficient" if insufficient else "affordable"
+        sufficient = not insufficient
+
+    return (
+        LiveCanaryAffordability(
+            applicable=True,
+            status=status,
+            source=source,
+            selected_amount=selected_amount,
+            available_amount=available_amount,
+            required_buy_notional_total=required_buy_notional_total,
+            required_buy_notional_complete=required_buy_notional_complete,
+            sufficient=sufficient,
+            issues=_dedupe_strings(issues),
+            order_details=order_details,
+        ),
+        _dedupe_strings(messages),
+    )
+
+
+def render_live_canary_affordability(
+    affordability: LiveCanaryAffordability | None,
+) -> dict[str, Any] | None:
+    if affordability is None:
+        return None
+    return {
+        "applicable": affordability.applicable,
+        "available_amount": affordability.available_amount,
+        "issues": list(affordability.issues),
+        "order_details": [
+            {
+                "affordable": detail.affordable,
+                "classification": detail.classification,
+                "estimated_notional": detail.estimated_notional,
+                "side": detail.side,
+                "status": detail.status,
+                "symbol": detail.symbol,
+            }
+            for detail in affordability.order_details
+        ],
+        "required_buy_notional_complete": affordability.required_buy_notional_complete,
+        "required_buy_notional_total": affordability.required_buy_notional_total,
+        "selected_amount": affordability.selected_amount,
+        "source": affordability.source,
+        "status": affordability.status,
+        "sufficient": affordability.sufficient,
+    }
+
+
 def live_canary_state_dir(base_dir: Path | None = None) -> Path:
     if base_dir is not None:
         path = Path(base_dir)
@@ -518,9 +735,14 @@ def evaluate_live_canary(
     account_id = normalize_live_canary_account(live_canary_account)
     broker_account_id = normalize_live_canary_account(plan.broker_snapshot.account_id)
     arm_value = normalize_live_canary_account(arm_live_canary)
-    blockers: list[str] = list(plan.blockers)
-    warnings: list[str] = list(plan.warnings)
+    blockers: list[str] = [
+        blocker for blocker in plan.blockers if blocker not in LIVE_CANARY_PLAN_AFFORDABILITY_BLOCKERS
+    ]
+    warnings: list[str] = [
+        warning for warning in plan.warnings if warning not in LIVE_CANARY_PLAN_AFFORDABILITY_WARNINGS
+    ]
     orders: list[LiveCanaryOrder] = []
+    affordability: LiveCanaryAffordability | None = None
     resolved_timestamp = _normalize_timestamp(timestamp)
 
     if account_id is None:
@@ -579,14 +801,16 @@ def evaluate_live_canary(
                 desired_shares=desired_canary_shares,
             )
             reference_price = None if item is None else item.reference_price
-            if reference_price is None:
+            if reference_price is None and executable_delta < 0:
                 blockers.append(f"live_canary_missing_reference_price:{symbol}")
                 continue
             executable_qty = abs(executable_delta)
             cap_applied = item is not None and executable_qty < abs(item.delta_shares)
-            estimated_notional = round(reference_price * executable_qty, 2)
+            estimated_notional = None if reference_price is None else round(reference_price * executable_qty, 2)
             if cap_applied:
                 warnings.append(f"live_canary_qty_capped:{symbol}:{requested_qty}:{executable_qty}")
+            if reference_price is None:
+                warnings.append(f"live_canary_missing_reference_price:{symbol}")
             orders.append(
                 LiveCanaryOrder(
                     symbol=symbol,
@@ -602,6 +826,14 @@ def evaluate_live_canary(
                     cap_applied=cap_applied,
                 )
             )
+        affordability, affordability_messages = evaluate_live_canary_affordability(
+            broker_snapshot=plan.broker_snapshot,
+            orders=orders,
+        )
+        if live_submit_requested:
+            blockers.extend(affordability_messages)
+        else:
+            warnings.extend(affordability_messages)
 
     blockers = _dedupe_strings(blockers)
     warnings = _dedupe_strings(warnings)
@@ -629,6 +861,7 @@ def evaluate_live_canary(
         blockers=blockers,
         warnings=warnings,
         orders=orders,
+        affordability=affordability,
     )
 
 
@@ -730,6 +963,9 @@ def audit_rows_for_result(
         "response_text": response_text,
         "ts_chicago": evaluation.timestamp_chicago,
     }
+    affordability_payload = render_live_canary_affordability(evaluation.affordability)
+    if affordability_payload is not None:
+        base["affordability"] = affordability_payload
     if live_submission is not None:
         base["live_submission"] = live_submission
     if pre_submit_reconciliation is not None:

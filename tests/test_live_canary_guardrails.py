@@ -20,8 +20,10 @@ from trading_codex.execution.live_canary import (
     audit_rows_for_result,
     claim_live_canary_event,
     evaluate_live_canary,
+    evaluate_live_canary_affordability,
     finalize_live_canary_event,
     live_canary_audit_path,
+    resolve_live_canary_affordability_source,
 )
 
 
@@ -82,12 +84,14 @@ def _broker_snapshot(
     *positions: dict[str, object],
     account_id: str = "5WT00001",
     as_of: str | None = None,
+    cash: float | None = None,
     buying_power: float = 20_000.0,
 ) -> dict[str, object]:
     return {
         "broker_name": "tastytrade",
         "account_id": account_id,
         "as_of": as_of,
+        "cash": cash,
         "buying_power": buying_power,
         "positions": list(positions),
     }
@@ -99,9 +103,19 @@ def _build_plan(
     positions: list[dict[str, object]],
     account_id: str = "5WT00001",
     as_of: str | None = None,
+    cash: float | None = None,
+    buying_power: float | None = 20_000.0,
 ) -> object:
     signal = parse_signal_payload(signal_payload)
-    broker = parse_broker_snapshot(_broker_snapshot(*positions, account_id=account_id, as_of=as_of))
+    broker = parse_broker_snapshot(
+        _broker_snapshot(
+            *positions,
+            account_id=account_id,
+            as_of=as_of,
+            cash=cash,
+            buying_power=buying_power,
+        )
+    )
     return build_execution_plan(
         signal=signal,
         broker_snapshot=broker,
@@ -367,6 +381,127 @@ def test_live_canary_caps_buy_to_one_share_deterministically() -> None:
     assert "live_canary_qty_capped:EFA:100:1" in evaluation.warnings
 
 
+def test_live_canary_affordability_source_prefers_buying_power_over_cash() -> None:
+    broker_snapshot = parse_broker_snapshot(
+        _broker_snapshot(
+            account_id="5WT00001",
+            as_of="2026-03-23T10:40:00-04:00",
+            cash=500.0,
+            buying_power=1_000.0,
+        )
+    )
+
+    source, selected_amount, available_amount, issue = resolve_live_canary_affordability_source(broker_snapshot)
+
+    assert source == "buying_power"
+    assert selected_amount == 1_000.0
+    assert available_amount == 1_000.0
+    assert issue is None
+
+
+def test_live_canary_affordability_source_falls_back_to_cash_when_buying_power_missing() -> None:
+    broker_snapshot = parse_broker_snapshot(
+        _broker_snapshot(
+            account_id="5WT00001",
+            as_of="2026-03-23T10:40:00-04:00",
+            cash=500.0,
+            buying_power=None,
+        )
+    )
+
+    source, selected_amount, available_amount, issue = resolve_live_canary_affordability_source(broker_snapshot)
+
+    assert source == "cash"
+    assert selected_amount == 500.0
+    assert available_amount == 500.0
+    assert issue is None
+
+
+@pytest.mark.parametrize(
+    ("cash", "buying_power", "expected_source", "expected_selected_amount", "expected_issue"),
+    [
+        (None, None, None, None, "buying_power_missing_and_cash_missing"),
+        (500.0, 0.0, "buying_power", 0.0, "buying_power_non_positive"),
+        (0.0, None, "cash", 0.0, "cash_non_positive"),
+        (None, float("nan"), "buying_power", None, "buying_power_unusable"),
+    ],
+)
+def test_live_canary_affordability_source_marks_missing_zero_and_unusable_values_unavailable(
+    cash: float | None,
+    buying_power: float | None,
+    expected_source: str | None,
+    expected_selected_amount: float | None,
+    expected_issue: str,
+) -> None:
+    broker_snapshot = parse_broker_snapshot(
+        _broker_snapshot(
+            account_id="5WT00001",
+            as_of="2026-03-23T10:40:00-04:00",
+            cash=cash,
+            buying_power=buying_power,
+        )
+    )
+
+    source, selected_amount, available_amount, issue = resolve_live_canary_affordability_source(broker_snapshot)
+
+    assert source == expected_source
+    assert selected_amount == expected_selected_amount
+    assert available_amount is None
+    assert issue == expected_issue
+
+
+def test_live_canary_affordability_evaluation_uses_buy_side_order_notional_and_total() -> None:
+    broker_snapshot = parse_broker_snapshot(
+        _broker_snapshot(
+            account_id="5WT00001",
+            as_of="2026-03-23T10:40:00-04:00",
+            buying_power=150.0,
+        )
+    )
+    affordability, messages = evaluate_live_canary_affordability(
+        broker_snapshot=broker_snapshot,
+        orders=[
+            LiveCanaryOrder(
+                symbol="EFA",
+                side="BUY",
+                requested_qty=100,
+                executable_qty=1,
+                current_broker_shares=0,
+                desired_signal_shares=100,
+                desired_canary_shares=1,
+                classification="BUY",
+                reference_price=99.16,
+                estimated_notional=99.16,
+                cap_applied=True,
+            ),
+            LiveCanaryOrder(
+                symbol="SPY",
+                side="BUY",
+                requested_qty=100,
+                executable_qty=1,
+                current_broker_shares=0,
+                desired_signal_shares=100,
+                desired_canary_shares=1,
+                classification="BUY",
+                reference_price=75.0,
+                estimated_notional=75.0,
+                cap_applied=True,
+            ),
+        ],
+    )
+
+    assert affordability.applicable is True
+    assert affordability.status == "insufficient"
+    assert affordability.source == "buying_power"
+    assert affordability.available_amount == 150.0
+    assert affordability.required_buy_notional_total == 174.16
+    assert affordability.required_buy_notional_complete is True
+    assert affordability.sufficient is False
+    assert affordability.order_details[0].status == "affordable"
+    assert affordability.order_details[1].status == "affordable"
+    assert messages == ["live_canary_total_buy_notional_exceeds_available:174.16:150.00"]
+
+
 def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> None:
     plan = _build_plan(
         _signal_payload(
@@ -395,6 +530,157 @@ def test_live_canary_rotate_with_one_share_unwind_keeps_every_leg_at_cap() -> No
         ("EFA", "BUY", 1),
     ]
     assert all(order.executable_qty <= 1 for order in evaluation.orders)
+
+
+def test_live_canary_dry_run_warns_but_does_not_block_when_affordability_is_unavailable() -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-03-20"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+        buying_power=None,
+        cash=None,
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=False,
+        arm_live_canary=None,
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert evaluation.decision == "dry_run_ready"
+    assert evaluation.blockers == []
+    assert "live_canary_affordability_unavailable:buying_power_missing_and_cash_missing" in evaluation.warnings
+    assert evaluation.affordability is not None
+    assert evaluation.affordability.status == "unavailable"
+    assert evaluation.affordability.source is None
+    assert evaluation.affordability.available_amount is None
+    assert evaluation.affordability.required_buy_notional_total == 99.16
+
+
+def test_live_canary_live_submit_blocks_when_affordability_is_unavailable() -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-03-20"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+        buying_power=None,
+        cash=None,
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert evaluation.decision == "blocked"
+    assert "live_canary_affordability_unavailable:buying_power_missing_and_cash_missing" in evaluation.blockers
+    assert evaluation.affordability is not None
+    assert evaluation.affordability.status == "unavailable"
+
+
+def test_live_canary_live_submit_blocks_when_affordability_is_insufficient() -> None:
+    plan = _build_plan(
+        _signal_payload(date="2026-03-20"),
+        positions=[{"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+        buying_power=50.0,
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert evaluation.decision == "blocked"
+    assert "live_canary_buy_order_notional_exceeds_available:EFA:99.16:50.00" in evaluation.blockers
+    assert "live_canary_total_buy_notional_exceeds_available:99.16:50.00" in evaluation.blockers
+    assert evaluation.affordability is not None
+    assert evaluation.affordability.status == "insufficient"
+    assert evaluation.affordability.available_amount == 50.0
+    assert len(evaluation.affordability.order_details) == 1
+    assert evaluation.affordability.order_details[0].symbol == "EFA"
+    assert evaluation.affordability.order_details[0].affordable is False
+    assert evaluation.affordability.order_details[0].status == "insufficient"
+
+
+def test_live_canary_missing_estimated_notional_warns_in_dry_run_and_blocks_live_submit() -> None:
+    signal_payload = _signal_payload(
+        date="2026-03-20",
+        price=None,
+        resize_prev_shares=None,
+        resize_new_shares=None,
+        target_shares=100,
+    )
+    plan = _build_plan(
+        signal_payload,
+        positions=[{"symbol": "EFA", "shares": 0, "price": None, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+        buying_power=500.0,
+    )
+
+    dry_run = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=False,
+        arm_live_canary=None,
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+    live_submit = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert dry_run.decision == "dry_run_ready"
+    assert dry_run.blockers == []
+    assert "live_canary_missing_reference_price:EFA" in dry_run.warnings
+    assert "live_canary_missing_estimated_notional:EFA" in dry_run.warnings
+    assert live_submit.decision == "blocked"
+    assert "live_canary_missing_estimated_notional:EFA" in live_submit.blockers
+    assert live_submit.affordability is not None
+    assert live_submit.affordability.status == "unavailable"
+    assert live_submit.affordability.required_buy_notional_complete is False
+
+
+def test_live_canary_sell_only_flow_is_unaffected_by_affordability_guardrail() -> None:
+    plan = _build_plan(
+        _signal_payload(
+            date="2026-03-20",
+            action="EXIT",
+            symbol="CASH",
+            price=None,
+            target_shares=0,
+            resize_prev_shares=None,
+            resize_new_shares=None,
+        ),
+        positions=[{"symbol": "BIL", "shares": 1, "price": 91.20, "instrument_type": "Equity"}],
+        as_of="2026-03-23T10:40:00-04:00",
+        buying_power=None,
+        cash=None,
+    )
+
+    evaluation = evaluate_live_canary(
+        plan=plan,
+        live_canary_account="5WT00001",
+        live_submit_requested=True,
+        arm_live_canary="5WT00001",
+        timestamp=_timestamp("2026-03-23T10:45:00-04:00"),
+    )
+
+    assert evaluation.decision == "ready_live_submit"
+    assert evaluation.blockers == []
+    assert evaluation.affordability is not None
+    assert evaluation.affordability.status == "not_applicable"
+    assert evaluation.affordability.order_details == []
 
 
 def test_pre_submit_reconciliation_matches_when_refreshed_state_stays_ready() -> None:
@@ -1242,6 +1528,61 @@ def test_live_canary_submit_path_reconciles_before_broker_submit(
     assert state["pre_submit_reconciliation"]["order_drift"]["missing_orders"][0]["symbol"] == "EFA"
 
 
+def test_live_canary_submit_path_blocks_when_refreshed_affordability_drifts_lower(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result, payload, base_dir, adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+                buying_power=200.0,
+            ),
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:44:00-04:00",
+                buying_power=50.0,
+            ),
+        ),
+    )
+
+    assert result == 2
+    assert adapter.load_calls == 2
+    assert adapter.submit_calls == 0
+    assert payload["decision"] == "blocked"
+    assert payload["live_submission"] is None
+    assert "live_canary_pre_submit_decision_changed:ready_live_submit:blocked" in payload["blockers"]
+    assert (
+        "live_canary_pre_submit_blocker:live_canary_buy_order_notional_exceeds_available:EFA:99.16:50.00"
+        in payload["blockers"]
+    )
+    assert payload["pre_submit_reconciliation"]["matched"] is False
+    assert payload["pre_submit_reconciliation"]["affordability"]["original"]["available_amount"] == 200.0
+    assert payload["pre_submit_reconciliation"]["affordability"]["original"]["status"] == "affordable"
+    assert payload["pre_submit_reconciliation"]["affordability"]["refreshed"]["available_amount"] == 50.0
+    assert payload["pre_submit_reconciliation"]["affordability"]["refreshed"]["status"] == "insufficient"
+    assert payload["pre_submit_reconciliation"]["affordability"]["refreshed"]["source"] == "buying_power"
+    assert payload["affordability"]["available_amount"] == 50.0
+    assert payload["affordability"]["status"] == "insufficient"
+
+    audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["pre_submit_reconciliation"]["affordability"]["refreshed"]["available_amount"] == 50.0
+
+    event_state_path = Path(payload["event_state_path"])
+    state = json.loads(event_state_path.read_text(encoding="utf-8"))
+    assert state["decision"] == "blocked"
+    assert state["affordability"]["available_amount"] == 50.0
+    assert state["pre_submit_reconciliation"]["affordability"]["refreshed"]["available_amount"] == 50.0
+
+
 def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1293,12 +1634,13 @@ def test_live_canary_submit_path_submits_once_after_matched_reconciliation(
     assert payload["live_submission"]["submission_succeeded"] is True
     assert payload["live_submission"]["live_submission_fingerprint"] == fingerprint
     assert payload["live_submission"]["durable_state"] == durable_state
-    assert payload["pre_submit_reconciliation"] == {
-        "blockers": [],
-        "matched": True,
-        "original_decision": "ready_live_submit",
-        "refreshed_decision": "ready_live_submit",
-    }
+    assert payload["pre_submit_reconciliation"]["blockers"] == []
+    assert payload["pre_submit_reconciliation"]["matched"] is True
+    assert payload["pre_submit_reconciliation"]["original_decision"] == "ready_live_submit"
+    assert payload["pre_submit_reconciliation"]["refreshed_decision"] == "ready_live_submit"
+    assert payload["pre_submit_reconciliation"]["affordability"]["original"]["status"] == "affordable"
+    assert payload["pre_submit_reconciliation"]["affordability"]["refreshed"]["status"] == "affordable"
+    assert payload["affordability"]["status"] == "affordable"
 
     audit_rows = [json.loads(line) for line in (base_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(audit_rows) == 1
