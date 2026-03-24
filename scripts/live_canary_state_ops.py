@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,14 +13,25 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
+try:
+    from scripts import live_canary_guardrails
+except ImportError:  # pragma: no cover - direct script execution path
+    import live_canary_guardrails  # type: ignore[no-redef]
+
 from trading_codex.execution import resolve_timestamp
 from trading_codex.execution.live_canary_readiness import build_live_canary_readiness
 from trading_codex.execution.live_canary_state_ops import (
     apply_live_canary_state_clear,
     build_live_canary_state_status,
     preview_live_canary_state_clear,
+    resolve_live_canary_state_base_dir,
 )
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH
+from trading_codex.run_archive import build_run_id
+
+
+LIVE_CANARY_LAUNCH_SCHEMA_NAME = "live_canary_launch_result"
+LIVE_CANARY_LAUNCH_SCHEMA_VERSION = 1
 
 
 def _add_scope_args(parser: argparse.ArgumentParser) -> None:
@@ -42,6 +54,34 @@ def _add_base_dir_arg(parser: argparse.ArgumentParser, *, default: object = None
         default=default,
         help="Optional live-canary state directory. Default follows the Trading Codex archive-root fallback chain.",
     )
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        dir_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,6 +171,62 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional device-challenge token override for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_TOKEN.",
     )
     readiness_parser.add_argument(
+        "--secrets-file",
+        type=Path,
+        default=None,
+        help=f"Optional tastytrade secrets env file. If omitted, auto-loads {DEFAULT_TASTYTRADE_SECRETS_PATH} when present.",
+    )
+
+    launch_parser = subparsers.add_parser(
+        "launch",
+        help="Single operator-facing live-canary workflow: run readiness first, then guarded live submit only when explicitly requested and ready.",
+    )
+    _add_base_dir_arg(launch_parser, default=argparse.SUPPRESS)
+    launch_parser.add_argument("--signal-json-file", type=Path, required=True, help="Existing next_action JSON payload.")
+    launch_parser.add_argument(
+        "--broker",
+        choices=["file", "tastytrade"],
+        default="file",
+        help="Broker snapshot source. Use 'file' for tests/reviews; 'tastytrade' for live-capable launch.",
+    )
+    launch_parser.add_argument("--positions-file", type=Path, default=None, help="Required with --broker file.")
+    launch_parser.add_argument(
+        "--account-id",
+        "--live-canary-account",
+        dest="account_id",
+        type=str,
+        required=True,
+        help="Required explicit live-canary account binding to evaluate and, if ready, submit.",
+    )
+    launch_parser.add_argument(
+        "--live-submit",
+        action="store_true",
+        help="Attempt the guarded live-submit path only when readiness is ready and the account is explicitly armed.",
+    )
+    launch_parser.add_argument(
+        "--arm-live-canary",
+        type=str,
+        default=None,
+        help="Manual arming token. Must exactly match the bound account for a live submit attempt.",
+    )
+    launch_parser.add_argument(
+        "--ack-unmanaged-holdings",
+        action="store_true",
+        help="Allow managed-sleeve planning when unmanaged holdings exist. Launch still remains fail-closed.",
+    )
+    launch_parser.add_argument(
+        "--tastytrade-challenge-code",
+        type=str,
+        default=None,
+        help="Optional device-challenge code for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_CODE.",
+    )
+    launch_parser.add_argument(
+        "--tastytrade-challenge-token",
+        type=str,
+        default=None,
+        help="Optional device-challenge token override for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_TOKEN.",
+    )
+    launch_parser.add_argument(
         "--secrets-file",
         type=Path,
         default=None,
@@ -311,6 +407,277 @@ def _render_readiness_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_launch_text(payload: dict[str, Any]) -> str:
+    context = payload["event_context"]
+    artifact_paths = payload["artifact_paths"]
+    lines = [
+        f"Readiness {payload['readiness_verdict']}",
+        f"Submit outcome {payload['submit_outcome']}",
+        f"Live submit requested {str(payload['requested_live_submit']).lower()}",
+        f"Submit path invoked {str(payload['submit_path_invoked']).lower()}",
+        (
+            "Scope "
+            f"account={context.get('account_id') or '-'} "
+            f"strategy={context.get('strategy') or '-'} "
+            f"signal_date={context.get('signal_date') or '-'} "
+            f"event_id={context.get('event_id') or '-'} "
+            f"fingerprint={context.get('live_submission_fingerprint') or '-'}"
+        ),
+        f"Operator message {payload['operator_message']}",
+        f"Result path {artifact_paths['result_path']}",
+    ]
+
+    blocking_reasons = payload.get("readiness", {}).get("blocking_reasons", [])
+    if blocking_reasons:
+        lines.append("Readiness blockers:")
+        lines.extend(f"- {reason}" for reason in blocking_reasons)
+    else:
+        lines.append("Readiness blockers: none")
+
+    submit_result = payload.get("submit_result")
+    if isinstance(submit_result, dict):
+        lines.append(
+            "Submit result "
+            f"decision={submit_result.get('decision') or '-'} "
+            f"response={submit_result.get('response_text') or '-'}"
+        )
+    else:
+        lines.append("Submit result: not invoked")
+    return "\n".join(lines)
+
+
+def _launch_guardrails_argv(args: argparse.Namespace, *, resolved_base_dir: Path, timestamp: Any) -> list[str]:
+    argv = [
+        "--signal-json-file",
+        str(args.signal_json_file),
+        "--broker",
+        args.broker,
+        "--live-canary-account",
+        str(args.account_id),
+        "--timestamp",
+        timestamp.isoformat(),
+        "--base-dir",
+        str(resolved_base_dir),
+    ]
+    if args.positions_file is not None:
+        argv.extend(["--positions-file", str(args.positions_file)])
+    if args.live_submit:
+        argv.append("--live-submit")
+    if args.arm_live_canary is not None:
+        argv.extend(["--arm-live-canary", str(args.arm_live_canary)])
+    if args.ack_unmanaged_holdings:
+        argv.append("--ack-unmanaged-holdings")
+    if args.tastytrade_challenge_code is not None:
+        argv.extend(["--tastytrade-challenge-code", str(args.tastytrade_challenge_code)])
+    if args.tastytrade_challenge_token is not None:
+        argv.extend(["--tastytrade-challenge-token", str(args.tastytrade_challenge_token)])
+    if args.secrets_file is not None:
+        argv.extend(["--secrets-file", str(args.secrets_file)])
+    return argv
+
+
+def _copy_named_paths(
+    *,
+    target: dict[str, Any],
+    payload: dict[str, Any] | None,
+    key_names: tuple[str, ...],
+    prefix: str,
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    for key_name in key_names:
+        value = payload.get(key_name)
+        if isinstance(value, str) and value.strip():
+            target[f"{prefix}{key_name}"] = value
+
+
+def _live_submission_fingerprint(submit_payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(submit_payload, dict):
+        return None
+    live_submission = submit_payload.get("live_submission")
+    if not isinstance(live_submission, dict):
+        return None
+    fingerprint = live_submission.get("live_submission_fingerprint")
+    if not isinstance(fingerprint, str):
+        return None
+    stripped = fingerprint.strip()
+    return stripped or None
+
+
+def _collect_launch_artifact_paths(
+    *,
+    result_path: Path,
+    resolved_base_dir: Path,
+    signal_json_file: Path,
+    positions_file: Path | None,
+    readiness: dict[str, Any],
+    submit_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    artifact_paths: dict[str, Any] = {
+        "result_path": str(result_path),
+        "live_canary_base_dir": str(resolved_base_dir),
+        "signal_json_file": str(signal_json_file),
+    }
+    if positions_file is not None:
+        artifact_paths["positions_file"] = str(positions_file)
+
+    blocking_artifact_paths = sorted(
+        {
+            str(artifact.get("path"))
+            for artifact in readiness.get("state_status", {}).get("blocking_artifacts", [])
+            if isinstance(artifact, dict) and isinstance(artifact.get("path"), str) and artifact.get("path")
+        }
+    )
+    if blocking_artifact_paths:
+        artifact_paths["readiness_blocking_artifact_paths"] = blocking_artifact_paths
+
+    _copy_named_paths(
+        target=artifact_paths,
+        payload=submit_payload,
+        key_names=("audit_path", "event_state_path"),
+        prefix="submit_",
+    )
+    submit_session_guard = None if not isinstance(submit_payload, dict) else submit_payload.get("session_guard")
+    if isinstance(submit_session_guard, dict):
+        state_path = submit_session_guard.get("state_path")
+        if isinstance(state_path, str) and state_path.strip():
+            artifact_paths["submit_session_state_path"] = state_path
+
+    live_submission = None if not isinstance(submit_payload, dict) else submit_payload.get("live_submission")
+    if isinstance(live_submission, dict):
+        durable_state = live_submission.get("durable_state")
+        _copy_named_paths(
+            target=artifact_paths,
+            payload=durable_state if isinstance(durable_state, dict) else None,
+            key_names=("claim_path", "ledger_path", "lock_path", "state_dir"),
+            prefix="submit_",
+        )
+        duplicate_submit_refusal = live_submission.get("duplicate_submit_refusal")
+        _copy_named_paths(
+            target=artifact_paths,
+            payload=duplicate_submit_refusal if isinstance(duplicate_submit_refusal, dict) else None,
+            key_names=("claim_path", "ledger_path", "lock_path", "state_dir"),
+            prefix="submit_duplicate_refusal_",
+        )
+    return artifact_paths
+
+
+def _build_launch_result_path(
+    *,
+    resolved_base_dir: Path,
+    timestamp: Any,
+    event_context: dict[str, Any],
+    requested_live_submit: bool,
+    submit_outcome: str,
+) -> Path:
+    run_id = build_run_id(
+        timestamp.isoformat(),
+        run_kind="live_canary_launch",
+        label=f"{event_context.get('strategy') or 'live_canary'}_{event_context.get('account_id') or 'unbound'}",
+        identity_parts=[
+            event_context.get("event_id"),
+            requested_live_submit,
+            submit_outcome,
+            event_context.get("live_submission_fingerprint"),
+        ],
+    )
+    return resolved_base_dir / "launches" / timestamp.date().isoformat() / f"{run_id}.json"
+
+
+def _run_launch(args: argparse.Namespace, *, timestamp: Any) -> tuple[int, dict[str, Any]]:
+    resolved_base_dir = resolve_live_canary_state_base_dir(args.base_dir, create=True)
+    readiness = build_live_canary_readiness(
+        signal_json_file=args.signal_json_file,
+        broker=args.broker,
+        positions_file=args.positions_file,
+        account_id=args.account_id,
+        arm_live_canary=args.arm_live_canary,
+        ack_unmanaged_holdings=bool(args.ack_unmanaged_holdings),
+        base_dir=resolved_base_dir,
+        timestamp=timestamp,
+        tastytrade_challenge_code=args.tastytrade_challenge_code,
+        tastytrade_challenge_token=args.tastytrade_challenge_token,
+        secrets_file=args.secrets_file,
+    )
+
+    submit_exit_code: int | None = None
+    submit_payload: dict[str, Any] | None = None
+    if args.live_submit and readiness["verdict"] == "ready":
+        guardrails_args = live_canary_guardrails.build_parser().parse_args(
+            _launch_guardrails_argv(args, resolved_base_dir=resolved_base_dir, timestamp=timestamp)
+        )
+        submit_exit_code, submit_payload = live_canary_guardrails.run_guardrails(guardrails_args)
+
+    if not args.live_submit:
+        submit_outcome = "not_requested"
+    elif readiness["verdict"] != "ready":
+        submit_outcome = "not_attempted_readiness_blocked"
+    else:
+        submit_outcome = str((submit_payload or {}).get("decision") or "submit_path_invoked_without_result")
+
+    readiness_scope = readiness.get("scope", {})
+    readiness_signal = readiness.get("signal", {})
+    readiness_evaluation = readiness.get("evaluation", {})
+    event_context = {
+        "account_id": readiness_scope.get("account_id"),
+        "action": readiness_signal.get("action"),
+        "broker_account_id": None if not isinstance(readiness_evaluation, dict) else readiness_evaluation.get("broker_account_id"),
+        "event_id": readiness_scope.get("event_id"),
+        "live_submission_fingerprint": _live_submission_fingerprint(submit_payload),
+        "signal_date": readiness_scope.get("signal_date"),
+        "strategy": readiness_scope.get("strategy"),
+        "symbol": readiness_signal.get("symbol"),
+    }
+    if isinstance(submit_payload, dict) and submit_payload.get("broker_account_id") is not None:
+        event_context["broker_account_id"] = submit_payload.get("broker_account_id")
+
+    result_path = _build_launch_result_path(
+        resolved_base_dir=resolved_base_dir,
+        timestamp=timestamp,
+        event_context=event_context,
+        requested_live_submit=bool(args.live_submit),
+        submit_outcome=submit_outcome,
+    )
+    artifact_paths = _collect_launch_artifact_paths(
+        result_path=result_path,
+        resolved_base_dir=resolved_base_dir,
+        signal_json_file=Path(args.signal_json_file),
+        positions_file=None if args.positions_file is None else Path(args.positions_file),
+        readiness=readiness,
+        submit_payload=submit_payload,
+    )
+
+    operator_message = (
+        str(submit_payload.get("response_text"))
+        if isinstance(submit_payload, dict) and submit_payload.get("response_text") is not None
+        else "; ".join(str(reason) for reason in readiness.get("blocking_reasons", []))
+        if readiness.get("blocking_reasons")
+        else "launch preview only"
+    )
+    payload = {
+        "schema_name": LIVE_CANARY_LAUNCH_SCHEMA_NAME,
+        "schema_version": LIVE_CANARY_LAUNCH_SCHEMA_VERSION,
+        "timestamp_chicago": timestamp.isoformat(),
+        "requested_live_submit": bool(args.live_submit),
+        "submit_exit_code": submit_exit_code,
+        "submit_outcome": submit_outcome,
+        "submit_path_invoked": submit_payload is not None,
+        "readiness_verdict": readiness["verdict"],
+        "operator_message": operator_message,
+        "event_context": event_context,
+        "artifact_paths": artifact_paths,
+        "readiness": readiness,
+        "submit_result": submit_payload,
+    }
+    _atomic_write_json(result_path, payload)
+
+    if submit_payload is not None:
+        return int(submit_exit_code or 0), payload
+    if readiness["verdict"] != "ready":
+        return 2, payload
+    return 0, payload
+
+
 def _emit(payload: dict[str, Any], *, emit: str) -> None:
     if emit == "json":
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
@@ -320,6 +687,9 @@ def _emit(payload: dict[str, Any], *, emit: str) -> None:
         return
     if payload["schema_name"] == "live_canary_readiness":
         print(_render_readiness_text(payload))
+        return
+    if payload["schema_name"] == LIVE_CANARY_LAUNCH_SCHEMA_NAME:
+        print(_render_launch_text(payload))
         return
     print(_render_clear_text(payload))
 
@@ -351,6 +721,10 @@ def main(argv: list[str] | None = None) -> int:
                 tastytrade_challenge_token=args.tastytrade_challenge_token,
                 secrets_file=args.secrets_file,
             )
+        elif args.command == "launch":
+            result_code, payload = _run_launch(args, timestamp=timestamp)
+            _emit(payload, emit=args.emit)
+            return result_code
         else:
             clear_scopes = set(args.clear_scopes or [])
             if args.confirm is not None and not args.apply:

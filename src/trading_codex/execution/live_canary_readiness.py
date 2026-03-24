@@ -207,7 +207,7 @@ def _readiness_command(
     return shlex.join(parts)
 
 
-def _submit_command(
+def _launch_command(
     *,
     signal_json_file: Path,
     broker: str,
@@ -220,7 +220,7 @@ def _submit_command(
     if account_id is None:
         return None
     parts = _base_command_parts(
-        program="scripts/live_canary_guardrails.py",
+        program="scripts/live_canary_state_ops.py",
         signal_json_file=signal_json_file,
         broker=broker,
         positions_file=positions_file,
@@ -230,6 +230,7 @@ def _submit_command(
         base_dir=base_dir,
         secrets_file=secrets_file,
     )
+    parts.insert(2, "launch")
     parts.extend(["--live-submit", "--emit", "json"])
     return shlex.join(parts)
 
@@ -320,7 +321,7 @@ def _build_next_actions(
         )
 
     if verdict == "ready":
-        submit_command = _submit_command(
+        submit_command = _launch_command(
             signal_json_file=signal_json_file,
             broker=broker,
             positions_file=positions_file,
@@ -331,9 +332,9 @@ def _build_next_actions(
         )
         if submit_command is not None:
             add_action(
-                action_id="run_live_canary_submit",
+                action_id="run_live_canary_launch",
                 reason="ready",
-                summary="Run the live-canary submit workflow with the same inputs.",
+                summary="Run the combined live-canary launch workflow with the same inputs.",
                 command=submit_command,
             )
         return actions

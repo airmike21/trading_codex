@@ -260,7 +260,8 @@ def test_live_canary_readiness_ready_path(tmp_path: Path) -> None:
     assert payload["verdict"] == "ready"
     assert payload["blocking_reasons"] == []
     assert payload["evaluation"]["decision"] == "ready_live_submit"
-    assert payload["next_actions"][0]["action_id"] == "run_live_canary_submit"
+    assert payload["next_actions"][0]["action_id"] == "run_live_canary_launch"
+    assert "scripts/live_canary_state_ops.py launch" in payload["next_actions"][0]["command"]
     assert payload["state_status"]["summary"]["blocking_artifact_count"] == 0
 
 

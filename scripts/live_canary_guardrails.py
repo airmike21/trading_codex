@@ -808,8 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def run_guardrails(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     timestamp = resolve_timestamp(args.timestamp)
     audit_path = live_canary_audit_path(args.base_dir)
 
@@ -846,8 +845,7 @@ def main(argv: list[str] | None = None) -> int:
             event_state_path=None,
             affordability=None,
         )
-        _emit_result(payload=payload, emit=args.emit)
-        return 2
+        return 2, payload
 
     try:
         if args.broker == "file":
@@ -916,8 +914,7 @@ def main(argv: list[str] | None = None) -> int:
             event_state_path=None,
             affordability=None,
         )
-        _emit_result(payload=payload, emit=args.emit)
-        return 2
+        return 2, payload
 
     final_decision = evaluation.decision
     final_blockers = list(evaluation.blockers)
@@ -1264,11 +1261,16 @@ def main(argv: list[str] | None = None) -> int:
         submit_error=submit_error,
     )
     payload["broker_account_id"] = evaluation.broker_account_id
-    _emit_result(payload=payload, emit=args.emit)
-
     if durability_failures or final_decision in {"blocked", "blocked_duplicate", "live_submit_error", "live_submit_refused"}:
-        return 2
-    return 0
+        return 2, payload
+    return 0, payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    exit_code, payload = run_guardrails(args)
+    _emit_result(payload=payload, emit=args.emit)
+    return exit_code
 
 
 if __name__ == "__main__":
