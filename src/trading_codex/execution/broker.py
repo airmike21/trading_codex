@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Any, Protocol
+from urllib.parse import urlencode
 
 import requests
 
@@ -1009,6 +1010,10 @@ def _tastytrade_equity_order_payload(order: SimulatedOrderRequest) -> dict[str, 
     }
 
 
+def build_tastytrade_equity_order_payload(order: SimulatedOrderRequest) -> dict[str, Any]:
+    return _tastytrade_equity_order_payload(order)
+
+
 def _normalize_tastytrade_order_submission(
     *,
     order: SimulatedOrderRequest,
@@ -1128,12 +1133,20 @@ class RequestsTastytradeHttpClient:
         timeout: float | None = None,
         challenge_code: str | None = None,
         challenge_token: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        session_token: str | None = None,
+        access_token: str | None = None,
     ) -> None:
         self.session = session or requests.Session()
         self.base_url = (base_url or os.getenv("TASTYTRADE_API_BASE_URL") or "https://api.tastytrade.com").rstrip("/")
         self.timeout = timeout if timeout is not None else float(os.getenv("TASTYTRADE_TIMEOUT_SECONDS", "30"))
         self.challenge_code = challenge_code or os.getenv("TASTYTRADE_CHALLENGE_CODE")
         self.challenge_token = challenge_token or os.getenv("TASTYTRADE_CHALLENGE_TOKEN")
+        self.username = username
+        self.password = password
+        self.session_token = session_token
+        self.access_token = access_token
         self._auth_header: str | None = None
 
     def _request_json(
@@ -1144,6 +1157,7 @@ class RequestsTastytradeHttpClient:
         json_payload: dict[str, Any] | None = None,
         include_auth: bool = True,
         extra_headers: dict[str, str] | None = None,
+        allow_empty_response: bool = False,
     ) -> dict[str, Any]:
         headers: dict[str, str] = dict(extra_headers or {})
         if include_auth:
@@ -1160,6 +1174,8 @@ class RequestsTastytradeHttpClient:
         except ValueError as exc:
             payload = None
             if response.ok:
+                if allow_empty_response:
+                    return {}
                 raise ValueError(f"Tastytrade {path} response must be valid JSON.") from exc
         if not response.ok:
             detail = _format_tastytrade_error(payload)
@@ -1174,6 +1190,21 @@ class RequestsTastytradeHttpClient:
         if not isinstance(payload, dict):
             raise ValueError(f"Tastytrade {path} response must be a JSON object.")
         return payload
+
+    def _query_path(self, path: str, *, params: dict[str, Any] | None = None) -> str:
+        if not params:
+            return path
+        query = urlencode(
+            [
+                (str(key), str(value))
+                for key, value in params.items()
+                if value is not None and str(value).strip()
+            ]
+        )
+        if not query:
+            return path
+        separator = "&" if "?" in path else "?"
+        return f"{path}{separator}{query}"
 
     def _session_request_payload(self, *, username: str, password: str) -> dict[str, Any]:
         return {"login": username, "password": password, "rememberMe": True}
@@ -1276,18 +1307,18 @@ class RequestsTastytradeHttpClient:
         if self._auth_header:
             return self._auth_header
 
-        access_token = os.getenv("TASTYTRADE_ACCESS_TOKEN") or os.getenv("TASTYTRADE_API_TOKEN")
+        access_token = self.access_token or os.getenv("TASTYTRADE_ACCESS_TOKEN") or os.getenv("TASTYTRADE_API_TOKEN")
         if access_token:
             self._auth_header = f"Bearer {access_token.strip()}"
             return self._auth_header
 
-        session_token = os.getenv("TASTYTRADE_SESSION_TOKEN")
+        session_token = self.session_token or os.getenv("TASTYTRADE_SESSION_TOKEN")
         if session_token:
             self._auth_header = session_token.strip()
             return self._auth_header
 
-        username = os.getenv("TASTYTRADE_USERNAME")
-        password = os.getenv("TASTYTRADE_PASSWORD")
+        username = self.username or os.getenv("TASTYTRADE_USERNAME")
+        password = self.password or os.getenv("TASTYTRADE_PASSWORD")
         if not username or not password:
             raise ValueError(
                 "Tastytrade credentials not configured. Set TASTYTRADE_SESSION_TOKEN, "
@@ -1332,6 +1363,15 @@ class RequestsTastytradeHttpClient:
 
     def place_order(self, *, account_id: str, payload: dict[str, Any]) -> Any:
         return self._request_json("POST", f"/accounts/{account_id}/orders", json_payload=payload)
+
+    def get_json(self, path: str, *, params: dict[str, Any] | None = None) -> Any:
+        return self._request_json("GET", self._query_path(path, params=params))
+
+    def post_json(self, path: str, *, payload: dict[str, Any] | None = None) -> Any:
+        return self._request_json("POST", path, json_payload=payload or {})
+
+    def delete_json(self, path: str) -> Any:
+        return self._request_json("DELETE", path, allow_empty_response=True)
 
 
 class FileBrokerPositionAdapter:

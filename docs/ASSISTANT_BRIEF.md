@@ -16,6 +16,7 @@ Last updated: 2026-03-25
   4. funded clean tastytrade account
   5. one-strategy limited live
 - Current primary live candidate: simple long-only ETF trend/momentum with cash fallback; daily/weekly execution; whole shares initially; no options, no shorting, no leverage initially.
+- Stage 1 sandbox capability command: `scripts/tastytrade_sandbox_capability.py` with slice notes in `docs/TASTYTRADE_SANDBOX_CAPABILITY.md`.
 
 ## Hard Invariants
 
@@ -41,5 +42,6 @@ Last updated: 2026-03-25
 ```bash
 ~/trading_codex/.venv/bin/python scripts/update_data_eod.py --provider stooq --verbose
 ~/trading_codex/.venv/bin/python scripts/daily_signal.py --preset vm_core_due --emit json
+~/trading_codex/.venv/bin/python scripts/tastytrade_sandbox_capability.py --preset dual_mom_vol10_cash_core --emit json
 ~/trading_codex/.venv/bin/python -m pytest -q
 ```

@@ -67,6 +67,43 @@ def test_missing_default_secrets_file_is_noop(tmp_path: Path, monkeypatch: pytes
     assert env == {}
 
 
+def test_load_tastytrade_sandbox_secrets_reads_explicit_sandbox_values(tmp_path: Path) -> None:
+    secrets_path = tmp_path / "tastytrade_sandbox.env"
+    secrets_path.write_text(
+        "\n".join(
+            [
+                "export TASTYTRADE_SANDBOX_ACCOUNT='5WT00001'",
+                "export TASTYTRADE_SANDBOX_USERNAME='sandbox-user@example.com'",
+                "export TASTYTRADE_SANDBOX_PASSWORD='sandbox-password'",
+                "export TASTYTRADE_SANDBOX_API_BASE_URL='https://api.cert.tastytrade.com'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env: dict[str, str] = {}
+    loaded_path = secrets.load_tastytrade_sandbox_secrets(secrets_file=secrets_path, environ=env)
+
+    assert loaded_path == secrets_path
+    assert env == {
+        "TASTYTRADE_SANDBOX_ACCOUNT": "5WT00001",
+        "TASTYTRADE_SANDBOX_USERNAME": "sandbox-user@example.com",
+        "TASTYTRADE_SANDBOX_PASSWORD": "sandbox-password",
+        "TASTYTRADE_SANDBOX_API_BASE_URL": "https://api.cert.tastytrade.com",
+    }
+
+
+def test_missing_default_sandbox_secrets_file_is_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(secrets, "DEFAULT_TASTYTRADE_SANDBOX_SECRETS_PATH", tmp_path / "missing.env")
+    env: dict[str, str] = {}
+
+    loaded_path = secrets.load_tastytrade_sandbox_secrets(environ=env)
+
+    assert loaded_path is None
+    assert env == {}
+
+
 def test_secret_values_do_not_appear_in_error_messages(tmp_path: Path) -> None:
     secrets_path = tmp_path / "tastytrade.env"
     secrets_path.write_text(
@@ -85,4 +122,25 @@ def test_secret_values_do_not_appear_in_error_messages(tmp_path: Path) -> None:
 
     message = str(excinfo.value)
     assert "super-secret-password" not in message
+    assert "Invalid env assignment" in message
+
+
+def test_sandbox_secret_values_do_not_appear_in_error_messages(tmp_path: Path) -> None:
+    secrets_path = tmp_path / "tastytrade_sandbox.env"
+    secrets_path.write_text(
+        "\n".join(
+            [
+                "export TASTYTRADE_SANDBOX_PASSWORD='super-secret-sandbox-password'",
+                "not valid shell env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        secrets.parse_tastytrade_sandbox_secrets_file(secrets_path)
+
+    message = str(excinfo.value)
+    assert "super-secret-sandbox-password" not in message
     assert "Invalid env assignment" in message
