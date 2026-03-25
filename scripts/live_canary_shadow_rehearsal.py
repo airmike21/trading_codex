@@ -340,6 +340,8 @@ def _build_state_ops_command(
     if signal_json_file is not None:
         command.extend(["--signal-json-file", str(signal_json_file)])
         command.extend(["--arm-live-canary", account_id])
+        if command_name == "readiness":
+            command.append("--preview-only")
     if launch_result_file is not None:
         command.extend(["--launch-result-file", str(launch_result_file)])
     if positions_file is not None:

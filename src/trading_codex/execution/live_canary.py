@@ -575,6 +575,11 @@ def live_canary_event_state_path(*, base_dir: Path | None = None, account_id: st
     return state_dir / "events" / f"{_live_canary_event_key(account_id=account_id, event_id=event_id)}.json"
 
 
+def live_canary_release_approval_path(*, base_dir: Path | None = None, account_id: str, event_id: str) -> Path:
+    state_dir = live_canary_state_dir(base_dir)
+    return state_dir / "approvals" / f"{_live_canary_event_key(account_id=account_id, event_id=event_id)}.json"
+
+
 def live_canary_session_state_path(
     *,
     base_dir: Path | None = None,

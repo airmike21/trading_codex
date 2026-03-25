@@ -45,6 +45,7 @@ READINESS_GATE_ORDER = (
     "session_readiness",
     "canary_order_readiness",
     "affordability",
+    "pre_live_approval",
     "duplicate_state",
     "operator_state_ops",
     "other_guardrails",
@@ -235,6 +236,29 @@ def _launch_command(
     return shlex.join(parts)
 
 
+def _approval_command(
+    *,
+    account_id: str,
+    bundle_dir: str | None,
+    base_dir: Path | None,
+    apply: bool,
+) -> str:
+    parts = [
+        ".venv/bin/python",
+        "scripts/live_canary_state_ops.py",
+        "approve",
+        "--account-id",
+        account_id,
+        "--bundle-dir",
+        bundle_dir or "<SHADOW_REHEARSAL_BUNDLE_DIR>",
+    ]
+    if apply:
+        parts.append("--apply")
+    if base_dir is not None:
+        parts.extend(["--base-dir", str(base_dir)])
+    return shlex.join(parts)
+
+
 def _state_clear_command(
     *,
     base_dir: Path | None,
@@ -298,6 +322,7 @@ def _build_next_actions(
     base_dir: Path | None,
     secrets_file: Path | None,
     blocking_reasons: list[str],
+    release_approval: dict[str, Any] | None,
     duplicate_artifacts: list[dict[str, Any]],
     operator_artifacts: list[dict[str, Any]],
     verdict: str,
@@ -599,6 +624,29 @@ def _build_next_actions(
                 summary="No executable live-canary order is pending for this signal. Do not run live submit.",
             )
             continue
+        if reason.startswith("live_canary_pre_live_approval"):
+            bundle_dir = None
+            if isinstance(release_approval, dict):
+                artifact = release_approval.get("artifact")
+                if isinstance(artifact, dict):
+                    bundle_dir = str(artifact.get("bundle_dir") or "") or None
+                if bundle_dir is None:
+                    bundle_validation = release_approval.get("bundle_validation")
+                    if isinstance(bundle_validation, dict):
+                        bundle_dir = str(bundle_validation.get("bundle_dir") or "") or None
+            if configured_account_id is not None:
+                add_action(
+                    action_id="apply_pre_live_approval",
+                    reason=reason,
+                    summary="Review the latest shadow rehearsal bundle for this exact event, then apply the durable pre-live approval before live submit.",
+                    command=_approval_command(
+                        account_id=configured_account_id,
+                        bundle_dir=bundle_dir,
+                        base_dir=base_dir,
+                        apply=True,
+                    ),
+                )
+            continue
         add_action(
             action_id=f"review_blocker:{reason}",
             reason=reason,
@@ -684,6 +732,7 @@ def build_live_canary_readiness(
     account_id: object,
     arm_live_canary: object = None,
     ack_unmanaged_holdings: bool = False,
+    require_release_approval: bool = True,
     base_dir: Path | None = None,
     timestamp: datetime,
     tastytrade_challenge_code: str | None = None,
@@ -926,6 +975,7 @@ def build_live_canary_readiness(
 
     duplicate_artifacts: list[dict[str, Any]] = []
     operator_artifacts: list[dict[str, Any]] = []
+    release_approval = None if state_status is None else state_status.get("release_approval")
     if state_status is not None:
         duplicate_artifacts = [
             artifact
@@ -951,6 +1001,40 @@ def build_live_canary_readiness(
     if state_status_error is not None:
         operator_gate_blockers.append(state_status_error)
 
+    approval_gate_assessed = False
+    approval_gate_blockers: list[str] = []
+    if (
+        require_release_approval
+        and evaluation is not None
+        and evaluation.decision == "ready_live_submit"
+        and isinstance(release_approval, dict)
+    ):
+        approval_prereq_gates = (
+            input_gate,
+            account_gate,
+            manual_arming_gate,
+            session_gate,
+            canary_order_gate,
+            affordability_gate,
+            other_guardrails_gate,
+        )
+        approval_gate_assessed = all(not gate_payload["blocking_reasons"] for gate_payload in approval_prereq_gates)
+        if approval_gate_assessed:
+            approval_gate_blockers = [
+                str(reason)
+                for reason in release_approval.get("blocking_reasons", [])
+                if reason
+            ]
+
+    pre_live_approval_gate = _gate_payload(
+        gate="pre_live_approval",
+        blockers=approval_gate_blockers,
+        assessed=approval_gate_assessed,
+        details={
+            "approval_required": require_release_approval,
+            "release_approval": release_approval,
+        },
+    )
     duplicate_gate = _gate_payload(
         gate="duplicate_state",
         blockers=duplicate_gate_blockers,
@@ -979,6 +1063,7 @@ def build_live_canary_readiness(
             session_gate,
             canary_order_gate,
             affordability_gate,
+            pre_live_approval_gate,
             duplicate_gate,
             operator_state_ops_gate,
             other_guardrails_gate,
@@ -1019,6 +1104,7 @@ def build_live_canary_readiness(
         base_dir=resolved_base_dir,
         secrets_file=secrets_file,
         blocking_reasons=blocking_reasons,
+        release_approval=release_approval if isinstance(release_approval, dict) else None,
         duplicate_artifacts=duplicate_artifacts,
         operator_artifacts=operator_artifacts,
         verdict=verdict,
@@ -1033,6 +1119,7 @@ def build_live_canary_readiness(
             "base_dir": None if resolved_base_dir is None else str(resolved_base_dir),
             "broker": broker,
             "positions_file": None if used_positions_file is None else str(used_positions_file),
+            "release_approval_required": require_release_approval,
             "signal_json_file": str(resolved_signal_json_file),
         },
         "scope": {
@@ -1081,5 +1168,6 @@ def build_live_canary_readiness(
             else list(state_status.get("blocking_artifacts", [])),
             "error": state_status_error,
             "summary": None if state_status is None else state_status.get("summary"),
+            "release_approval": release_approval if isinstance(release_approval, dict) else None,
         },
     }

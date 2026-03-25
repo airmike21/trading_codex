@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from scripts import live_canary_state_ops
+from tests.live_canary_approval_helpers import seed_release_approval
 from trading_codex.execution.live_canary import (
     finalize_live_canary_event,
     finalize_live_canary_session,
@@ -202,6 +203,18 @@ def _seed_legacy_submit_tracking(base_dir: Path, *, fingerprint: str = "legacy-f
     return ledger_path, claim_path
 
 
+def _seed_valid_release_approval(base_dir: Path, tmp_path: Path, signal_payload: dict[str, object]) -> Path:
+    bundle_dir = tmp_path / "shadow_bundle"
+    seed_release_approval(
+        live_canary_base_dir=base_dir,
+        bundle_dir=bundle_dir,
+        account_id=ACCOUNT_ID,
+        signal_payload=signal_payload,
+        timestamp=TIMESTAMP,
+    )
+    return bundle_dir
+
+
 def _run_readiness_cli(
     capsys: pytest.CaptureFixture[str],
     *,
@@ -239,13 +252,16 @@ def _run_readiness_cli(
 
 
 def test_live_canary_readiness_ready_path(tmp_path: Path) -> None:
-    signal_path = _write_signal_file(tmp_path, _signal_payload())
+    base_dir = tmp_path / "live_canary"
+    signal_payload = _signal_payload()
+    signal_path = _write_signal_file(tmp_path, signal_payload)
     positions_path = _write_positions_file(
         tmp_path,
         _broker_snapshot(
             {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
         ),
     )
+    _seed_valid_release_approval(base_dir, tmp_path, signal_payload)
 
     payload = build_live_canary_readiness(
         signal_json_file=signal_path,
@@ -253,16 +269,46 @@ def test_live_canary_readiness_ready_path(tmp_path: Path) -> None:
         positions_file=positions_path,
         account_id=ACCOUNT_ID,
         arm_live_canary=ACCOUNT_ID,
-        base_dir=tmp_path / "live_canary",
+        base_dir=base_dir,
         timestamp=_timestamp(),
     )
 
     assert payload["verdict"] == "ready"
     assert payload["blocking_reasons"] == []
     assert payload["evaluation"]["decision"] == "ready_live_submit"
+    assert next(gate for gate in payload["gates"] if gate["gate"] == "pre_live_approval")["status"] == "pass"
     assert payload["next_actions"][0]["action_id"] == "run_live_canary_launch"
     assert "scripts/live_canary_state_ops.py launch" in payload["next_actions"][0]["command"]
     assert payload["state_status"]["summary"]["blocking_artifact_count"] == 0
+
+
+def test_live_canary_readiness_missing_pre_live_approval_blocks_otherwise_ready_submit(tmp_path: Path) -> None:
+    signal_payload = _signal_payload()
+    signal_path = _write_signal_file(tmp_path, signal_payload)
+    positions_path = _write_positions_file(
+        tmp_path,
+        _broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}),
+    )
+    base_dir = tmp_path / "live_canary"
+
+    payload = build_live_canary_readiness(
+        signal_json_file=signal_path,
+        broker="file",
+        positions_file=positions_path,
+        account_id=ACCOUNT_ID,
+        arm_live_canary=ACCOUNT_ID,
+        base_dir=base_dir,
+        timestamp=_timestamp(),
+    )
+
+    approval_gate = next(gate for gate in payload["gates"] if gate["gate"] == "pre_live_approval")
+    assert payload["verdict"] == "not_ready"
+    assert approval_gate["status"] == "fail"
+    assert approval_gate["blocking_reasons"] == ["live_canary_pre_live_approval_missing"]
+    assert approval_gate["details"]["approval_required"] is True
+    approval_action = next(action for action in payload["next_actions"] if action["action_id"] == "apply_pre_live_approval")
+    assert "scripts/live_canary_state_ops.py approve" in approval_action["command"]
+    assert "<SHADOW_REHEARSAL_BUNDLE_DIR>" in approval_action["command"]
 
 
 def test_live_canary_readiness_fail_closed_when_positions_file_is_missing(tmp_path: Path) -> None:
@@ -600,11 +646,13 @@ def test_live_canary_readiness_cli_json_and_text_are_stable(
 
 def test_live_canary_readiness_cli_smoke_subprocess(tmp_path: Path) -> None:
     repo_root, env = _repo_root_and_env()
-    signal_path = _write_signal_file(tmp_path, _signal_payload())
+    signal_payload = _signal_payload()
+    signal_path = _write_signal_file(tmp_path, signal_payload)
     positions_path = _write_positions_file(
         tmp_path,
         _broker_snapshot({"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"}),
     )
+    _seed_valid_release_approval(tmp_path / "live_canary", tmp_path, signal_payload)
 
     proc = subprocess.run(
         [

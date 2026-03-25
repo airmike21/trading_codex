@@ -26,8 +26,11 @@ from trading_codex.execution.live_canary_reconcile import (
 )
 from trading_codex.execution.live_canary_readiness import build_live_canary_readiness
 from trading_codex.execution.live_canary_state_ops import (
+    LIVE_CANARY_RELEASE_APPROVAL_OPERATION_SCHEMA_NAME,
     apply_live_canary_state_clear,
+    apply_live_canary_release_approval,
     build_live_canary_state_status,
+    preview_live_canary_release_approval,
     preview_live_canary_state_clear,
     resolve_live_canary_state_base_dir,
 )
@@ -44,6 +47,7 @@ LIVE_CANARY_LAUNCH_DUPLICATE_ONLY_GATES = (
     "session_readiness",
     "canary_order_readiness",
     "affordability",
+    "pre_live_approval",
     "operator_state_ops",
     "other_guardrails",
 )
@@ -140,6 +144,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required with --apply. Must exactly match the preview confirmation token.",
     )
 
+    approve_parser = subparsers.add_parser(
+        "approve",
+        aliases=["release"],
+        help="Validate a shadow rehearsal bundle and write the durable pre-live approval artifact when --apply is supplied.",
+    )
+    _add_base_dir_arg(approve_parser, default=argparse.SUPPRESS)
+    approve_parser.add_argument(
+        "--account-id",
+        type=str,
+        required=True,
+        help="Explicit live-canary account binding being approved for live submit.",
+    )
+    approve_parser.add_argument(
+        "--bundle-dir",
+        type=Path,
+        required=True,
+        help="Exact live-canary shadow rehearsal bundle directory to validate and bind into the approval artifact.",
+    )
+    approve_parser.add_argument("--reason", type=str, default=None, help="Optional approval note recorded in the durable artifact.")
+    approve_parser.add_argument("--operator", type=str, default=None, help="Optional operator identity text recorded in the durable artifact.")
+    approve_parser.add_argument("--apply", action="store_true", help="Write the approval artifact. Default is preview-only validation.")
+
     readiness_parser = subparsers.add_parser(
         "readiness",
         aliases=["preflight"],
@@ -172,6 +198,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--ack-unmanaged-holdings",
         action="store_true",
         help="Allow managed-sleeve planning when unmanaged holdings exist. Readiness still remains fail-closed.",
+    )
+    readiness_parser.add_argument(
+        "--preview-only",
+        action="store_true",
+        help="Assess preview/read-only rehearsal readiness without requiring a durable pre-live approval artifact.",
     )
     readiness_parser.add_argument(
         "--tastytrade-challenge-code",
@@ -362,6 +393,34 @@ def _render_status_text(payload: dict[str, Any]) -> str:
         lines.extend(_render_artifact_line(artifact) for artifact in artifacts)
     else:
         lines.append("Artifacts: none")
+
+    release_approval = payload.get("release_approval")
+    if isinstance(release_approval, dict) and release_approval.get("assessed"):
+        lines.append(
+            "Release approval "
+            f"present={str(bool(release_approval.get('present'))).lower()} "
+            f"valid={str(bool(release_approval.get('valid'))).lower()} "
+            f"path={release_approval.get('approval_path') or '-'}"
+        )
+        approval_blockers = release_approval.get("blocking_reasons") or []
+        if approval_blockers:
+            lines.append("Release approval blockers:")
+            lines.extend(f"- {reason}" for reason in approval_blockers)
+    return "\n".join(lines)
+
+
+def _render_release_approval_text(payload: dict[str, Any]) -> str:
+    approval = payload["approval"]
+    lines = [
+        f"{'Apply' if payload.get('apply') else 'Preview'} release approval",
+        f"Scope { _render_scope(payload['scope']) }",
+        f"Bundle dir {approval['bundle_dir']}",
+        f"Approval path {payload['approval_path']}",
+    ]
+    if approval.get("reason"):
+        lines.append(f"Reason {approval['reason']}")
+    if approval.get("operator_id"):
+        lines.append(f"Operator {approval['operator_id']}")
     return "\n".join(lines)
 
 
@@ -676,6 +735,12 @@ def _collect_launch_artifact_paths(
     if blocking_artifact_paths:
         artifact_paths["readiness_blocking_artifact_paths"] = blocking_artifact_paths
 
+    release_approval = readiness.get("state_status", {}).get("release_approval")
+    if isinstance(release_approval, dict):
+        approval_path = release_approval.get("approval_path")
+        if isinstance(approval_path, str) and approval_path.strip():
+            artifact_paths["release_approval_path"] = approval_path
+
     _copy_named_paths(
         target=artifact_paths,
         payload=submit_payload,
@@ -765,6 +830,7 @@ def _run_launch(args: argparse.Namespace, *, timestamp: Any) -> tuple[int, dict[
         account_id=args.account_id,
         arm_live_canary=args.arm_live_canary,
         ack_unmanaged_holdings=bool(args.ack_unmanaged_holdings),
+        require_release_approval=bool(args.live_submit),
         base_dir=resolved_base_dir,
         timestamp=timestamp,
         tastytrade_challenge_code=args.tastytrade_challenge_code,
@@ -881,6 +947,9 @@ def _emit(payload: dict[str, Any], *, emit: str) -> None:
     if payload["schema_name"] == "live_canary_state_status":
         print(_render_status_text(payload))
         return
+    if payload["schema_name"] == LIVE_CANARY_RELEASE_APPROVAL_OPERATION_SCHEMA_NAME:
+        print(_render_release_approval_text(payload))
+        return
     if payload["schema_name"] == "live_canary_readiness":
         print(_render_readiness_text(payload))
         return
@@ -914,6 +983,7 @@ def main(argv: list[str] | None = None) -> int:
                 account_id=args.account_id,
                 arm_live_canary=args.arm_live_canary,
                 ack_unmanaged_holdings=bool(args.ack_unmanaged_holdings),
+                require_release_approval=not bool(args.preview_only),
                 base_dir=args.base_dir,
                 timestamp=timestamp,
                 tastytrade_challenge_code=args.tastytrade_challenge_code,
@@ -924,6 +994,25 @@ def main(argv: list[str] | None = None) -> int:
             result_code, payload = _run_launch(args, timestamp=timestamp)
             _emit(payload, emit=args.emit)
             return result_code
+        elif args.command in {"approve", "release"}:
+            if args.apply:
+                payload = apply_live_canary_release_approval(
+                    base_dir=args.base_dir,
+                    account_id=args.account_id,
+                    bundle_dir=args.bundle_dir,
+                    reason=args.reason,
+                    operator=args.operator,
+                    timestamp=timestamp,
+                )
+            else:
+                payload = preview_live_canary_release_approval(
+                    base_dir=args.base_dir,
+                    account_id=args.account_id,
+                    bundle_dir=args.bundle_dir,
+                    reason=args.reason,
+                    operator=args.operator,
+                    timestamp=timestamp,
+                )
         elif args.command in {"reconcile", "closeout"}:
             result_code, payload = _run_reconcile(args, timestamp=timestamp)
             _emit(payload, emit=args.emit)

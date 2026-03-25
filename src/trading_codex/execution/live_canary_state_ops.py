@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from trading_codex.execution.broker import (
     _load_live_submission_ledger,
     _live_submission_state_lock,
 )
-from trading_codex.execution.live_canary import live_canary_state_lock
+from trading_codex.execution.live_canary import live_canary_release_approval_path, live_canary_state_lock
 from trading_codex.run_archive import resolve_archive_root
 
 try:
@@ -29,6 +30,10 @@ LIVE_CANARY_STATE_OPS_CONFIRM_PREFIX = "live-canary-clear"
 LIVE_CANARY_STATE_OPS_AUDIT_FILENAME = "operator_state_ops_audit.jsonl"
 LIVE_CANARY_STATE_OPS_ARCHIVE_DIRNAME = "operator_archive"
 LIVE_CANARY_SUBMIT_TRACKING_LEDGER_FILENAME = "broker_live_submission_fingerprints.jsonl"
+LIVE_CANARY_RELEASE_APPROVAL_SCHEMA_NAME = "live_canary_release_approval"
+LIVE_CANARY_RELEASE_APPROVAL_SCHEMA_VERSION = 1
+LIVE_CANARY_RELEASE_APPROVAL_OPERATION_SCHEMA_NAME = "live_canary_release_approval_operation"
+LIVE_CANARY_RELEASE_APPROVAL_OPERATION_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -246,6 +251,452 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"State file {path} must contain a JSON object.")
     return payload
+
+
+def _atomic_write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _normalize_path(value: object, *, field_name: str) -> Path:
+    if not isinstance(value, (str, Path)):
+        raise ValueError(f"{field_name} must be a filesystem path.")
+    rendered = str(value).strip()
+    if not rendered:
+        raise ValueError(f"{field_name} must be a filesystem path.")
+    return Path(rendered).expanduser().resolve()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _coerce_bool(value: object, *, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean.")
+    return value
+
+
+def _shadow_rehearsal_artifact_paths(bundle_dir: Path) -> dict[str, str]:
+    resolved_bundle_dir = bundle_dir.expanduser().resolve()
+    return {
+        "bundle_dir": str(resolved_bundle_dir),
+        "signal_json": str(resolved_bundle_dir / "signal.json"),
+        "readiness_json": str(resolved_bundle_dir / "readiness.json"),
+        "launch_json": str(resolved_bundle_dir / "launch.json"),
+        "reconcile_json": str(resolved_bundle_dir / "reconcile.json"),
+        "summary_md": str(resolved_bundle_dir / "summary.md"),
+        "live_canary_base_dir": str(resolved_bundle_dir / "live_canary_state"),
+    }
+
+
+def _read_shadow_json_artifact(
+    *,
+    artifact_paths: dict[str, str],
+    artifact_name: str,
+    schema_name: str | None = None,
+    schema_version: int | None = None,
+) -> dict[str, Any]:
+    path = Path(artifact_paths[artifact_name])
+    if not path.exists():
+        raise ValueError(f"missing_bundle_artifact:{artifact_name}:{path}")
+    try:
+        payload = _read_json_object(path)
+    except Exception as exc:
+        raise ValueError(f"invalid_bundle_artifact:{artifact_name}:{exc}") from exc
+    if schema_name is not None and payload.get("schema_name") != schema_name:
+        raise ValueError(f"invalid_bundle_schema:{artifact_name}:{payload.get('schema_name')}")
+    if schema_version is not None and payload.get("schema_version") != schema_version:
+        raise ValueError(f"unsupported_bundle_schema_version:{artifact_name}:{payload.get('schema_version')}")
+    return payload
+
+
+def validate_live_canary_shadow_rehearsal_bundle(
+    *,
+    bundle_dir: Path,
+    account_id: str,
+    event_id: str | None = None,
+    signal_date: str | None = None,
+    strategy: str | None = None,
+) -> dict[str, Any]:
+    artifact_paths = _shadow_rehearsal_artifact_paths(bundle_dir)
+    summary_path = Path(artifact_paths["summary_md"])
+    if not summary_path.exists():
+        raise ValueError(f"missing_bundle_artifact:summary_md:{summary_path}")
+    summary_text = summary_path.read_text(encoding="utf-8")
+    if not summary_text.strip():
+        raise ValueError(f"empty_bundle_artifact:summary_md:{summary_path}")
+
+    signal_payload = _read_shadow_json_artifact(artifact_paths=artifact_paths, artifact_name="signal_json")
+    bundle_event_id = _normalize_text(signal_payload.get("event_id"))
+    bundle_signal_date = _normalize_text(signal_payload.get("date"))
+    bundle_strategy = _normalize_text(signal_payload.get("strategy"))
+    if bundle_event_id is None:
+        raise ValueError("bundle_signal_missing_event_id")
+    if bundle_signal_date is None:
+        raise ValueError("bundle_signal_missing_date")
+    if bundle_strategy is None:
+        raise ValueError("bundle_signal_missing_strategy")
+    parsed_signal_date, parsed_strategy = parse_live_canary_event_scope(bundle_event_id)
+    if parsed_signal_date is None or parsed_strategy is None:
+        raise ValueError("bundle_event_id_invalid")
+    if parsed_signal_date != bundle_signal_date:
+        raise ValueError(f"bundle_signal_date_event_id_mismatch:{bundle_signal_date}:{parsed_signal_date}")
+    if parsed_strategy != bundle_strategy:
+        raise ValueError(f"bundle_strategy_event_id_mismatch:{bundle_strategy}:{parsed_strategy}")
+    if event_id is not None and bundle_event_id != event_id:
+        raise ValueError(f"bundle_event_id_mismatch:{bundle_event_id}:{event_id}")
+    if signal_date is not None and bundle_signal_date != signal_date:
+        raise ValueError(f"bundle_signal_date_mismatch:{bundle_signal_date}:{signal_date}")
+    if strategy is not None and bundle_strategy != strategy:
+        raise ValueError(f"bundle_strategy_mismatch:{bundle_strategy}:{strategy}")
+
+    readiness_payload = _read_shadow_json_artifact(
+        artifact_paths=artifact_paths,
+        artifact_name="readiness_json",
+        schema_name="live_canary_readiness",
+        schema_version=1,
+    )
+    readiness_scope = readiness_payload.get("scope")
+    if not isinstance(readiness_scope, dict):
+        raise ValueError("bundle_readiness_scope_missing")
+    readiness_account_id = _normalize_text(readiness_scope.get("account_id"))
+    readiness_event_id = _normalize_text(readiness_scope.get("event_id"))
+    readiness_signal_date = _normalize_text(readiness_scope.get("signal_date"))
+    readiness_strategy = _normalize_text(readiness_scope.get("strategy"))
+    if readiness_account_id != account_id:
+        raise ValueError(f"bundle_readiness_account_mismatch:{readiness_account_id}:{account_id}")
+    if readiness_event_id != bundle_event_id:
+        raise ValueError(f"bundle_readiness_event_id_mismatch:{readiness_event_id}:{bundle_event_id}")
+    if readiness_signal_date != bundle_signal_date:
+        raise ValueError(f"bundle_readiness_signal_date_mismatch:{readiness_signal_date}:{bundle_signal_date}")
+    if readiness_strategy != bundle_strategy:
+        raise ValueError(f"bundle_readiness_strategy_mismatch:{readiness_strategy}:{bundle_strategy}")
+    readiness_verdict = _normalize_text(readiness_payload.get("verdict"))
+    if readiness_verdict != "ready":
+        raise ValueError(f"bundle_readiness_verdict_not_ready:{readiness_verdict}")
+    readiness_gates = readiness_payload.get("gates")
+    if not isinstance(readiness_gates, list):
+        raise ValueError("bundle_readiness_gates_missing")
+    pre_live_approval_gate = next(
+        (
+            gate
+            for gate in readiness_gates
+            if isinstance(gate, dict) and gate.get("gate") == "pre_live_approval"
+        ),
+        None,
+    )
+    if pre_live_approval_gate is None:
+        raise ValueError("bundle_readiness_missing_pre_live_approval_gate")
+    gate_details = pre_live_approval_gate.get("details")
+    if not isinstance(gate_details, dict):
+        raise ValueError("bundle_readiness_pre_live_approval_details_missing")
+    approval_required = gate_details.get("approval_required")
+    if approval_required is not False:
+        raise ValueError("bundle_readiness_not_preview_only")
+
+    launch_payload = _read_shadow_json_artifact(
+        artifact_paths=artifact_paths,
+        artifact_name="launch_json",
+        schema_name="live_canary_launch_result",
+        schema_version=1,
+    )
+    if _coerce_bool(launch_payload.get("requested_live_submit"), field_name="launch.requested_live_submit"):
+        raise ValueError("bundle_launch_requested_live_submit")
+    if _coerce_bool(launch_payload.get("submit_path_invoked"), field_name="launch.submit_path_invoked"):
+        raise ValueError("bundle_launch_submit_path_invoked")
+    launch_submit_outcome = _normalize_text(launch_payload.get("submit_outcome"))
+    if launch_submit_outcome != "not_requested":
+        raise ValueError(f"bundle_launch_submit_outcome_invalid:{launch_submit_outcome}")
+    launch_context = launch_payload.get("event_context")
+    if not isinstance(launch_context, dict):
+        raise ValueError("bundle_launch_event_context_missing")
+    launch_account_id = _normalize_text(launch_context.get("account_id"))
+    launch_event_id = _normalize_text(launch_context.get("event_id"))
+    if launch_account_id != account_id:
+        raise ValueError(f"bundle_launch_account_mismatch:{launch_account_id}:{account_id}")
+    if launch_event_id != bundle_event_id:
+        raise ValueError(f"bundle_launch_event_id_mismatch:{launch_event_id}:{bundle_event_id}")
+
+    reconcile_payload = _read_shadow_json_artifact(
+        artifact_paths=artifact_paths,
+        artifact_name="reconcile_json",
+        schema_name="live_canary_reconciliation_result",
+        schema_version=1,
+    )
+    reconcile_verdict = _normalize_text(reconcile_payload.get("verdict"))
+    if reconcile_verdict != "not_applicable":
+        raise ValueError(f"bundle_reconcile_verdict_invalid:{reconcile_verdict}")
+    reconcile_mode = _normalize_text(reconcile_payload.get("mode"))
+    if reconcile_mode != "preview_only":
+        raise ValueError(f"bundle_reconcile_mode_invalid:{reconcile_mode}")
+    reconcile_context = reconcile_payload.get("context")
+    if not isinstance(reconcile_context, dict):
+        raise ValueError("bundle_reconcile_context_missing")
+    reconcile_account_id = _normalize_text(reconcile_context.get("account_id"))
+    reconcile_event_id = _normalize_text(reconcile_context.get("event_id"))
+    if reconcile_account_id != account_id:
+        raise ValueError(f"bundle_reconcile_account_mismatch:{reconcile_account_id}:{account_id}")
+    if reconcile_event_id != bundle_event_id:
+        raise ValueError(f"bundle_reconcile_event_id_mismatch:{reconcile_event_id}:{bundle_event_id}")
+
+    artifact_hashes = {
+        name: _sha256_file(Path(path))
+        for name, path in artifact_paths.items()
+        if name in {"signal_json", "readiness_json", "launch_json", "reconcile_json", "summary_md"}
+    }
+    return {
+        "account_id": account_id,
+        "artifact_hashes": artifact_hashes,
+        "artifact_paths": artifact_paths,
+        "bundle_dir": artifact_paths["bundle_dir"],
+        "launch_submit_outcome": launch_submit_outcome,
+        "preview_only": True,
+        "readiness_verdict": readiness_verdict,
+        "reconcile_mode": reconcile_mode,
+        "reconcile_verdict": reconcile_verdict,
+        "scope": {
+            "account_id": account_id,
+            "event_id": bundle_event_id,
+            "signal_date": bundle_signal_date,
+            "strategy": bundle_strategy,
+        },
+    }
+
+
+def _current_operator_user() -> str | None:
+    try:
+        return _normalize_text(getpass.getuser())
+    except Exception:  # pragma: no cover - defensive only
+        return None
+
+
+def build_live_canary_release_approval_status(
+    *,
+    base_dir: Path | None,
+    account_id: str,
+    event_id: str,
+    signal_date: str | None,
+    strategy: str | None,
+) -> dict[str, Any]:
+    approval_path = live_canary_release_approval_path(
+        base_dir=base_dir,
+        account_id=account_id,
+        event_id=event_id,
+    ).resolve()
+    status: dict[str, Any] = {
+        "approval_path": str(approval_path),
+        "artifact": None,
+        "assessed": True,
+        "blocking_reasons": [],
+        "bundle_validation": None,
+        "present": approval_path.exists(),
+        "valid": False,
+    }
+    if not approval_path.exists():
+        status["blocking_reasons"] = ["live_canary_pre_live_approval_missing"]
+        return status
+
+    try:
+        artifact = _read_json_object(approval_path)
+    except Exception as exc:
+        status["blocking_reasons"] = [f"live_canary_pre_live_approval_unreadable:{exc}"]
+        return status
+
+    blockers: list[str] = []
+    if artifact.get("schema_name") != LIVE_CANARY_RELEASE_APPROVAL_SCHEMA_NAME:
+        blockers.append(f"live_canary_pre_live_approval_schema_invalid:{artifact.get('schema_name')}")
+    if artifact.get("schema_version") != LIVE_CANARY_RELEASE_APPROVAL_SCHEMA_VERSION:
+        blockers.append(f"live_canary_pre_live_approval_schema_version_invalid:{artifact.get('schema_version')}")
+
+    artifact_account_id = _optional_text(artifact.get("account_id"))
+    artifact_event_id = _optional_text(artifact.get("event_id"))
+    artifact_signal_date = _optional_text(artifact.get("signal_date"))
+    artifact_strategy = _optional_text(artifact.get("strategy"))
+    artifact_bundle_dir = _optional_text(artifact.get("bundle_dir"))
+    if artifact_account_id != account_id:
+        blockers.append(f"live_canary_pre_live_approval_account_mismatch:{artifact_account_id}:{account_id}")
+    if artifact_event_id != event_id:
+        blockers.append(f"live_canary_pre_live_approval_event_id_mismatch:{artifact_event_id}:{event_id}")
+    if signal_date is not None and artifact_signal_date != signal_date:
+        blockers.append(f"live_canary_pre_live_approval_signal_date_mismatch:{artifact_signal_date}:{signal_date}")
+    if strategy is not None and artifact_strategy != strategy:
+        blockers.append(f"live_canary_pre_live_approval_strategy_mismatch:{artifact_strategy}:{strategy}")
+    if artifact_bundle_dir is None:
+        blockers.append("live_canary_pre_live_approval_bundle_dir_missing")
+
+    bundle_validation = None
+    if artifact_bundle_dir is not None:
+        try:
+            bundle_validation = validate_live_canary_shadow_rehearsal_bundle(
+                bundle_dir=Path(artifact_bundle_dir),
+                account_id=account_id,
+                event_id=event_id,
+                signal_date=signal_date,
+                strategy=strategy,
+            )
+        except Exception as exc:
+            blockers.append(f"live_canary_pre_live_approval_bundle_validation_error:{exc}")
+
+    artifact_paths = artifact.get("artifact_paths")
+    artifact_paths = artifact_paths if isinstance(artifact_paths, dict) else {}
+    artifact_hashes = artifact.get("artifact_hashes")
+    artifact_hashes = artifact_hashes if isinstance(artifact_hashes, dict) else {}
+    if bundle_validation is not None:
+        if artifact_bundle_dir != bundle_validation["bundle_dir"]:
+            blockers.append("live_canary_pre_live_approval_bundle_dir_mismatch")
+        for artifact_name, expected_path in bundle_validation["artifact_paths"].items():
+            if artifact_name == "bundle_dir":
+                continue
+            recorded_path = _optional_text(artifact_paths.get(artifact_name))
+            if recorded_path is None:
+                blockers.append(f"live_canary_pre_live_approval_artifact_path_missing:{artifact_name}")
+            elif recorded_path != expected_path:
+                blockers.append(f"live_canary_pre_live_approval_artifact_path_mismatch:{artifact_name}")
+        for artifact_name, expected_hash in bundle_validation["artifact_hashes"].items():
+            recorded_hash = _optional_text(artifact_hashes.get(artifact_name))
+            if recorded_hash is None:
+                blockers.append(f"live_canary_pre_live_approval_artifact_hash_missing:{artifact_name}")
+            elif recorded_hash != expected_hash:
+                blockers.append(f"live_canary_pre_live_approval_stale:{artifact_name}")
+
+    status["artifact"] = artifact
+    status["blocking_reasons"] = blockers
+    status["bundle_validation"] = bundle_validation
+    status["present"] = True
+    status["valid"] = not blockers
+    return status
+
+
+def preview_live_canary_release_approval(
+    *,
+    base_dir: Path | None,
+    account_id: object,
+    bundle_dir: object,
+    reason: str | None = None,
+    operator: str | None = None,
+    timestamp: datetime | None = None,
+) -> dict[str, Any]:
+    resolved_account_id = _normalize_text(account_id)
+    if resolved_account_id is None:
+        raise ValueError("--account-id is required.")
+    resolved_bundle_dir = _normalize_path(bundle_dir, field_name="--bundle-dir")
+    resolved_reason = _normalize_text(reason)
+    resolved_operator = _normalize_text(operator)
+    resolved_timestamp = timestamp or _chicago_now()
+    resolved_base_dir = resolve_live_canary_state_base_dir(base_dir, create=True)
+
+    bundle_validation = validate_live_canary_shadow_rehearsal_bundle(
+        bundle_dir=resolved_bundle_dir,
+        account_id=resolved_account_id,
+    )
+    scope = bundle_validation["scope"]
+    approval_path = live_canary_release_approval_path(
+        base_dir=resolved_base_dir,
+        account_id=resolved_account_id,
+        event_id=scope["event_id"],
+    ).resolve()
+    approval_artifact = {
+        "schema_name": LIVE_CANARY_RELEASE_APPROVAL_SCHEMA_NAME,
+        "schema_version": LIVE_CANARY_RELEASE_APPROVAL_SCHEMA_VERSION,
+        "approved_at_chicago": resolved_timestamp.isoformat(),
+        "account_id": resolved_account_id,
+        "approved_by_system_user": _current_operator_user(),
+        "artifact_hashes": dict(bundle_validation["artifact_hashes"]),
+        "artifact_paths": dict(bundle_validation["artifact_paths"]),
+        "bundle_dir": bundle_validation["bundle_dir"],
+        "event_id": scope["event_id"],
+        "operator_id": resolved_operator,
+        "preview_validation": {
+            "launch_submit_outcome": bundle_validation["launch_submit_outcome"],
+            "preview_only": bundle_validation["preview_only"],
+            "readiness_verdict": bundle_validation["readiness_verdict"],
+            "reconcile_mode": bundle_validation["reconcile_mode"],
+            "reconcile_verdict": bundle_validation["reconcile_verdict"],
+        },
+        "reason": resolved_reason,
+        "signal_date": scope["signal_date"],
+        "strategy": scope["strategy"],
+    }
+    return {
+        "apply": False,
+        "approval": approval_artifact,
+        "approval_path": str(approval_path),
+        "base_dir": str(resolved_base_dir),
+        "bundle_validation": bundle_validation,
+        "operator_state_ops_audit_path": str(live_canary_state_ops_audit_path(resolved_base_dir, create=True)),
+        "schema_name": LIVE_CANARY_RELEASE_APPROVAL_OPERATION_SCHEMA_NAME,
+        "schema_version": LIVE_CANARY_RELEASE_APPROVAL_OPERATION_SCHEMA_VERSION,
+        "scope": dict(scope),
+    }
+
+
+def apply_live_canary_release_approval(
+    *,
+    base_dir: Path | None,
+    account_id: object,
+    bundle_dir: object,
+    reason: str | None = None,
+    operator: str | None = None,
+    timestamp: datetime | None = None,
+) -> dict[str, Any]:
+    preview = preview_live_canary_release_approval(
+        base_dir=base_dir,
+        account_id=account_id,
+        bundle_dir=bundle_dir,
+        reason=reason,
+        operator=operator,
+        timestamp=timestamp,
+    )
+    approval_path = Path(preview["approval_path"])
+    approval_artifact = dict(preview["approval"])
+    with live_canary_state_lock(Path(preview["base_dir"])):
+        _atomic_write_json_file(approval_path, approval_artifact)
+    audit_record = {
+        "account_id": approval_artifact["account_id"],
+        "approval_path": str(approval_path),
+        "bundle_dir": approval_artifact["bundle_dir"],
+        "event_id": approval_artifact["event_id"],
+        "generated_at_chicago": approval_artifact["approved_at_chicago"],
+        "operator_action": "approve_release",
+        "operator_id": approval_artifact.get("operator_id"),
+        "reason": approval_artifact.get("reason"),
+        "signal_date": approval_artifact["signal_date"],
+        "strategy": approval_artifact["strategy"],
+        "system_user": approval_artifact.get("approved_by_system_user"),
+    }
+    _append_jsonl_record(
+        live_canary_state_ops_audit_path(Path(preview["base_dir"]), create=True),
+        record=audit_record,
+    )
+    status = build_live_canary_release_approval_status(
+        base_dir=Path(preview["base_dir"]),
+        account_id=approval_artifact["account_id"],
+        event_id=approval_artifact["event_id"],
+        signal_date=approval_artifact["signal_date"],
+        strategy=approval_artifact["strategy"],
+    )
+    return {
+        **preview,
+        "apply": True,
+        "release_approval_status": status,
+    }
 
 
 def _safe_record_summary(record: dict[str, Any]) -> dict[str, Any]:
@@ -666,13 +1117,15 @@ def _submit_tracking_artifacts(
     return artifacts
 
 
-def _status_summary(*, artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+def _status_summary(*, artifacts: list[dict[str, Any]], release_approval: dict[str, Any] | None) -> dict[str, Any]:
     blocking_artifacts = [artifact for artifact in artifacts if artifact.get("blocking")]
     return {
         "artifact_count": len(artifacts),
         "blocking_artifact_count": len(blocking_artifacts),
         "blocking_artifact_kinds": sorted({str(artifact["artifact_kind"]) for artifact in blocking_artifacts}),
         "event_state_count": sum(1 for artifact in artifacts if artifact["artifact_kind"] == "event_state"),
+        "release_approval_present": bool(release_approval and release_approval.get("present")),
+        "release_approval_valid": bool(release_approval and release_approval.get("valid")),
         "session_state_count": sum(1 for artifact in artifacts if artifact["artifact_kind"] == "session_state"),
         "submit_tracking_count": sum(
             1
@@ -716,6 +1169,25 @@ def build_live_canary_state_status(
         seed_fingerprints=seed_fingerprints,
     )
     artifacts = event_artifacts + session_artifacts + submit_tracking_artifacts
+    release_approval = (
+        build_live_canary_release_approval_status(
+            base_dir=resolved_base_dir,
+            account_id=scope.account_id,
+            event_id=scope.event_id,
+            signal_date=scope.signal_date,
+            strategy=scope.strategy,
+        )
+        if scope.event_id is not None
+        else {
+            "approval_path": None,
+            "artifact": None,
+            "assessed": False,
+            "blocking_reasons": [],
+            "bundle_validation": None,
+            "present": False,
+            "valid": False,
+        }
+    )
     blocking_artifacts = [
         {
             "artifact_kind": artifact["artifact_kind"],
@@ -744,9 +1216,10 @@ def build_live_canary_state_status(
             "signal_date": scope.signal_date,
             "strategy": scope.strategy,
         },
-        "summary": _status_summary(artifacts=artifacts),
+        "summary": _status_summary(artifacts=artifacts, release_approval=release_approval),
         "blocking_artifacts": blocking_artifacts,
         "artifacts": artifacts,
+        "release_approval": release_approval,
     }
 
 

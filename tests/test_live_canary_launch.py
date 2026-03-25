@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import live_canary_guardrails, live_canary_state_ops
+from tests.live_canary_approval_helpers import seed_release_approval
 from trading_codex.execution import live_canary_readiness as live_canary_readiness_module
 from trading_codex.execution import parse_broker_snapshot
 from trading_codex.execution.live_canary import (
@@ -101,6 +102,16 @@ def _broker_snapshot(
 def _write_json(path: Path, payload: dict[str, object]) -> Path:
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def _seed_valid_release_approval(base_dir: Path, tmp_path: Path, signal_payload: dict[str, object]) -> None:
+    seed_release_approval(
+        live_canary_base_dir=base_dir,
+        bundle_dir=tmp_path / "shadow_bundle",
+        account_id=ACCOUNT_ID,
+        signal_payload=signal_payload,
+        timestamp=TIMESTAMP,
+    )
 
 
 def _seed_event_state(base_dir: Path, signal_payload: dict[str, object]) -> None:
@@ -338,6 +349,7 @@ def test_live_canary_launch_live_submit_success_path_records_preflight_and_submi
         execution_snapshots=(ready_snapshot, refreshed_snapshot),
         submit_result=submit_result,
     )
+    _seed_valid_release_approval(base_dir, tmp_path, signal_payload)
 
     result, payload, _resolved_base_dir = _run_launch(
         capsys,
@@ -372,6 +384,47 @@ def test_live_canary_launch_live_submit_success_path_records_preflight_and_submi
     assert result_path.exists()
     stored = json.loads(result_path.read_text(encoding="utf-8"))
     assert stored == payload
+
+
+def test_live_canary_launch_live_submit_requires_release_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ready_snapshot = _broker_snapshot(
+        {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+        account_id=ACCOUNT_ID,
+        as_of="2026-03-23T10:40:00-04:00",
+    )
+
+    monkeypatch.setattr(
+        live_canary_guardrails,
+        "run_guardrails",
+        lambda args: (_ for _ in ()).throw(AssertionError("guardrails should not be invoked without approval")),
+    )
+    _patch_launch_tastytrade_adapters(
+        monkeypatch,
+        readiness_snapshot=ready_snapshot,
+        execution_snapshots=(ready_snapshot,),
+    )
+
+    result, payload, _resolved_base_dir = _run_launch(
+        capsys,
+        tmp_path=tmp_path,
+        broker="tastytrade",
+        signal_payload=_signal_payload(),
+        base_dir=tmp_path / "live_canary",
+        live_submit=True,
+        arm_live_canary=ACCOUNT_ID,
+    )
+
+    assert result == 2
+    assert payload["readiness_verdict"] == "not_ready"
+    assert payload["submit_path_invoked"] is False
+    assert payload["submit_outcome"] == "not_attempted_readiness_blocked"
+    assert "live_canary_pre_live_approval_missing" in payload["readiness"]["blocking_reasons"]
+    approval_gate = next(gate for gate in payload["readiness"]["gates"] if gate["gate"] == "pre_live_approval")
+    assert approval_gate["status"] == "fail"
 
 
 def test_live_canary_launch_fails_closed_on_readiness_blockers_without_submit_attempt(
@@ -504,6 +557,7 @@ def test_live_canary_launch_preserves_guarded_duplicate_and_session_lock_protect
         _seed_event_state(base_dir, signal_payload)
     else:
         _seed_session_state(base_dir, signal_payload)
+    _seed_valid_release_approval(base_dir, tmp_path, signal_payload)
 
     _patch_launch_tastytrade_adapters(
         monkeypatch,
@@ -577,6 +631,7 @@ def test_live_canary_launch_exact_retry_uses_session_state_when_event_finalize_f
         execution_snapshots=(ready_snapshot, refreshed_snapshot),
         submit_result=submit_result,
     )
+    _seed_valid_release_approval(base_dir, tmp_path, signal_payload)
     first_result, first_payload, _resolved_base_dir = _run_launch(
         capsys,
         tmp_path=tmp_path,
@@ -654,6 +709,7 @@ def test_live_canary_launch_exact_retry_uses_session_state_when_event_finalize_f
         readiness_snapshot=ready_snapshot,
         execution_snapshots=(ready_snapshot, drifted_snapshot),
     )
+    _seed_valid_release_approval(base_dir, tmp_path, signal_payload)
     first_result, first_payload, _resolved_base_dir = _run_launch(
         capsys,
         tmp_path=tmp_path,
@@ -732,7 +788,8 @@ def test_live_canary_launch_preserves_event_id_contract_when_no_submit_is_reques
 
 def test_live_canary_launch_cli_smoke_invokes_existing_guarded_flow(tmp_path: Path) -> None:
     repo_root, env = _repo_root_and_env()
-    signal_path = _write_json(tmp_path / "signal.json", _signal_payload())
+    signal_payload = _signal_payload()
+    signal_path = _write_json(tmp_path / "signal.json", signal_payload)
     positions_path = _write_json(
         tmp_path / "positions.json",
         _broker_snapshot(
@@ -740,6 +797,7 @@ def test_live_canary_launch_cli_smoke_invokes_existing_guarded_flow(tmp_path: Pa
         ),
     )
     base_dir = tmp_path / "live_canary"
+    _seed_valid_release_approval(base_dir, tmp_path, signal_payload)
 
     proc = subprocess.run(
         [
