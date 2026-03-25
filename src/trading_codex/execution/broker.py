@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover
 
 from trading_codex.execution.models import (
     ExecutionPlan,
+    BrokerOrderStatus,
     BrokerPosition,
     BrokerSnapshot,
     LiveSubmissionExport,
@@ -101,6 +102,12 @@ def _coerce_optional_float(value: object, *, field_name: str) -> float | None:
         except ValueError as exc:
             raise ValueError(f"{field_name} must be numeric.") from exc
     raise ValueError(f"{field_name} must be numeric.")
+
+
+def _coerce_optional_int_like(value: object, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _coerce_int_like(value, field_name=field_name)
 
 
 def _position_price(raw: dict[str, Any]) -> float | None:
@@ -348,6 +355,74 @@ def normalize_tastytrade_snapshot(
     )
 
 
+def normalize_tastytrade_order_status(
+    *,
+    account_id: str,
+    order_id: str,
+    payload: Any,
+) -> BrokerOrderStatus:
+    normalized_account_id = _coerce_non_empty_string(account_id, field_name="account_id")
+    normalized_order_id = _coerce_non_empty_string(order_id, field_name="order_id")
+    data = _extract_tastytrade_data_object(payload, endpoint="/accounts/{account_id}/orders/{order_id}")
+
+    payload_order_id = None
+    for key in ("id", "order-id", "order_id"):
+        raw_value = data.get(key)
+        if raw_value is not None and str(raw_value).strip():
+            payload_order_id = str(raw_value).strip()
+            break
+    if payload_order_id is not None and payload_order_id != normalized_order_id:
+        raise ValueError("Tastytrade order payload id does not match requested order_id.")
+
+    payload_account_id = None
+    for key in ("account-number", "account_id", "account-id"):
+        raw_value = data.get(key)
+        if raw_value is not None and str(raw_value).strip():
+            payload_account_id = str(raw_value).strip()
+            break
+    if payload_account_id is not None and payload_account_id != normalized_account_id:
+        raise ValueError("Tastytrade order payload account id does not match requested account_id.")
+
+    status = None
+    for key in ("status", "order-status", "order_status"):
+        raw_value = data.get(key)
+        if raw_value is not None and str(raw_value).strip():
+            status = str(raw_value).strip()
+            break
+
+    filled_quantity = None
+    for key in ("filled-quantity", "filled_quantity", "filledQuantity"):
+        if key in data:
+            filled_quantity = _coerce_optional_int_like(data.get(key), field_name=key)
+            break
+
+    remaining_quantity = None
+    for key in ("remaining-quantity", "remaining_quantity", "remainingQuantity"):
+        if key in data:
+            remaining_quantity = _coerce_optional_int_like(data.get(key), field_name=key)
+            break
+
+    updated_at = None
+    for key in ("updated-at", "updated_at", "updatedAt"):
+        raw_value = data.get(key)
+        if raw_value is not None and str(raw_value).strip():
+            updated_at = str(raw_value).strip()
+            break
+
+    if status is None and filled_quantity is None and remaining_quantity is None:
+        raise ValueError("Tastytrade order payload must include status or fill quantities.")
+
+    return BrokerOrderStatus(
+        account_id=payload_account_id or normalized_account_id,
+        order_id=normalized_order_id,
+        status=status,
+        filled_quantity=filled_quantity,
+        remaining_quantity=remaining_quantity,
+        updated_at=updated_at,
+        raw=data,
+    )
+
+
 def parse_broker_snapshot(raw: Any) -> BrokerSnapshot:
     if isinstance(raw, list):
         raw = {"positions": raw}
@@ -402,6 +477,87 @@ def parse_broker_snapshot(raw: Any) -> BrokerSnapshot:
         positions=positions,
         raw=dict(raw),
     )
+
+
+def parse_broker_order_statuses(raw: Any) -> dict[str, BrokerOrderStatus]:
+    payload_account_id = None
+    items_raw: Any = raw
+    if isinstance(raw, dict):
+        raw_account_id = raw.get("account_id", raw.get("account-id"))
+        if raw_account_id is not None and str(raw_account_id).strip():
+            payload_account_id = str(raw_account_id).strip()
+        if "orders" in raw:
+            items_raw = raw.get("orders")
+        elif "items" in raw:
+            items_raw = raw.get("items")
+        elif any(key in raw for key in ("id", "order_id", "order-id")):
+            items_raw = [raw]
+    if not isinstance(items_raw, list):
+        raise ValueError("Broker order statuses must be a JSON array or an object containing an orders list.")
+
+    statuses: dict[str, BrokerOrderStatus] = {}
+    for item in items_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each broker order status must be an object.")
+        order_id = None
+        for key in ("order_id", "order-id", "id"):
+            raw_value = item.get(key)
+            if raw_value is not None and str(raw_value).strip():
+                order_id = str(raw_value).strip()
+                break
+        if order_id is None:
+            raise ValueError("Each broker order status must include an order id.")
+        if order_id in statuses:
+            raise ValueError(f"Duplicate broker order status for order id {order_id!r}.")
+
+        account_id = payload_account_id
+        raw_account_id = item.get("account_id", item.get("account-id"))
+        if raw_account_id is not None and str(raw_account_id).strip():
+            item_account_id = str(raw_account_id).strip()
+            if account_id is not None and item_account_id != account_id:
+                raise ValueError(f"Broker order status {order_id!r} account_id does not match the file account_id.")
+            account_id = item_account_id
+
+        status = None
+        for key in ("status", "order-status", "order_status"):
+            raw_value = item.get(key)
+            if raw_value is not None and str(raw_value).strip():
+                status = str(raw_value).strip()
+                break
+
+        filled_quantity = None
+        for key in ("filled_quantity", "filled-quantity", "filledQuantity"):
+            if key in item:
+                filled_quantity = _coerce_optional_int_like(item.get(key), field_name=f"{order_id}.{key}")
+                break
+
+        remaining_quantity = None
+        for key in ("remaining_quantity", "remaining-quantity", "remainingQuantity"):
+            if key in item:
+                remaining_quantity = _coerce_optional_int_like(item.get(key), field_name=f"{order_id}.{key}")
+                break
+
+        updated_at = None
+        for key in ("updated_at", "updated-at", "updatedAt"):
+            raw_value = item.get(key)
+            if raw_value is not None and str(raw_value).strip():
+                updated_at = str(raw_value).strip()
+                break
+
+        if status is None and filled_quantity is None and remaining_quantity is None:
+            raise ValueError(f"Broker order status {order_id!r} must include status or fill quantities.")
+
+        statuses[order_id] = BrokerOrderStatus(
+            account_id=account_id,
+            order_id=order_id,
+            status=status,
+            filled_quantity=filled_quantity,
+            remaining_quantity=remaining_quantity,
+            updated_at=updated_at,
+            raw=dict(item),
+        )
+
+    return statuses
 
 
 def _scoped_positions_payload(items: list[Any]) -> list[dict[str, Any]]:
@@ -954,6 +1110,9 @@ class TastytradeHttpClient(Protocol):
     def get_positions(self, *, account_id: str) -> Any:
         ...
 
+    def get_order(self, *, account_id: str, order_id: str) -> Any:
+        ...
+
 
 class TastytradeOrderSubmitCapableClient(TastytradeHttpClient, Protocol):
     def place_order(self, *, account_id: str, payload: dict[str, Any]) -> Any:
@@ -1168,6 +1327,9 @@ class RequestsTastytradeHttpClient:
     def get_positions(self, *, account_id: str) -> Any:
         return self._request_json("GET", f"/accounts/{account_id}/positions")
 
+    def get_order(self, *, account_id: str, order_id: str) -> Any:
+        return self._request_json("GET", f"/accounts/{account_id}/orders/{order_id}")
+
     def place_order(self, *, account_id: str, payload: dict[str, Any]) -> Any:
         return self._request_json("POST", f"/accounts/{account_id}/orders", json_payload=payload)
 
@@ -1179,6 +1341,19 @@ class FileBrokerPositionAdapter:
     def load_snapshot(self) -> BrokerSnapshot:
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         return parse_broker_snapshot(raw)
+
+
+class FileBrokerOrderStatusAdapter:
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+
+    def load_order_statuses(self, *, order_ids: list[str]) -> dict[str, BrokerOrderStatus]:
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        statuses = parse_broker_order_statuses(raw)
+        missing = [order_id for order_id in order_ids if order_id not in statuses]
+        if missing:
+            raise ValueError(f"Broker order status not found for order_id(s): {', '.join(sorted(missing))}")
+        return {order_id: statuses[order_id] for order_id in order_ids}
 
 
 class TastytradeBrokerPositionAdapter:
@@ -1194,6 +1369,20 @@ class TastytradeBrokerPositionAdapter:
             positions_payload=positions_payload,
             balances_payload=balances_payload,
         )
+
+    def load_order_status(self, *, order_id: str) -> BrokerOrderStatus:
+        payload = self.client.get_order(account_id=self.account_id, order_id=order_id)
+        return normalize_tastytrade_order_status(
+            account_id=self.account_id,
+            order_id=order_id,
+            payload=payload,
+        )
+
+    def load_order_statuses(self, *, order_ids: list[str]) -> dict[str, BrokerOrderStatus]:
+        return {
+            order_id: self.load_order_status(order_id=order_id)
+            for order_id in order_ids
+        }
 
 
 class TastytradeBrokerExecutionAdapter(TastytradeBrokerPositionAdapter):

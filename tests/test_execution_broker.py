@@ -18,6 +18,7 @@ from trading_codex.execution import (
     parse_signal_payload,
 )
 from trading_codex.execution.broker import _live_submission_fingerprint
+from trading_codex.execution.broker import parse_broker_order_statuses
 
 
 def _tastytrade_positions_payload(*items: dict[str, object]) -> dict[str, object]:
@@ -169,6 +170,59 @@ def test_tastytrade_adapter_only_uses_read_methods() -> None:
 
     assert client.calls == [("get_positions", "5WT00001"), ("get_balances", "5WT00001")]
     assert snapshot.positions["AAA"].shares == 3
+
+
+def test_parse_broker_order_statuses_reads_file_order_status_payload() -> None:
+    statuses = parse_broker_order_statuses(
+        {
+            "account_id": "5WT00001",
+            "orders": [
+                {
+                    "order_id": "order-123",
+                    "status": "filled",
+                    "filled_quantity": 1,
+                    "remaining_quantity": 0,
+                }
+            ],
+        }
+    )
+
+    assert statuses["order-123"].account_id == "5WT00001"
+    assert statuses["order-123"].status == "filled"
+    assert statuses["order-123"].filled_quantity == 1
+    assert statuses["order-123"].remaining_quantity == 0
+
+
+def test_tastytrade_adapter_loads_single_order_status_with_read_only_client() -> None:
+    class FakeReadOnlyClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        def get_positions(self, *, account_id: str) -> object:
+            raise AssertionError("Order-status unit test should not call get_positions.")
+
+        def get_balances(self, *, account_id: str) -> object:
+            raise AssertionError("Order-status unit test should not call get_balances.")
+
+        def get_order(self, *, account_id: str, order_id: str) -> object:
+            self.calls.append(("get_order", account_id, order_id))
+            return {
+                "data": {
+                    "account-number": account_id,
+                    "id": order_id,
+                    "status": "filled",
+                    "filled-quantity": "1",
+                    "remaining-quantity": "0",
+                }
+            }
+
+    client = FakeReadOnlyClient()
+    status = TastytradeBrokerPositionAdapter(account_id="5WT00001", client=client).load_order_status(order_id="order-123")
+
+    assert client.calls == [("get_order", "5WT00001", "order-123")]
+    assert status.order_id == "order-123"
+    assert status.status == "filled"
+    assert status.filled_quantity == 1
 
 
 def test_tastytrade_http_client_surfaces_device_challenge_error_when_code_missing(monkeypatch: pytest.MonkeyPatch) -> None:

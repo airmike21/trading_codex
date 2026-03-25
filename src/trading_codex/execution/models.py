@@ -67,6 +67,17 @@ class BrokerSnapshot:
 
 
 @dataclass(frozen=True)
+class BrokerOrderStatus:
+    account_id: str | None
+    order_id: str
+    status: str | None
+    filled_quantity: int | None
+    remaining_quantity: int | None
+    updated_at: str | None
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class PlanItem:
     symbol: str
     desired_target_shares: int

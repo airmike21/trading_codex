@@ -19,6 +19,11 @@ except ImportError:  # pragma: no cover - direct script execution path
     import live_canary_guardrails  # type: ignore[no-redef]
 
 from trading_codex.execution import resolve_timestamp
+from trading_codex.execution.live_canary_reconcile import (
+    LIVE_CANARY_RECONCILIATION_SCHEMA_NAME,
+    LIVE_CANARY_RECONCILIATION_VERDICT_BLOCKED,
+    build_live_canary_reconciliation,
+)
 from trading_codex.execution.live_canary_readiness import build_live_canary_readiness
 from trading_codex.execution.live_canary_state_ops import (
     apply_live_canary_state_clear,
@@ -242,6 +247,58 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Optional tastytrade secrets env file. If omitted, auto-loads {DEFAULT_TASTYTRADE_SECRETS_PATH} when present.",
     )
+
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        aliases=["closeout"],
+        help="Read-only post-launch live-canary reconciliation against an existing launch result artifact.",
+    )
+    _add_base_dir_arg(reconcile_parser, default=argparse.SUPPRESS)
+    reconcile_parser.add_argument(
+        "--launch-result-file",
+        type=Path,
+        required=True,
+        help="Existing live_canary_launch_result JSON artifact to reconcile.",
+    )
+    reconcile_parser.add_argument(
+        "--broker",
+        choices=["file", "tastytrade"],
+        default="file",
+        help="Broker truth source. Use 'file' for tests/reviews; 'tastytrade' for live-capable read-only reconciliation.",
+    )
+    reconcile_parser.add_argument("--positions-file", type=Path, default=None, help="Required with --broker file.")
+    reconcile_parser.add_argument(
+        "--orders-file",
+        type=Path,
+        default=None,
+        help="Required with --broker file when the launch artifact requires broker order truth.",
+    )
+    reconcile_parser.add_argument(
+        "--account-id",
+        "--live-canary-account",
+        dest="account_id",
+        type=str,
+        default=None,
+        help="Optional explicit account assertion. Must match the launch artifact when provided.",
+    )
+    reconcile_parser.add_argument(
+        "--tastytrade-challenge-code",
+        type=str,
+        default=None,
+        help="Optional device-challenge code for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_CODE.",
+    )
+    reconcile_parser.add_argument(
+        "--tastytrade-challenge-token",
+        type=str,
+        default=None,
+        help="Optional device-challenge token override for tastytrade auth. Env fallback: TASTYTRADE_CHALLENGE_TOKEN.",
+    )
+    reconcile_parser.add_argument(
+        "--secrets-file",
+        type=Path,
+        default=None,
+        help=f"Optional tastytrade secrets env file. If omitted, auto-loads {DEFAULT_TASTYTRADE_SECRETS_PATH} when present.",
+    )
     return parser
 
 
@@ -453,6 +510,84 @@ def _render_launch_text(payload: dict[str, Any]) -> str:
         )
     else:
         lines.append("Submit result: not invoked")
+    return "\n".join(lines)
+
+
+def _render_reconciliation_order_line(order: dict[str, Any]) -> str:
+    bits = [
+        f"{order['symbol']} {order['side']} {order['requested_quantity']}",
+        f"order_id={order['broker_order_id']}",
+        f"status={order.get('broker_status') or '-'}",
+        f"fill_state={order.get('fill_state') or '-'}",
+    ]
+    if order.get("filled_quantity") is not None:
+        bits.append(f"filled={order['filled_quantity']}")
+    if order.get("actual_position_shares") is not None:
+        bits.append(f"actual_shares={order['actual_position_shares']}")
+    if order.get("implied_position_shares") is not None:
+        bits.append(f"expected_shares={order['implied_position_shares']}")
+    blockers = order.get("blocking_reasons") or []
+    if blockers:
+        bits.append("blockers=" + "; ".join(str(reason) for reason in blockers))
+    return "- " + " | ".join(bits)
+
+
+def _render_reconciliation_action_line(action: dict[str, Any]) -> str:
+    return f"- {action.get('summary') or action.get('action_id') or 'next_action'}"
+
+
+def _render_reconciliation_text(payload: dict[str, Any]) -> str:
+    context = payload["context"]
+    launch = payload["launch"]
+    snapshot = payload["broker_truth"]["snapshot"]
+    lines = [
+        f"Verdict {payload['verdict']}",
+        f"Launch {launch['path']}",
+        (
+            "Scope "
+            f"account={context.get('account_id') or '-'} "
+            f"strategy={context.get('strategy') or '-'} "
+            f"signal_date={context.get('signal_date') or '-'} "
+            f"event_id={context.get('event_id') or '-'} "
+            f"fingerprint={context.get('live_submission_fingerprint') or '-'}"
+        ),
+        (
+            "Broker "
+            f"source={payload['broker_truth']['source']} "
+            f"account={snapshot.get('account_id') or '-'} "
+            f"as_of={snapshot.get('as_of') or '-'}"
+        ),
+    ]
+
+    blocking_reasons = payload.get("blocking_reasons", [])
+    if blocking_reasons:
+        lines.append("Blocking reasons:")
+        lines.extend(f"- {reason}" for reason in blocking_reasons)
+    else:
+        lines.append("Blocking reasons: none")
+
+    warnings = payload.get("warnings", [])
+    if warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("Warnings: none")
+
+    next_actions = payload.get("next_actions", [])
+    if next_actions:
+        lines.append("Next actions:")
+        lines.extend(_render_reconciliation_action_line(action) for action in next_actions)
+    else:
+        lines.append("Next actions: none")
+
+    orders = payload.get("broker_truth", {}).get("orders", [])
+    if orders:
+        lines.append("Orders:")
+        lines.extend(_render_reconciliation_order_line(order) for order in orders)
+    else:
+        lines.append("Orders: none")
+
+    lines.append(f"Result path {payload['artifact_paths']['result_path']}")
     return "\n".join(lines)
 
 
@@ -719,6 +854,26 @@ def _run_launch(args: argparse.Namespace, *, timestamp: Any) -> tuple[int, dict[
     return 0, payload
 
 
+def _run_reconcile(args: argparse.Namespace, *, timestamp: Any) -> tuple[int, dict[str, Any]]:
+    payload = build_live_canary_reconciliation(
+        launch_result_file=args.launch_result_file,
+        broker=args.broker,
+        positions_file=args.positions_file,
+        orders_file=args.orders_file,
+        account_id=args.account_id,
+        base_dir=args.base_dir,
+        timestamp=timestamp,
+        tastytrade_challenge_code=args.tastytrade_challenge_code,
+        tastytrade_challenge_token=args.tastytrade_challenge_token,
+        secrets_file=args.secrets_file,
+    )
+    result_path = Path(payload["artifact_paths"]["result_path"])
+    _atomic_write_json(result_path, payload)
+    if payload["verdict"] == LIVE_CANARY_RECONCILIATION_VERDICT_BLOCKED:
+        return 2, payload
+    return 0, payload
+
+
 def _emit(payload: dict[str, Any], *, emit: str) -> None:
     if emit == "json":
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
@@ -731,6 +886,9 @@ def _emit(payload: dict[str, Any], *, emit: str) -> None:
         return
     if payload["schema_name"] == LIVE_CANARY_LAUNCH_SCHEMA_NAME:
         print(_render_launch_text(payload))
+        return
+    if payload["schema_name"] == LIVE_CANARY_RECONCILIATION_SCHEMA_NAME:
+        print(_render_reconciliation_text(payload))
         return
     print(_render_clear_text(payload))
 
@@ -764,6 +922,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "launch":
             result_code, payload = _run_launch(args, timestamp=timestamp)
+            _emit(payload, emit=args.emit)
+            return result_code
+        elif args.command in {"reconcile", "closeout"}:
+            result_code, payload = _run_reconcile(args, timestamp=timestamp)
             _emit(payload, emit=args.emit)
             return result_code
         else:
