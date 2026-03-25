@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import live_canary_guardrails
+from tests.live_canary_approval_helpers import seed_release_approval
 from trading_codex.execution import build_execution_plan, parse_broker_snapshot, parse_signal_payload
 from trading_codex.execution.live_canary import (
     DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS,
@@ -24,6 +25,7 @@ from trading_codex.execution.live_canary import (
     evaluate_live_canary_affordability,
     finalize_live_canary_event,
     live_canary_audit_path,
+    live_canary_release_approval_path,
     resolve_live_canary_affordability_source,
 )
 
@@ -250,13 +252,23 @@ def _run_live_submit_guardrails(
     signal_payload: dict[str, object] | None = None,
     live_submit: bool = True,
     arm_live_canary: str | None = "5WT00001",
+    seed_approval: bool = True,
 ) -> tuple[int, dict[str, object], Path, _SnapshotSequenceAdapter]:
+    resolved_signal_payload = signal_payload or _signal_payload(date="2026-03-20")
     signal_path = tmp_path / "signal.json"
     signal_path.write_text(
-        json.dumps(signal_payload or _signal_payload(date="2026-03-20")),
+        json.dumps(resolved_signal_payload),
         encoding="utf-8",
     )
     base_dir = tmp_path / "live_canary"
+    if live_submit and seed_approval:
+        seed_release_approval(
+            live_canary_base_dir=base_dir,
+            bundle_dir=tmp_path / "shadow_bundle",
+            account_id="5WT00001",
+            signal_payload=resolved_signal_payload,
+            timestamp="2026-03-23T10:45:00-04:00",
+        )
     created_adapters: list[_SnapshotSequenceAdapter] = []
 
     class FakeTastytradeBrokerExecutionAdapter(_SnapshotSequenceAdapter):
@@ -1549,6 +1561,72 @@ def test_live_canary_guardrails_cli_live_submit_blocks_stale_broker_snapshot_wit
     assert len(audit_rows) == 1
     assert audit_rows[0]["decision"] == "blocked"
     assert audit_rows[0]["response_text"] == "live_canary_broker_snapshot_stale:1200:900"
+
+
+@pytest.mark.parametrize(
+    ("approval_state", "expected_blocker"),
+    [
+        ("missing", "live_canary_pre_live_approval_missing"),
+        ("unreadable", "live_canary_pre_live_approval_unreadable:"),
+        ("schema_name", "live_canary_pre_live_approval_schema_invalid:wrong_schema"),
+        ("schema_version", "live_canary_pre_live_approval_schema_version_invalid:999"),
+    ],
+)
+def test_live_canary_guardrails_live_submit_requires_valid_release_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    approval_state: str,
+    expected_blocker: str,
+) -> None:
+    signal_payload = _signal_payload(date="2026-03-20")
+    base_dir = tmp_path / "live_canary"
+    if approval_state != "missing":
+        seed_release_approval(
+            live_canary_base_dir=base_dir,
+            bundle_dir=tmp_path / "shadow_bundle",
+            account_id="5WT00001",
+            signal_payload=signal_payload,
+            timestamp="2026-03-23T10:45:00-04:00",
+        )
+        approval_path = live_canary_release_approval_path(
+            base_dir=base_dir,
+            account_id="5WT00001",
+            event_id=str(signal_payload["event_id"]),
+        )
+        approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+        if approval_state == "unreadable":
+            approval_path.write_text("{not-json", encoding="utf-8")
+        elif approval_state == "schema_name":
+            approval_payload["schema_name"] = "wrong_schema"
+            approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        elif approval_state == "schema_version":
+            approval_payload["schema_version"] = 999
+            approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    result, payload, base_dir, adapter = _run_live_submit_guardrails(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+        snapshots=(
+            _broker_snapshot(
+                {"symbol": "EFA", "shares": 0, "price": 99.16, "instrument_type": "Equity"},
+                account_id="5WT00001",
+                as_of="2026-03-23T10:40:00-04:00",
+            ),
+        ),
+        signal_payload=signal_payload,
+        seed_approval=False,
+    )
+
+    assert result == 2
+    assert adapter.load_calls == 1
+    assert adapter.submit_calls == 0
+    assert payload["decision"] == "blocked"
+    assert payload["live_submission"] is None
+    assert payload.get("pre_submit_reconciliation") is None
+    assert any(blocker.startswith(expected_blocker) for blocker in payload["blockers"])
+    assert payload["event_state_path"] is None
 
 
 def test_live_canary_submit_path_blocks_same_session_before_reconciliation_or_broker_submit(

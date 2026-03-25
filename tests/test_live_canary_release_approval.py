@@ -85,6 +85,39 @@ def _approval_path(base_dir: Path, signal_payload: dict[str, object]) -> Path:
     )
 
 
+def _run_launch_json(
+    capsys: pytest.CaptureFixture[str],
+    *,
+    base_dir: Path,
+    signal_path: Path,
+    positions_path: Path,
+) -> tuple[int, dict[str, object]]:
+    result = live_canary_state_ops.main(
+        [
+            "--emit",
+            "json",
+            "--timestamp",
+            TIMESTAMP,
+            "--base-dir",
+            str(base_dir),
+            "launch",
+            "--signal-json-file",
+            str(signal_path),
+            "--broker",
+            "file",
+            "--positions-file",
+            str(positions_path),
+            "--account-id",
+            ACCOUNT_ID,
+            "--live-submit",
+            "--arm-live-canary",
+            ACCOUNT_ID,
+        ]
+    )
+    captured = capsys.readouterr()
+    return result, json.loads(captured.out)
+
+
 def test_live_canary_state_ops_approve_apply_writes_artifact_and_status_surfaces_it(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -234,6 +267,69 @@ def test_live_canary_readiness_rejects_stale_release_approval_when_bundle_conten
     approval_gate = next(gate for gate in readiness_payload["gates"] if gate["gate"] == "pre_live_approval")
     assert approval_gate["status"] == "fail"
     assert "live_canary_pre_live_approval_stale:summary_md" in approval_gate["blocking_reasons"]
+
+
+@pytest.mark.parametrize(
+    ("approval_state", "expected_blocker"),
+    [
+        ("unreadable", "live_canary_pre_live_approval_unreadable:"),
+        ("schema_name", "live_canary_pre_live_approval_schema_invalid:wrong_schema"),
+        ("schema_version", "live_canary_pre_live_approval_schema_version_invalid:999"),
+    ],
+)
+def test_live_canary_readiness_and_launch_fail_closed_for_unreadable_or_schema_invalid_approval_artifacts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    approval_state: str,
+    expected_blocker: str,
+) -> None:
+    signal_payload = _signal_payload()
+    signal_path, positions_path = _write_signal_and_positions(tmp_path, signal_payload)
+    base_dir = tmp_path / "live_canary"
+    seed_release_approval(
+        live_canary_base_dir=base_dir,
+        bundle_dir=tmp_path / "shadow_bundle",
+        account_id=ACCOUNT_ID,
+        signal_payload=signal_payload,
+        timestamp=TIMESTAMP,
+    )
+
+    approval_path = _approval_path(base_dir, signal_payload)
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    if approval_state == "unreadable":
+        approval_path.write_text("{not-json", encoding="utf-8")
+    elif approval_state == "schema_name":
+        approval_payload["schema_name"] = "wrong_schema"
+        approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif approval_state == "schema_version":
+        approval_payload["schema_version"] = 999
+        approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    readiness_payload = build_live_canary_readiness(
+        signal_json_file=signal_path,
+        broker="file",
+        positions_file=positions_path,
+        account_id=ACCOUNT_ID,
+        arm_live_canary=ACCOUNT_ID,
+        base_dir=base_dir,
+        timestamp=datetime.fromisoformat(TIMESTAMP),
+    )
+    approval_gate = next(gate for gate in readiness_payload["gates"] if gate["gate"] == "pre_live_approval")
+    assert readiness_payload["verdict"] == "not_ready"
+    assert approval_gate["status"] == "fail"
+    assert any(blocker.startswith(expected_blocker) for blocker in approval_gate["blocking_reasons"])
+
+    launch_result, launch_payload = _run_launch_json(
+        capsys,
+        base_dir=base_dir,
+        signal_path=signal_path,
+        positions_path=positions_path,
+    )
+    assert launch_result == 2
+    assert launch_payload["readiness_verdict"] == "not_ready"
+    assert launch_payload["submit_path_invoked"] is False
+    assert launch_payload["submit_outcome"] == "not_attempted_readiness_blocked"
+    assert any(blocker.startswith(expected_blocker) for blocker in launch_payload["readiness"]["blocking_reasons"])
 
 
 @pytest.mark.parametrize(

@@ -49,7 +49,7 @@ from trading_codex.execution import (
 from trading_codex.run_archive import write_run_archive
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
 
-LEGACY_LIVE_SUBMIT_BLOCKER = "live_submit_disabled_use_live_canary_guardrails"
+LEGACY_LIVE_SUBMIT_BLOCKER = "live_submit_disabled_use_live_canary_state_ops_launch"
 
 
 def _repo_root() -> Path:
@@ -436,7 +436,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Legacy live-submit path is disabled for this first-live slice. "
-            f"Use scripts/live_canary_guardrails.py instead. Refusal reason: {LEGACY_LIVE_SUBMIT_BLOCKER}."
+            "Use scripts/live_canary_state_ops.py launch after a valid live-canary release approval. "
+            f"Refusal reason: {LEGACY_LIVE_SUBMIT_BLOCKER}."
         ),
     )
     parser.add_argument(

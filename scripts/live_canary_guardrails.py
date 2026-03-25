@@ -45,6 +45,7 @@ from trading_codex.execution.live_canary import (
     render_live_canary_affordability,
     response_text_from_live_submission,
 )
+from trading_codex.execution.live_canary_state_ops import build_live_canary_release_approval_status
 from trading_codex.execution.secrets import DEFAULT_TASTYTRADE_SECRETS_PATH, load_tastytrade_secrets
 
 
@@ -66,6 +67,22 @@ def _load_signal_from_file(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Signal JSON file must contain a JSON object.")
     return payload
+
+
+def _release_approval_blockers(
+    *,
+    base_dir: Path | None,
+    account_id: str,
+    signal: Any,
+) -> list[str]:
+    status = build_live_canary_release_approval_status(
+        base_dir=base_dir,
+        account_id=account_id,
+        event_id=signal.event_id,
+        signal_date=signal.date,
+        strategy=signal.strategy,
+    )
+    return [str(reason) for reason in status.get("blocking_reasons", []) if reason]
 
 
 def _signal_result(
@@ -766,7 +783,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-submit",
         action="store_true",
-        help="Attempt real tastytrade submission only when also armed with --arm-live-canary.",
+        help=(
+            "Attempt real tastytrade submission only when also armed with --arm-live-canary and a valid "
+            "pre-live approval artifact exists for this exact account/event scope. "
+            "Operator workflow should use scripts/live_canary_state_ops.py launch."
+        ),
     )
     parser.add_argument(
         "--arm-live-canary",
@@ -947,101 +968,83 @@ def run_guardrails(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             final_blockers.append("live_canary_live_submit_requires_tastytrade_broker")
             response_text = "live_canary_live_submit_requires_tastytrade_broker"
         else:
-            claim_record = {
-                "account_id": account_id,
-                "decision": "pending_live_submit",
-                "event_id": signal.event_id,
-                "generated_at_chicago": evaluation.timestamp_chicago,
-                "manual_clearance_required": True,
-                "response_text": LIVE_CANARY_STATE_PENDING,
-                "result": LIVE_CANARY_STATE_PENDING,
-            }
-            claimed, prior_record, event_state_path = claim_live_canary_event(
+            approval_blockers = _release_approval_blockers(
                 base_dir=args.base_dir,
                 account_id=account_id,
-                event_id=signal.event_id,
-                record=claim_record,
+                signal=signal,
             )
-            if not claimed:
-                prior_duplicate_record, duplicate_session_guard = _resolve_duplicate_stale_event_claim(
-                    base_dir=args.base_dir,
-                    account_id=account_id,
-                    signal=signal,
-                    prior_event_record=prior_record,
-                )
-                duplicate = True
-                final_decision = "blocked_duplicate"
-                final_blockers.append("live_canary_duplicate_event")
-                session_guard_payload = duplicate_session_guard
-                response_text = (
-                    str(prior_duplicate_record.get("response_text"))
-                    if isinstance(prior_duplicate_record, dict) and prior_duplicate_record.get("response_text") is not None
-                    else "live_canary_duplicate_event"
-                )
+            if approval_blockers:
+                final_decision = "blocked"
+                final_blockers.extend(approval_blockers)
+                response_text = "; ".join(approval_blockers)
             else:
-                session_claimed_at = evaluation.timestamp_chicago
-                session_state_path = live_canary_session_state_path(
+                claim_record = {
+                    "account_id": account_id,
+                    "decision": "pending_live_submit",
+                    "event_id": signal.event_id,
+                    "generated_at_chicago": evaluation.timestamp_chicago,
+                    "manual_clearance_required": True,
+                    "response_text": LIVE_CANARY_STATE_PENDING,
+                    "result": LIVE_CANARY_STATE_PENDING,
+                }
+                claimed, prior_record, event_state_path = claim_live_canary_event(
                     base_dir=args.base_dir,
                     account_id=account_id,
-                    strategy=signal.strategy,
-                    signal_date=signal.date,
+                    event_id=signal.event_id,
+                    record=claim_record,
                 )
-                session_claim_record = _live_canary_session_record(
-                    account_id=account_id,
-                    signal=signal,
-                    claimed_at_chicago=session_claimed_at,
-                    updated_at_chicago=session_claimed_at,
-                    decision="pending_live_submit",
-                    manual_clearance_required=True,
-                    response_text=LIVE_CANARY_STATE_PENDING,
-                    result=LIVE_CANARY_STATE_PENDING,
-                )
-                try:
-                    session_claimed, prior_session_record, session_state_path = claim_live_canary_session(
+                if not claimed:
+                    prior_duplicate_record, duplicate_session_guard = _resolve_duplicate_stale_event_claim(
+                        base_dir=args.base_dir,
+                        account_id=account_id,
+                        signal=signal,
+                        prior_event_record=prior_record,
+                    )
+                    duplicate = True
+                    final_decision = "blocked_duplicate"
+                    final_blockers.append("live_canary_duplicate_event")
+                    session_guard_payload = duplicate_session_guard
+                    response_text = (
+                        str(prior_duplicate_record.get("response_text"))
+                        if isinstance(prior_duplicate_record, dict) and prior_duplicate_record.get("response_text") is not None
+                        else "live_canary_duplicate_event"
+                    )
+                else:
+                    session_claimed_at = evaluation.timestamp_chicago
+                    session_state_path = live_canary_session_state_path(
                         base_dir=args.base_dir,
                         account_id=account_id,
                         strategy=signal.strategy,
                         signal_date=signal.date,
-                        record=session_claim_record,
                     )
-                except Exception as exc:
-                    final_decision = "blocked"
-                    response_text = f"live_canary_session_guard_error:{exc}"
-                    final_blockers.append(response_text)
-                    session_guard_payload = _render_live_canary_session_guard(
+                    session_claim_record = _live_canary_session_record(
                         account_id=account_id,
                         signal=signal,
-                        outcome="error",
-                        state_path=session_state_path,
-                        error=_render_submit_error(exc=exc, stage="claim_live_canary_session"),
+                        claimed_at_chicago=session_claimed_at,
+                        updated_at_chicago=session_claimed_at,
+                        decision="pending_live_submit",
+                        manual_clearance_required=True,
+                        response_text=LIVE_CANARY_STATE_PENDING,
+                        result=LIVE_CANARY_STATE_PENDING,
                     )
-                    _try_finalize_live_canary_event(
-                        state_path=event_state_path,
-                        record=_live_canary_event_record(
+                    try:
+                        session_claimed, prior_session_record, session_state_path = claim_live_canary_session(
+                            base_dir=args.base_dir,
                             account_id=account_id,
-                            signal=signal,
-                            generated_at_chicago=evaluation.timestamp_chicago,
-                            decision=final_decision,
-                            manual_clearance_required=True,
-                            response_text=response_text,
-                            result=response_text,
-                            affordability=render_live_canary_affordability(evaluation.affordability),
-                            session_guard=session_guard_payload,
-                        ),
-                        durability_failures=durability_failures,
-                    )
-                    response_text = _response_text_with_durability_failures(response_text, durability_failures)
-                else:
-                    if not session_claimed:
+                            strategy=signal.strategy,
+                            signal_date=signal.date,
+                            record=session_claim_record,
+                        )
+                    except Exception as exc:
                         final_decision = "blocked"
-                        final_blockers.append(LIVE_CANARY_SESSION_GUARD_BLOCKER)
-                        response_text = LIVE_CANARY_SESSION_GUARD_BLOCKER
+                        response_text = f"live_canary_session_guard_error:{exc}"
+                        final_blockers.append(response_text)
                         session_guard_payload = _render_live_canary_session_guard(
                             account_id=account_id,
                             signal=signal,
-                            outcome="blocked_existing",
+                            outcome="error",
                             state_path=session_state_path,
-                            record=prior_session_record,
+                            error=_render_submit_error(exc=exc, stage="claim_live_canary_session"),
                         )
                         _try_finalize_live_canary_event(
                             state_path=event_state_path,
@@ -1052,7 +1055,7 @@ def run_guardrails(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                                 decision=final_decision,
                                 manual_clearance_required=True,
                                 response_text=response_text,
-                                result=LIVE_CANARY_SESSION_GUARD_BLOCKER,
+                                result=response_text,
                                 affordability=render_live_canary_affordability(evaluation.affordability),
                                 session_guard=session_guard_payload,
                             ),
@@ -1060,134 +1063,16 @@ def run_guardrails(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                         )
                         response_text = _response_text_with_durability_failures(response_text, durability_failures)
                     else:
-                        reconciliation = _reconcile_live_canary_pre_submit(
-                            broker_adapter=broker_adapter,
-                            original_plan=plan,
-                            original_evaluation=evaluation,
-                            account_id=account_id,
-                            arm_live_canary=args.arm_live_canary,
-                            timestamp=timestamp,
-                        )
-                        plan = plan if reconciliation.plan is None else reconciliation.plan
-                        evaluation = reconciliation.evaluation
-                        final_warnings = list(evaluation.warnings)
-                        pre_submit_reconciliation = reconciliation.details
-                        if reconciliation.matched:
-                            live_submission = None
-                            simulated_export = build_live_canary_submission_export(plan=plan, evaluation=evaluation)
-                            live_max_order_notional, live_max_order_qty = live_canary_live_submit_limits(simulated_export)
-                            try:
-                                live_submission = broker_adapter.submit_live_orders(
-                                    export=simulated_export,
-                                    confirm_account_id=account_id,
-                                    live_allowed_account=account_id,
-                                    confirm_plan_sha256=simulated_export.plan_sha256,
-                                    allowed_symbols=set(DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS),
-                                    live_max_order_notional=live_max_order_notional,
-                                    live_max_order_qty=live_max_order_qty,
-                                    ledger_path=Path(audit_path.parent) / "broker_live_submission_fingerprints.jsonl",
-                                    live_submission_artifact_path=None,
-                                )
-                            except Exception as exc:
-                                final_decision = "live_submit_error"
-                                response_text = str(exc)
-                                submit_error = _render_submit_error(exc=exc, stage="submit_live_orders")
-                            else:
-                                response_text = response_text_from_live_submission(live_submission)
-                                final_decision = (
-                                    "live_submitted"
-                                    if live_submission.live_submit_attempted and live_submission.submission_succeeded
-                                    else "live_submit_refused"
-                                )
-                                live_submission_payload = _render_live_submission_receipt(live_submission)
-                            session_record = _live_canary_session_record(
-                                account_id=account_id,
-                                signal=signal,
-                                claimed_at_chicago=session_claimed_at,
-                                updated_at_chicago=(
-                                    getattr(live_submission, "generated_at_chicago", None) or timestamp.isoformat()
-                                ),
-                                decision=final_decision,
-                                manual_clearance_required=(
-                                    True
-                                    if live_submission is None
-                                    else bool(
-                                        live_submission.manual_clearance_required
-                                        or not live_submission.submission_succeeded
-                                    )
-                                ),
-                                response_text=response_text,
-                                result=(
-                                    LIVE_CANARY_STATE_PENDING
-                                    if live_submission is None
-                                    else live_submission.submission_result
-                                ),
-                                affordability=render_live_canary_affordability(evaluation.affordability),
-                                live_submission=live_submission_payload,
-                                pre_submit_reconciliation=pre_submit_reconciliation,
-                                submit_error=submit_error,
-                            )
-                            _try_finalize_live_canary_session(
-                                state_path=session_state_path,
-                                record=session_record,
-                                durability_failures=durability_failures,
-                            )
-                            response_text = _response_text_with_durability_failures(response_text, durability_failures)
-                            session_guard_payload = _render_live_canary_session_guard(
-                                account_id=account_id,
-                                signal=signal,
-                                outcome="claimed",
-                                state_path=session_state_path,
-                                record=session_record,
-                            )
-                            _try_finalize_live_canary_event(
-                                state_path=event_state_path,
-                                record=_live_canary_event_record(
-                                    account_id=account_id,
-                                    signal=signal,
-                                    generated_at_chicago=evaluation.timestamp_chicago,
-                                    decision=final_decision,
-                                    manual_clearance_required=session_record["manual_clearance_required"],
-                                    response_text=response_text,
-                                    result=session_record["result"],
-                                    affordability=render_live_canary_affordability(evaluation.affordability),
-                                    live_submission=live_submission_payload,
-                                    pre_submit_reconciliation=pre_submit_reconciliation,
-                                    session_guard=session_guard_payload,
-                                    durability_failures=durability_failures,
-                                    submit_error=submit_error,
-                                ),
-                                durability_failures=durability_failures,
-                            )
-                            response_text = _response_text_with_durability_failures(response_text, durability_failures)
-                        else:
+                        if not session_claimed:
                             final_decision = "blocked"
-                            final_blockers.extend(reconciliation.blockers)
-                            response_text = reconciliation.response_text
-                            session_record = _live_canary_session_record(
-                                account_id=account_id,
-                                signal=signal,
-                                claimed_at_chicago=session_claimed_at,
-                                updated_at_chicago=evaluation.timestamp_chicago,
-                                decision=final_decision,
-                                manual_clearance_required=True,
-                                response_text=response_text,
-                                result=LIVE_CANARY_STATE_PENDING,
-                                affordability=render_live_canary_affordability(evaluation.affordability),
-                                pre_submit_reconciliation=pre_submit_reconciliation,
-                            )
-                            _try_finalize_live_canary_session(
-                                state_path=session_state_path,
-                                record=session_record,
-                                durability_failures=durability_failures,
-                            )
-                            response_text = _response_text_with_durability_failures(response_text, durability_failures)
+                            final_blockers.append(LIVE_CANARY_SESSION_GUARD_BLOCKER)
+                            response_text = LIVE_CANARY_SESSION_GUARD_BLOCKER
                             session_guard_payload = _render_live_canary_session_guard(
                                 account_id=account_id,
                                 signal=signal,
-                                outcome="claimed",
+                                outcome="blocked_existing",
                                 state_path=session_state_path,
-                                record=session_record,
+                                record=prior_session_record,
                             )
                             _try_finalize_live_canary_event(
                                 state_path=event_state_path,
@@ -1198,15 +1083,161 @@ def run_guardrails(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                                     decision=final_decision,
                                     manual_clearance_required=True,
                                     response_text=response_text,
-                                    result=LIVE_CANARY_STATE_PENDING,
+                                    result=LIVE_CANARY_SESSION_GUARD_BLOCKER,
                                     affordability=render_live_canary_affordability(evaluation.affordability),
-                                    pre_submit_reconciliation=pre_submit_reconciliation,
                                     session_guard=session_guard_payload,
-                                    durability_failures=durability_failures,
                                 ),
                                 durability_failures=durability_failures,
                             )
                             response_text = _response_text_with_durability_failures(response_text, durability_failures)
+                        else:
+                            reconciliation = _reconcile_live_canary_pre_submit(
+                                broker_adapter=broker_adapter,
+                                original_plan=plan,
+                                original_evaluation=evaluation,
+                                account_id=account_id,
+                                arm_live_canary=args.arm_live_canary,
+                                timestamp=timestamp,
+                            )
+                            plan = plan if reconciliation.plan is None else reconciliation.plan
+                            evaluation = reconciliation.evaluation
+                            final_warnings = list(evaluation.warnings)
+                            pre_submit_reconciliation = reconciliation.details
+                            if reconciliation.matched:
+                                live_submission = None
+                                simulated_export = build_live_canary_submission_export(plan=plan, evaluation=evaluation)
+                                live_max_order_notional, live_max_order_qty = live_canary_live_submit_limits(simulated_export)
+                                try:
+                                    live_submission = broker_adapter.submit_live_orders(
+                                        export=simulated_export,
+                                        confirm_account_id=account_id,
+                                        live_allowed_account=account_id,
+                                        confirm_plan_sha256=simulated_export.plan_sha256,
+                                        allowed_symbols=set(DEFAULT_LIVE_CANARY_ALLOWED_SYMBOLS),
+                                        live_max_order_notional=live_max_order_notional,
+                                        live_max_order_qty=live_max_order_qty,
+                                        ledger_path=Path(audit_path.parent) / "broker_live_submission_fingerprints.jsonl",
+                                        live_submission_artifact_path=None,
+                                    )
+                                except Exception as exc:
+                                    final_decision = "live_submit_error"
+                                    response_text = str(exc)
+                                    submit_error = _render_submit_error(exc=exc, stage="submit_live_orders")
+                                else:
+                                    response_text = response_text_from_live_submission(live_submission)
+                                    final_decision = (
+                                        "live_submitted"
+                                        if live_submission.live_submit_attempted and live_submission.submission_succeeded
+                                        else "live_submit_refused"
+                                    )
+                                    live_submission_payload = _render_live_submission_receipt(live_submission)
+                                session_record = _live_canary_session_record(
+                                    account_id=account_id,
+                                    signal=signal,
+                                    claimed_at_chicago=session_claimed_at,
+                                    updated_at_chicago=(
+                                        getattr(live_submission, "generated_at_chicago", None) or timestamp.isoformat()
+                                    ),
+                                    decision=final_decision,
+                                    manual_clearance_required=(
+                                        True
+                                        if live_submission is None
+                                        else bool(
+                                            live_submission.manual_clearance_required
+                                            or not live_submission.submission_succeeded
+                                        )
+                                    ),
+                                    response_text=response_text,
+                                    result=(
+                                        LIVE_CANARY_STATE_PENDING
+                                        if live_submission is None
+                                        else live_submission.submission_result
+                                    ),
+                                    affordability=render_live_canary_affordability(evaluation.affordability),
+                                    live_submission=live_submission_payload,
+                                    pre_submit_reconciliation=pre_submit_reconciliation,
+                                    submit_error=submit_error,
+                                )
+                                _try_finalize_live_canary_session(
+                                    state_path=session_state_path,
+                                    record=session_record,
+                                    durability_failures=durability_failures,
+                                )
+                                response_text = _response_text_with_durability_failures(response_text, durability_failures)
+                                session_guard_payload = _render_live_canary_session_guard(
+                                    account_id=account_id,
+                                    signal=signal,
+                                    outcome="claimed",
+                                    state_path=session_state_path,
+                                    record=session_record,
+                                )
+                                _try_finalize_live_canary_event(
+                                    state_path=event_state_path,
+                                    record=_live_canary_event_record(
+                                        account_id=account_id,
+                                        signal=signal,
+                                        generated_at_chicago=evaluation.timestamp_chicago,
+                                        decision=final_decision,
+                                        manual_clearance_required=session_record["manual_clearance_required"],
+                                        response_text=response_text,
+                                        result=session_record["result"],
+                                        affordability=render_live_canary_affordability(evaluation.affordability),
+                                        live_submission=live_submission_payload,
+                                        pre_submit_reconciliation=pre_submit_reconciliation,
+                                        session_guard=session_guard_payload,
+                                        durability_failures=durability_failures,
+                                        submit_error=submit_error,
+                                    ),
+                                    durability_failures=durability_failures,
+                                )
+                                response_text = _response_text_with_durability_failures(response_text, durability_failures)
+                            else:
+                                final_decision = "blocked"
+                                final_blockers.extend(reconciliation.blockers)
+                                response_text = reconciliation.response_text
+                                session_record = _live_canary_session_record(
+                                    account_id=account_id,
+                                    signal=signal,
+                                    claimed_at_chicago=session_claimed_at,
+                                    updated_at_chicago=evaluation.timestamp_chicago,
+                                    decision=final_decision,
+                                    manual_clearance_required=True,
+                                    response_text=response_text,
+                                    result=LIVE_CANARY_STATE_PENDING,
+                                    affordability=render_live_canary_affordability(evaluation.affordability),
+                                    pre_submit_reconciliation=pre_submit_reconciliation,
+                                )
+                                _try_finalize_live_canary_session(
+                                    state_path=session_state_path,
+                                    record=session_record,
+                                    durability_failures=durability_failures,
+                                )
+                                response_text = _response_text_with_durability_failures(response_text, durability_failures)
+                                session_guard_payload = _render_live_canary_session_guard(
+                                    account_id=account_id,
+                                    signal=signal,
+                                    outcome="claimed",
+                                    state_path=session_state_path,
+                                    record=session_record,
+                                )
+                                _try_finalize_live_canary_event(
+                                    state_path=event_state_path,
+                                    record=_live_canary_event_record(
+                                        account_id=account_id,
+                                        signal=signal,
+                                        generated_at_chicago=evaluation.timestamp_chicago,
+                                        decision=final_decision,
+                                        manual_clearance_required=True,
+                                        response_text=response_text,
+                                        result=LIVE_CANARY_STATE_PENDING,
+                                        affordability=render_live_canary_affordability(evaluation.affordability),
+                                        pre_submit_reconciliation=pre_submit_reconciliation,
+                                        session_guard=session_guard_payload,
+                                        durability_failures=durability_failures,
+                                    ),
+                                    durability_failures=durability_failures,
+                                )
+                                response_text = _response_text_with_durability_failures(response_text, durability_failures)
 
     final_blockers = sorted(set(final_blockers))
     final_warnings = sorted(set(final_warnings))

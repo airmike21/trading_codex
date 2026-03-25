@@ -827,11 +827,11 @@ def test_plan_execution_cli_live_submit_refuses_live_allowed_account_mismatch(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
+    assert "live_submit_disabled_use_live_canary_state_ops_launch" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
-    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_state_ops_launch"]
 
 
 @pytest.mark.parametrize(
@@ -986,12 +986,12 @@ def test_plan_execution_cli_live_submit_refuses_when_confirm_hash_mismatches(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
+    assert "live_submit_disabled_use_live_canary_state_ops_launch" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
     assert live_payload["plan_sha256"] == plan_sha256
-    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_state_ops_launch"]
 
 
 def test_plan_execution_cli_live_submit_refused_for_blocked_plan(
@@ -1132,11 +1132,11 @@ def test_plan_execution_cli_live_submit_refused_for_unmanaged_positions(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
+    assert "live_submit_disabled_use_live_canary_state_ops_launch" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
-    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_state_ops_launch"]
 
 
 def test_plan_execution_cli_live_submit_is_disabled_and_writes_refusal_artifact(
@@ -1210,7 +1210,7 @@ def test_plan_execution_cli_live_submit_is_disabled_and_writes_refusal_artifact(
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "live_submit_disabled_use_live_canary_guardrails" in captured.err
+    assert "live_submit_disabled_use_live_canary_state_ops_launch" in captured.err
     payload = json.loads(captured.out)
     live_payload = json.loads(Path(payload["artifacts"]["live_submission_json_path"]).read_text(encoding="utf-8"))
     assert live_payload["live_submit_attempted"] is False
@@ -1220,7 +1220,7 @@ def test_plan_execution_cli_live_submit_is_disabled_and_writes_refusal_artifact(
     assert live_payload["live_max_order_qty"] == 100
     assert live_payload["orders"] == []
     assert live_payload["plan_sha256"] == plan_sha256
-    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_state_ops_launch"]
     assert client.calls == []
 
 
@@ -1301,7 +1301,7 @@ def test_plan_execution_cli_repeated_live_submit_attempts_stay_disabled_without_
     )
     first_captured = capsys.readouterr()
     assert first_exit_code == 2
-    assert "live_submit_disabled_use_live_canary_guardrails" in first_captured.err
+    assert "live_submit_disabled_use_live_canary_state_ops_launch" in first_captured.err
     assert client.place_order_calls == 0
 
     second_exit_code = plan_execution.main(
@@ -1314,7 +1314,7 @@ def test_plan_execution_cli_repeated_live_submit_attempts_stay_disabled_without_
     )
     second_captured = capsys.readouterr()
     assert second_exit_code == 2
-    assert "live_submit_disabled_use_live_canary_guardrails" in second_captured.err
+    assert "live_submit_disabled_use_live_canary_state_ops_launch" in second_captured.err
     assert client.place_order_calls == 0
 
     payload = json.loads(second_captured.out)
@@ -1324,7 +1324,7 @@ def test_plan_execution_cli_repeated_live_submit_attempts_stay_disabled_without_
     assert live_payload["durable_state"] is None
     assert live_payload["duplicate_submit_refusal"] is None
     assert live_payload["plan_sha256"] == plan_sha256
-    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_guardrails"]
+    assert live_payload["refusal_reasons"] == ["live_submit_disabled_use_live_canary_state_ops_launch"]
 
 
 def test_plan_execution_cli_dry_run_does_not_touch_live_submit_state(
