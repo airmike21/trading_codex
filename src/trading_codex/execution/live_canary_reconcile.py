@@ -78,6 +78,12 @@ def _coerce_bool(value: object, *, field_name: str) -> bool:
     return value
 
 
+def _required_bool_field(payload: dict[str, Any], *, field_name: str, prefix: str) -> bool:
+    if field_name not in payload:
+        raise ValueError(f"{prefix}.{field_name} must be a boolean.")
+    return _coerce_bool(payload.get(field_name), field_name=f"{prefix}.{field_name}")
+
+
 def _coerce_int(value: object, *, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{field_name} must be an integer.")
@@ -177,14 +183,22 @@ def _receipt_orders_from_payload(payload: object) -> list[dict[str, Any]]:
         )
         normalized.append(
             {
-                "attempted": bool(item.get("attempted")),
+                "attempted": _required_bool_field(
+                    item,
+                    field_name="attempted",
+                    prefix=f"launch.submit_result.live_submission.orders[{index}]",
+                ),
                 "broker_order_id": _optional_text(item.get("broker_order_id")),
                 "broker_status": _optional_text(item.get("broker_status")),
                 "error": _optional_text(item.get("error")),
                 "quantity": quantity,
                 "side": side,
                 "symbol": symbol,
-                "succeeded": bool(item.get("succeeded")),
+                "succeeded": _required_bool_field(
+                    item,
+                    field_name="succeeded",
+                    prefix=f"launch.submit_result.live_submission.orders[{index}]",
+                ),
             }
         )
     return normalized
@@ -573,6 +587,24 @@ def build_live_canary_reconciliation(
     submit_decision = None if submit_result is None else _optional_text(submit_result.get("decision"))
     live_submission = None if submit_result is None else submit_result.get("live_submission")
     live_submission = live_submission if isinstance(live_submission, dict) else None
+    live_submit_attempted = None
+    live_submission_manual_clearance_required = None
+    if live_submission is not None:
+        live_submit_attempted = _required_bool_field(
+            live_submission,
+            field_name="live_submit_attempted",
+            prefix="launch.submit_result.live_submission",
+        )
+        live_submission_manual_clearance_required = _required_bool_field(
+            live_submission,
+            field_name="manual_clearance_required",
+            prefix="launch.submit_result.live_submission",
+        )
+        _required_bool_field(
+            live_submission,
+            field_name="submission_succeeded",
+            prefix="launch.submit_result.live_submission",
+        )
     live_submission_fingerprint = _optional_text(event_context.get("live_submission_fingerprint")) or (
         None if live_submission is None else _optional_text(live_submission.get("live_submission_fingerprint"))
     )
@@ -591,7 +623,7 @@ def build_live_canary_reconciliation(
         mode = "preview_only"
     elif not submit_path_invoked:
         mode = "requested_but_not_invoked"
-    elif live_submission is not None and bool(live_submission.get("live_submit_attempted")):
+    elif live_submit_attempted is True:
         mode = "submit_attempted"
     elif submit_decision in {"blocked", "blocked_duplicate"} or live_submission is not None:
         mode = "submit_not_attempted"
@@ -650,7 +682,7 @@ def build_live_canary_reconciliation(
     if expected_ledger_path is not None:
         if ledger_artifact is None or ledger_artifact.get("path") != expected_ledger_path:
             blocking_reasons.append("launch_state_mismatch:submit_ledger_path")
-    if expected_claim_path is not None and live_submission is not None and bool(live_submission.get("manual_clearance_required")):
+    if expected_claim_path is not None and live_submission is not None and live_submission_manual_clearance_required:
         if claim_artifact is None or claim_artifact.get("path") != expected_claim_path:
             blocking_reasons.append("launch_state_mismatch:submit_claim_path")
 

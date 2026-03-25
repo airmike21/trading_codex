@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Callable
 
 import pytest
 
@@ -363,6 +364,16 @@ def _run_reconcile_text(
     return result, captured.out, captured.err
 
 
+def _mutate_launch_result_file(
+    launch_result_path: Path,
+    *,
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    payload = json.loads(launch_result_path.read_text(encoding="utf-8"))
+    mutate(payload)
+    launch_result_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
 def test_live_canary_reconcile_happy_path_writes_durable_result_artifact(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -421,6 +432,88 @@ def test_live_canary_reconcile_happy_path_writes_durable_result_artifact(
     assert "Verdict reconciled" in stdout
     assert f"fingerprint={FINGERPRINT}" in stdout
     assert f"Result path {result_path}" in stdout
+
+
+@pytest.mark.parametrize("bad_value", ["false", "true"])
+def test_live_canary_reconcile_fails_closed_on_string_live_submit_attempted(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    bad_value: str,
+) -> None:
+    launch_result_path, base_dir = _write_launch_fixture(tmp_path)
+    positions_path = _write_json(tmp_path / "positions.json", _broker_snapshot(shares=1))
+    orders_path = _write_json(tmp_path / "orders.json", _orders_payload())
+    _mutate_launch_result_file(
+        launch_result_path,
+        mutate=lambda payload: payload["submit_result"]["live_submission"].__setitem__("live_submit_attempted", bad_value),
+    )
+
+    result, payload, stderr = _run_reconcile_json(
+        capsys,
+        args=[
+            "reconcile",
+            "--launch-result-file",
+            str(launch_result_path),
+            "--broker",
+            "file",
+            "--positions-file",
+            str(positions_path),
+            "--orders-file",
+            str(orders_path),
+            "--base-dir",
+            str(base_dir),
+        ],
+    )
+
+    assert result == 2
+    assert payload is None or payload["verdict"] != "reconciled"
+    assert "launch.submit_result.live_submission.live_submit_attempted must be a boolean" in stderr
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [
+        ("attempted", "false"),
+        ("attempted", 0),
+        ("succeeded", "true"),
+        ("succeeded", None),
+    ],
+)
+def test_live_canary_reconcile_fails_closed_on_malformed_receipt_order_booleans(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    field_name: str,
+    bad_value: object,
+) -> None:
+    launch_result_path, base_dir = _write_launch_fixture(tmp_path)
+    positions_path = _write_json(tmp_path / "positions.json", _broker_snapshot(shares=1))
+    orders_path = _write_json(tmp_path / "orders.json", _orders_payload())
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["submit_result"]["live_submission"]["orders"][0][field_name] = bad_value
+
+    _mutate_launch_result_file(launch_result_path, mutate=mutate)
+
+    result, payload, stderr = _run_reconcile_json(
+        capsys,
+        args=[
+            "reconcile",
+            "--launch-result-file",
+            str(launch_result_path),
+            "--broker",
+            "file",
+            "--positions-file",
+            str(positions_path),
+            "--orders-file",
+            str(orders_path),
+            "--base-dir",
+            str(base_dir),
+        ],
+    )
+
+    assert result == 2
+    assert payload is None or payload["verdict"] != "reconciled"
+    assert f"launch.submit_result.live_submission.orders[1].{field_name} must be a boolean" in stderr
 
 
 def test_live_canary_reconcile_handles_preview_only_launch_artifact_deterministically(
