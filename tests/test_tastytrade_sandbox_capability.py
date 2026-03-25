@@ -141,15 +141,17 @@ def test_tastytrade_sandbox_capability_fails_closed_when_configured_account_miss
     assert client.calls == [("GET", "/customers/me/accounts")]
 
 
-def test_tastytrade_sandbox_capability_report_marks_pre_submit_steps_and_disabled_submit() -> None:
+def test_tastytrade_sandbox_capability_accepts_confirmed_host_and_marks_disabled_submit() -> None:
+    client = FakeSandboxClient()
     report = run_tastytrade_sandbox_capability(
         symbols=["EFA", "BIL"],
         preset_name="dual_mom_vol10_cash_core",
-        client=FakeSandboxClient(),
+        client=client,
         environ=_sandbox_env(),
         probe_order_symbol="EFA",
     )
 
+    assert report["config"]["host_is_sandbox"] is True
     assert report["summary"]["pre_submit_status"] == "pass"
     assert report["summary"]["overall_status"] == "pass"
     assert report["capability_matrix"]["auth"]["status"] == "pass"
@@ -164,15 +166,16 @@ def test_tastytrade_sandbox_capability_report_marks_pre_submit_steps_and_disable
     assert report["capability_matrix"]["sandbox_submit"]["blockers"] == ["sandbox_submit_disabled_by_default"]
     assert report["capability_matrix"]["sandbox_cancel"]["status"] == "blocked"
     assert report["capability_matrix"]["sandbox_cancel"]["blockers"] == ["sandbox_cancel_not_requested"]
+    assert client.calls[0] == ("GET", "/customers/me/accounts")
 
 
-def test_tastytrade_sandbox_capability_fails_closed_for_non_sandbox_host_before_probes() -> None:
+def test_tastytrade_sandbox_capability_rejects_non_confirmed_marker_host_before_probes() -> None:
     client = FakeSandboxClient()
     report = run_tastytrade_sandbox_capability(
         symbols=["EFA", "BIL"],
         preset_name="dual_mom_vol10_cash_core",
         client=client,
-        environ=_sandbox_env(base_url="https://api.tastytrade.com"),
+        environ=_sandbox_env(base_url="https://sandbox.example.com"),
         probe_order_symbol="EFA",
     )
 

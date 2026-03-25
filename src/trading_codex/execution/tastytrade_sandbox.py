@@ -40,7 +40,7 @@ DEFAULT_TASTYTRADE_SANDBOX_CANCEL_PATHS = (
     ("DELETE", "/accounts/{account_id}/orders/{order_id}"),
     ("POST", "/accounts/{account_id}/orders/{order_id}/cancel"),
 )
-DEFAULT_TASTYTRADE_SANDBOX_HOST_MARKERS = ("sandbox", "cert")
+CONFIRMED_TASTYTRADE_SANDBOX_HOSTS = frozenset({"api.cert.tastytrade.com"})
 DEFAULT_TASTYTRADE_SANDBOX_DEFENSIVE_SYMBOLS = frozenset({"BIL", "IEF", "SGOV", "SHY", "TLT"})
 
 
@@ -113,9 +113,7 @@ def _json_excerpt(payload: object, *, limit: int = 600) -> str:
 
 def _host_is_sandbox(base_url: str) -> bool:
     host = (urlparse(base_url).hostname or "").lower()
-    if host in {"api.tastytrade.com", "api.tastyworks.com"}:
-        return False
-    return any(marker in host for marker in DEFAULT_TASTYTRADE_SANDBOX_HOST_MARKERS)
+    return host in CONFIRMED_TASTYTRADE_SANDBOX_HOSTS
 
 
 def load_tastytrade_sandbox_config(
