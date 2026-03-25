@@ -119,6 +119,28 @@ def test_tastytrade_sandbox_capability_fails_when_account_discovery_is_ambiguous
     assert report["summary"]["overall_status"] == "fail"
 
 
+def test_tastytrade_sandbox_capability_fails_closed_when_configured_account_missing_from_discovery() -> None:
+    client = FakeSandboxClient(accounts=["5WT99999"])
+    report = run_tastytrade_sandbox_capability(
+        symbols=["EFA", "BIL"],
+        preset_name="dual_mom_vol10_cash_core",
+        client=client,
+        environ=_sandbox_env(account_id="5WT00001"),
+        probe_order_symbol="EFA",
+    )
+
+    account_step = report["capability_matrix"]["account_discovery_selection"]
+    assert account_step["status"] == "fail"
+    assert account_step["blockers"] == ["sandbox_account_not_found_in_discovery:5WT00001"]
+    assert account_step["details"]["selected_account_id"] is None
+    assert report["capability_matrix"]["auth"]["status"] == "fail"
+    assert report["capability_matrix"]["balances"]["status"] == "blocked"
+    assert report["capability_matrix"]["positions"]["status"] == "blocked"
+    assert report["capability_matrix"]["order_preview"]["status"] == "blocked"
+    assert report["summary"]["overall_status"] == "fail"
+    assert client.calls == [("GET", "/customers/me/accounts")]
+
+
 def test_tastytrade_sandbox_capability_report_marks_pre_submit_steps_and_disabled_submit() -> None:
     report = run_tastytrade_sandbox_capability(
         symbols=["EFA", "BIL"],
@@ -144,6 +166,28 @@ def test_tastytrade_sandbox_capability_report_marks_pre_submit_steps_and_disable
     assert report["capability_matrix"]["sandbox_cancel"]["blockers"] == ["sandbox_cancel_not_requested"]
 
 
+def test_tastytrade_sandbox_capability_fails_closed_for_non_sandbox_host_before_probes() -> None:
+    client = FakeSandboxClient()
+    report = run_tastytrade_sandbox_capability(
+        symbols=["EFA", "BIL"],
+        preset_name="dual_mom_vol10_cash_core",
+        client=client,
+        environ=_sandbox_env(base_url="https://api.tastytrade.com"),
+        probe_order_symbol="EFA",
+    )
+
+    assert report["config"]["host_is_sandbox"] is False
+    assert report["capability_matrix"]["account_discovery_selection"]["status"] == "fail"
+    assert report["capability_matrix"]["auth"]["status"] == "fail"
+    assert report["capability_matrix"]["balances"]["status"] == "blocked"
+    assert report["capability_matrix"]["instrument_lookup"]["status"] == "blocked"
+    assert report["capability_matrix"]["order_preview"]["status"] == "blocked"
+    assert report["summary"]["pre_submit_status"] == "fail"
+    assert report["summary"]["overall_status"] == "fail"
+    assert report["summary"]["passing_capabilities"] == []
+    assert client.calls == []
+
+
 def test_tastytrade_sandbox_capability_preview_uses_whole_share_order_from_mocked_quote() -> None:
     report = run_tastytrade_sandbox_capability(
         symbols=["EFA", "BIL"],
@@ -163,10 +207,11 @@ def test_tastytrade_sandbox_capability_preview_uses_whole_share_order_from_mocke
 
 
 def test_tastytrade_sandbox_capability_submit_guard_blocks_live_like_host() -> None:
+    client = FakeSandboxClient()
     report = run_tastytrade_sandbox_capability(
         symbols=["EFA", "BIL"],
         preset_name="dual_mom_vol10_cash_core",
-        client=FakeSandboxClient(),
+        client=client,
         environ=_sandbox_env(base_url="https://api.tastytrade.com"),
         probe_order_symbol="EFA",
         enable_submit=True,
@@ -174,10 +219,13 @@ def test_tastytrade_sandbox_capability_submit_guard_blocks_live_like_host() -> N
         cancel_after_submit=True,
     )
 
+    assert report["capability_matrix"]["auth"]["status"] == "fail"
+    assert report["capability_matrix"]["balances"]["status"] == "blocked"
     assert report["capability_matrix"]["sandbox_submit"]["status"] == "blocked"
     assert "sandbox_submit_requires_sandbox_host" in report["capability_matrix"]["sandbox_submit"]["blockers"]
     assert report["capability_matrix"]["sandbox_cancel"]["status"] == "blocked"
     assert report["capability_matrix"]["sandbox_cancel"]["blockers"] == ["sandbox_cancel_requires_submitted_order"]
+    assert client.calls == []
 
 
 def test_tastytrade_sandbox_capability_cli_smoke_archives_json_report(
@@ -227,9 +275,15 @@ def test_tastytrade_sandbox_capability_cli_smoke_archives_json_report(
     assert exit_code == 0, captured.err
     payload = json.loads(captured.out)
     assert payload["schema_name"] == "tastytrade_sandbox_capability"
+    assert payload["preset"] is None
     assert payload["summary"]["pre_submit_status"] == "pass"
-    assert Path(payload["archive"]["manifest_path"]).exists()
+    manifest_path = Path(payload["archive"]["manifest_path"])
+    assert manifest_path.exists()
     report_path = Path(payload["archive"]["capability_report_path"])
     assert report_path.exists()
     archived_report = json.loads(report_path.read_text(encoding="utf-8"))
     assert archived_report["schema_name"] == "tastytrade_sandbox_capability"
+    assert "preset" not in archived_report
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "preset" not in manifest
+    assert "explicit_symbols" in manifest["run_id"]

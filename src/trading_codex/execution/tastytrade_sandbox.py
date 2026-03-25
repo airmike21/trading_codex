@@ -366,11 +366,16 @@ def _select_account(
     source: str | None = None
 
     if configured_account_id is not None:
-        selected_account_id = configured_account_id
         source = "explicit_config"
-        if discovered_account_ids and configured_account_id not in discovered_account_ids:
+        if discovered_account_ids:
+            if configured_account_id in discovered_account_ids:
+                selected_account_id = configured_account_id
+            else:
+                blockers.append(f"sandbox_account_not_found_in_discovery:{configured_account_id}")
+        elif discovery_error is None:
             blockers.append(f"sandbox_account_not_found_in_discovery:{configured_account_id}")
-        elif not discovered_account_ids and discovery_error is not None:
+        else:
+            selected_account_id = configured_account_id
             warnings.append("sandbox_account_discovery_unavailable_using_explicit_account")
             details["discovery_error"] = discovery_error
     else:
@@ -782,6 +787,66 @@ def _mutation_status(capability_matrix: dict[str, dict[str, Any]]) -> str:
     return "blocked"
 
 
+def _build_tastytrade_sandbox_capability_report(
+    *,
+    generated_at: datetime,
+    preset_name: str | None,
+    normalized_symbols: list[str],
+    config: TastytradeSandboxConfig,
+    probe_order_qty: int,
+    probe_order_symbol: str | None,
+    enable_submit: bool,
+    cancel_after_submit: bool,
+    sandbox_submit_account: str | None,
+    capability_matrix: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    pre_submit_status = _pre_submit_status(capability_matrix)
+    mutation_status = _mutation_status(capability_matrix)
+    overall_status = "pass" if pre_submit_status == "pass" and mutation_status in {"pass", "blocked"} else (
+        "fail" if "fail" in {pre_submit_status, mutation_status} else "blocked"
+    )
+
+    return {
+        "schema_name": TASTYTRADE_SANDBOX_CAPABILITY_SCHEMA_NAME,
+        "schema_version": TASTYTRADE_SANDBOX_CAPABILITY_SCHEMA_VERSION,
+        "generated_at": generated_at.isoformat(),
+        "preset": preset_name,
+        "symbols": normalized_symbols,
+        "config": {
+            "account_id": config.account_id,
+            "base_url": config.base_url,
+            "host_is_sandbox": _host_is_sandbox(config.base_url),
+            "secrets_file_path": config.secrets_file_path,
+            "timeout_seconds": config.timeout_seconds,
+            "uses_access_token": config.access_token is not None,
+            "uses_session_token": config.session_token is not None,
+            "uses_username_password": bool(config.username and config.password),
+        },
+        "controls": {
+            "enable_sandbox_submit": enable_submit,
+            "cancel_after_submit": cancel_after_submit,
+            "sandbox_submit_account": _normalize_text(sandbox_submit_account),
+            "probe_order_qty": probe_order_qty,
+            "probe_order_symbol": _normalize_text(probe_order_symbol),
+        },
+        "summary": {
+            "overall_status": overall_status,
+            "pre_submit_status": pre_submit_status,
+            "mutation_status": mutation_status,
+            "passing_capabilities": [
+                name for name, payload in capability_matrix.items() if payload["status"] == "pass"
+            ],
+            "blocked_capabilities": [
+                name for name, payload in capability_matrix.items() if payload["status"] == "blocked"
+            ],
+            "failing_capabilities": [
+                name for name, payload in capability_matrix.items() if payload["status"] == "fail"
+            ],
+        },
+        "capability_matrix": capability_matrix,
+    }
+
+
 def run_tastytrade_sandbox_capability(
     *,
     symbols: list[str],
@@ -830,6 +895,61 @@ def run_tastytrade_sandbox_capability(
             session_token=config.session_token,
             timeout_seconds=config.timeout_seconds,
             username=config.username,
+        )
+
+    if not _host_is_sandbox(config.base_url):
+        host_details = {"base_url": config.base_url}
+        capability_matrix = {
+            "account_discovery_selection": _step(
+                status="fail",
+                blockers=["sandbox_host_not_confirmed"],
+                details={
+                    "configured_account_id": config.account_id,
+                    "discovered_account_ids": [],
+                    "discovery_attempts": [],
+                    "selection_source": None,
+                    "selected_account_id": None,
+                    **host_details,
+                },
+            ),
+            "auth": _step(
+                status="fail",
+                blockers=["sandbox_host_not_confirmed"],
+                details=host_details,
+            ),
+            "balances": _blocked_step("sandbox_host_not_confirmed", details=host_details),
+            "positions": _blocked_step("sandbox_host_not_confirmed", details=host_details),
+            "instrument_lookup": _blocked_step("sandbox_host_not_confirmed", details=host_details),
+            "quote_lookup": _blocked_step("sandbox_host_not_confirmed", details=host_details),
+            "order_construction": _blocked_step("sandbox_host_not_confirmed", details=host_details),
+            "order_preview": _blocked_step("sandbox_host_not_confirmed", details=host_details),
+            "sandbox_submit": _step(
+                status="blocked",
+                blockers=["sandbox_submit_requires_sandbox_host"]
+                if enable_submit
+                else ["sandbox_submit_disabled_by_default"],
+                details=host_details,
+            ),
+            "sandbox_cancel": _blocked_step(
+                "sandbox_cancel_requires_submitted_order"
+                if cancel_after_submit
+                else "sandbox_cancel_not_requested",
+                details={"account_id": None, "order_id": None, **host_details}
+                if cancel_after_submit
+                else host_details,
+            ),
+        }
+        return _build_tastytrade_sandbox_capability_report(
+            generated_at=generated_at,
+            preset_name=preset_name,
+            normalized_symbols=normalized_symbols,
+            config=config,
+            probe_order_qty=probe_order_qty,
+            probe_order_symbol=probe_order_symbol,
+            enable_submit=enable_submit,
+            cancel_after_submit=cancel_after_submit,
+            sandbox_submit_account=sandbox_submit_account,
+            capability_matrix=capability_matrix,
         )
 
     sandbox_client = client or build_tastytrade_sandbox_client(config)
@@ -996,51 +1116,18 @@ def run_tastytrade_sandbox_capability(
                 cancel_after_submit=cancel_after_submit,
             )
 
-    pre_submit_status = _pre_submit_status(capability_matrix)
-    mutation_status = _mutation_status(capability_matrix)
-    overall_status = "pass" if pre_submit_status == "pass" and mutation_status in {"pass", "blocked"} else (
-        "fail" if "fail" in {pre_submit_status, mutation_status} else "blocked"
+    return _build_tastytrade_sandbox_capability_report(
+        generated_at=generated_at,
+        preset_name=preset_name,
+        normalized_symbols=normalized_symbols,
+        config=config,
+        probe_order_qty=probe_order_qty,
+        probe_order_symbol=probe_order_symbol,
+        enable_submit=enable_submit,
+        cancel_after_submit=cancel_after_submit,
+        sandbox_submit_account=sandbox_submit_account,
+        capability_matrix=capability_matrix,
     )
-
-    return {
-        "schema_name": TASTYTRADE_SANDBOX_CAPABILITY_SCHEMA_NAME,
-        "schema_version": TASTYTRADE_SANDBOX_CAPABILITY_SCHEMA_VERSION,
-        "generated_at": generated_at.isoformat(),
-        "preset": preset_name,
-        "symbols": normalized_symbols,
-        "config": {
-            "account_id": config.account_id,
-            "base_url": config.base_url,
-            "host_is_sandbox": _host_is_sandbox(config.base_url),
-            "secrets_file_path": config.secrets_file_path,
-            "timeout_seconds": config.timeout_seconds,
-            "uses_access_token": config.access_token is not None,
-            "uses_session_token": config.session_token is not None,
-            "uses_username_password": bool(config.username and config.password),
-        },
-        "controls": {
-            "enable_sandbox_submit": enable_submit,
-            "cancel_after_submit": cancel_after_submit,
-            "sandbox_submit_account": _normalize_text(sandbox_submit_account),
-            "probe_order_qty": probe_order_qty,
-            "probe_order_symbol": _normalize_text(probe_order_symbol),
-        },
-        "summary": {
-            "overall_status": overall_status,
-            "pre_submit_status": pre_submit_status,
-            "mutation_status": mutation_status,
-            "passing_capabilities": [
-                name for name, payload in capability_matrix.items() if payload["status"] == "pass"
-            ],
-            "blocked_capabilities": [
-                name for name, payload in capability_matrix.items() if payload["status"] == "blocked"
-            ],
-            "failing_capabilities": [
-                name for name, payload in capability_matrix.items() if payload["status"] == "fail"
-            ],
-        },
-        "capability_matrix": capability_matrix,
-    }
 
 
 def render_tastytrade_sandbox_capability_report(report: dict[str, Any]) -> str:

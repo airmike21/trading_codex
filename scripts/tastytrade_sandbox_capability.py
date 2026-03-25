@@ -71,7 +71,7 @@ def _resolve_symbols(
     explicit_symbols: list[str] | None,
 ) -> tuple[list[str], str | None]:
     if explicit_symbols:
-        return [symbol.strip().upper() for symbol in explicit_symbols if symbol.strip()], preset_name
+        return [symbol.strip().upper() for symbol in explicit_symbols if symbol.strip()], None
 
     if preset_name is None:
         raise ValueError("Either --symbols or --preset is required.")
