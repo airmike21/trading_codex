@@ -11,6 +11,7 @@ It exists so future chats and future Builder slices ground on the same staged pl
 - Most recent promoted purpose: Stage 2 persistent paper lane is complete on promoted master, with the latest hardening fix rejecting stale paper-lane marks.
 - Stage 1 bounded tastytrade sandbox work is complete.
 - Stage 2 persistent paper lane work is complete and exited on promoted master.
+- Stage 2 forward paper operations routine now lives in `docs/STAGE2_PAPER_OPS.md` and `scripts/paper_lane_daily_ops.py`.
 - The meaningful next move after Stage 2 is conservative operational forward paper running. HOLD unless a concrete repo defect appears.
 
 ## Current Program Status

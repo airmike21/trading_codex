@@ -20,6 +20,7 @@ Last updated: 2026-03-26
 - Current primary live candidate: simple long-only ETF trend/momentum with cash fallback; daily/weekly execution; whole shares initially; no options, no shorting, no leverage initially.
 - Stage 1 sandbox capability command: `scripts/tastytrade_sandbox_capability.py` with slice notes in `docs/TASTYTRADE_SANDBOX_CAPABILITY.md`.
 - Stage 2 paper lane command: `scripts/paper_lane.py` for durable local paper state, status/reconcile, and apply flow.
+- Stage 2 daily ops routine: `scripts/paper_lane_daily_ops.py` with retained artifact locations and scheduling notes in `docs/STAGE2_PAPER_OPS.md`.
 
 ## Hard Invariants
 
@@ -46,6 +47,8 @@ Last updated: 2026-03-26
 ~/trading_codex/.venv/bin/python scripts/update_data_eod.py --provider stooq --verbose
 ~/trading_codex/.venv/bin/python scripts/daily_signal.py --preset vm_core_due --emit json
 ~/trading_codex/.venv/bin/python scripts/tastytrade_sandbox_capability.py --preset dual_mom_vol10_cash_core --emit json
-~/trading_codex/.venv/bin/python scripts/paper_lane.py status --preset dual_mom_vol10_cash_core --emit json
+~/trading_codex/.venv/bin/python scripts/paper_lane.py --emit json status --preset dual_mom_vol10_cash_core
+~/trading_codex/.venv/bin/python scripts/paper_lane.py --emit json apply --preset dual_mom_vol10_cash_core
+~/trading_codex/.venv/bin/python scripts/paper_lane_daily_ops.py --preset dual_mom_vol10_cash_core --provider stooq
 ~/trading_codex/.venv/bin/python -m pytest -q
 ```

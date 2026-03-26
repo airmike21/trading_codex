@@ -27,12 +27,12 @@ def _df_for_dates(dates: list[str], base: float = 100.0) -> pd.DataFrame:
 def test_extract_symbols_from_args() -> None:
     args = [
         "--strategy",
-        "valmom_v1",
+        "dual_mom_vol10_cash",
         "--symbols",
         "SPY",
         "QQQ",
         "IWM",
-        "--vm-defensive-symbol",
+        "--dmv-defensive-symbol",
         "BIL",
     ]
     assert update_data_eod._extract_symbols_from_args(args) == ["SPY", "QQQ", "IWM", "BIL"]
@@ -45,13 +45,14 @@ def test_load_presets_symbols(tmp_path: Path) -> None:
 {
   "presets": {
     "a": {"run_backtest_args": ["--symbols", "spy", "qqq", "--vm-defensive-symbol", "shy"]},
-    "b": {"run_backtest_args": ["--symbols", "QQQ", "IWM", "--defensive", "tlt"]}
+    "b": {"run_backtest_args": ["--symbols", "QQQ", "IWM", "--defensive", "tlt"]},
+    "c": {"run_backtest_args": ["--symbols", "EFA", "--dmv-defensive-symbol", "bil"]}
   }
 }
 """.strip(),
         encoding="utf-8",
     )
-    assert update_data_eod._load_presets_symbols(p) == ["SPY", "QQQ", "SHY", "IWM", "TLT"]
+    assert update_data_eod._load_presets_symbols(p) == ["SPY", "QQQ", "SHY", "IWM", "TLT", "EFA", "BIL"]
 
 
 def test_merge_existing_dedup_last_wins() -> None:
