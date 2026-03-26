@@ -19,9 +19,11 @@ Explicit presets file override. Windows paths are converted to WSL paths.
 
 .PARAMETER ArchiveRoot
 Optional archive root override passed to `paper_lane_daily_ops.py`.
+Windows paths are converted to WSL paths.
 
 .PARAMETER PaperBaseDir
 Optional paper-lane base dir override passed to `paper_lane_daily_ops.py`.
+Windows paths are converted to WSL paths.
 
 .PARAMETER Timestamp
 Optional ISO timestamp override for deterministic testing.
@@ -45,7 +47,7 @@ Show this help text.
 ./trading_codex_stage2_daily_ops.ps1
 
 .EXAMPLE
-./trading_codex_stage2_daily_ops.ps1 -PrintOnly -WslRepoPath /home/aarondaugherty/.codex-workspaces/trading-builder
+./trading_codex_stage2_daily_ops.ps1 -PrintOnly -WslRepoPath ~/trading_codex
 #>
 [CmdletBinding()]
 param(
@@ -116,6 +118,9 @@ function Resolve-WslPath {
   if (Test-Path -LiteralPath $PathValue) {
     $candidate = (Resolve-Path -LiteralPath $PathValue).Path
   }
+  if ($candidate -match '^[A-Za-z]:[\\/]') {
+    $candidate = $candidate -replace '\\', '/'
+  }
 
   $resolvedWindows = & wsl.exe -d $Distro -- wslpath -a $candidate 2>$null
   $resolvedWindows = ($resolvedWindows | Out-String).Trim()
@@ -185,10 +190,10 @@ if ($null -ne $resolvedPresetsFile) {
   $scriptArgs += @("--presets-file", $resolvedPresetsFile)
 }
 if (-not [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
-  $scriptArgs += @("--archive-root", $ArchiveRoot)
+  $scriptArgs += @("--archive-root", (Resolve-WslPath -PathValue $ArchiveRoot -Distro $WslDistro))
 }
 if (-not [string]::IsNullOrWhiteSpace($PaperBaseDir)) {
-  $scriptArgs += @("--paper-base-dir", $PaperBaseDir)
+  $scriptArgs += @("--paper-base-dir", (Resolve-WslPath -PathValue $PaperBaseDir -Distro $WslDistro))
 }
 if (-not [string]::IsNullOrWhiteSpace($Timestamp)) {
   $scriptArgs += @("--timestamp", $Timestamp)

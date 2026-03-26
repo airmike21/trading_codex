@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import json
 import math
 import os
@@ -10,10 +11,16 @@ import re
 import subprocess
 import sys
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -82,6 +89,10 @@ RUN_LOG_COLUMNS = (
     "daily_ops_xlsx_path",
     "successful_signal_days_recorded",
 )
+
+
+class DailyOpsRunLockedError(RuntimeError):
+    pass
 
 
 def _repo_root() -> Path:
@@ -425,7 +436,47 @@ def resolve_ops_paths(
         "jsonl_path": ops_root / "paper_lane_daily_ops_log.jsonl",
         "csv_path": ops_root / "paper_lane_daily_ops_runs.csv",
         "xlsx_path": ops_root / "paper_lane_daily_ops_runs.xlsx",
+        "lock_path": ops_root / "paper_lane_daily_ops.lock",
     }
+
+
+def _is_lock_contention_error(exc: OSError) -> bool:
+    return exc.errno in {errno.EACCES, errno.EAGAIN}
+
+
+@contextmanager
+def _daily_ops_run_lock(*, lock_path: Path, state_key: str):
+    if fcntl is None:  # pragma: no cover
+        raise RuntimeError("paper_lane_daily_ops single-instance locking requires a POSIX platform.")
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if not _is_lock_contention_error(exc):
+                raise
+            lock_file.seek(0)
+            holder = lock_file.read().strip()
+            message = (
+                f"another paper_lane_daily_ops run is already active for state_key={state_key}; "
+                f"lock_path={lock_path}"
+            )
+            if holder:
+                message = f"{message}; holder={holder}"
+            raise DailyOpsRunLockedError(message) from exc
+
+        lock_file.seek(0)
+        lock_file.truncate(0)
+        lock_file.write(
+            f"pid={os.getpid()} state_key={state_key} acquired_at_chicago={_chicago_now().isoformat()}\n"
+        )
+        lock_file.flush()
+        os.fsync(lock_file.fileno())
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def build_update_data_eod_cmd(
@@ -701,166 +752,173 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[paper_lane_daily_ops] ERROR: {exc}", file=sys.stderr)
         return 2
 
-    step_specs = [
-        (
-            "update_data_eod",
-            build_update_data_eod_cmd(
-                repo_root=repo_root,
-                provider=args.provider,
-                data_dir=data_dir,
-                symbols=symbols,
-            ),
-            False,
-        ),
-        (
-            "paper_lane_status",
-            build_paper_lane_cmd(
-                repo_root=repo_root,
-                command="status",
-                preset_name=args.preset,
-                presets_path=resolved_presets_path,
-                state_key=args.state_key,
-                data_dir=data_dir,
-                paper_base_dir=resolved_paper_base_dir,
-                timestamp=timestamp.isoformat(),
-            ),
-            True,
-        ),
-        (
-            "paper_lane_apply",
-            build_paper_lane_cmd(
-                repo_root=repo_root,
-                command="apply",
-                preset_name=args.preset,
-                presets_path=resolved_presets_path,
-                state_key=args.state_key,
-                data_dir=data_dir,
-                paper_base_dir=resolved_paper_base_dir,
-                timestamp=timestamp.isoformat(),
-            ),
-            True,
-        ),
-    ]
+    try:
+        with _daily_ops_run_lock(lock_path=ops_paths["lock_path"], state_key=args.state_key):
+            step_specs = [
+                (
+                    "update_data_eod",
+                    build_update_data_eod_cmd(
+                        repo_root=repo_root,
+                        provider=args.provider,
+                        data_dir=data_dir,
+                        symbols=symbols,
+                    ),
+                    False,
+                ),
+                (
+                    "paper_lane_status",
+                    build_paper_lane_cmd(
+                        repo_root=repo_root,
+                        command="status",
+                        preset_name=args.preset,
+                        presets_path=resolved_presets_path,
+                        state_key=args.state_key,
+                        data_dir=data_dir,
+                        paper_base_dir=resolved_paper_base_dir,
+                        timestamp=timestamp.isoformat(),
+                    ),
+                    True,
+                ),
+                (
+                    "paper_lane_apply",
+                    build_paper_lane_cmd(
+                        repo_root=repo_root,
+                        command="apply",
+                        preset_name=args.preset,
+                        presets_path=resolved_presets_path,
+                        state_key=args.state_key,
+                        data_dir=data_dir,
+                        paper_base_dir=resolved_paper_base_dir,
+                        timestamp=timestamp.isoformat(),
+                    ),
+                    True,
+                ),
+            ]
 
-    step_results: dict[str, dict[str, Any]] = {}
-    failed_step: str | None = None
-    failed_exit_code = 0
+            step_results: dict[str, dict[str, Any]] = {}
+            failed_step: str | None = None
+            failed_exit_code = 0
 
-    for step_name, cmd, expect_json_stdout in step_specs:
-        result = _run_step(
-            repo_root=repo_root,
-            step_name=step_name,
-            cmd=cmd,
-            expect_json_stdout=expect_json_stdout,
-            timestamp=timestamp,
-        )
-        step_results[step_name] = result
-        if not result["success"]:
-            failed_step = step_name
-            failed_exit_code = int(result["exit_code"]) or 2
-            break
+            for step_name, cmd, expect_json_stdout in step_specs:
+                result = _run_step(
+                    repo_root=repo_root,
+                    step_name=step_name,
+                    cmd=cmd,
+                    expect_json_stdout=expect_json_stdout,
+                    timestamp=timestamp,
+                )
+                step_results[step_name] = result
+                if not result["success"]:
+                    failed_step = step_name
+                    failed_exit_code = int(result["exit_code"]) or 2
+                    break
 
-    overall_result = "failed" if failed_step else "ok"
-    prior_rows = _load_jsonl_records(ops_paths["jsonl_path"])
-    provisional_summary = {
-        "overall_result": overall_result,
-        "status_signal_date": (
-            (((step_results.get("paper_lane_status") or {}).get("stdout_json") or {}).get("signal") or {}).get("date")
-        ),
-    }
-    successful_signal_days_recorded = _successful_signal_days(prior_rows + [provisional_summary])
-
-    archive = write_run_archive(
-        timestamp=timestamp,
-        run_kind="paper_lane_daily_ops",
-        mode=overall_result,
-        label=args.state_key,
-        identity_parts=[args.state_key, args.preset, timestamp.date().isoformat()],
-        manifest_fields={
-            "failed_step": failed_step,
-            "preset": args.preset,
-            "provider": args.provider,
-            "state_key": args.state_key,
-        },
-        json_artifacts={
-            "daily_ops_run": {
-                "schema_name": RUN_SCHEMA_NAME,
-                "schema_version": RUN_SCHEMA_VERSION,
-                "timestamp_chicago": timestamp.isoformat(),
-                "preset": args.preset,
-                "provider": args.provider,
-                "presets_file": str(resolved_presets_path),
-                "state_key": args.state_key,
-                "data_dir": str(data_dir),
-                "paper_base_dir": None if resolved_paper_base_dir is None else str(resolved_paper_base_dir),
-                "symbols": symbols,
+            overall_result = "failed" if failed_step else "ok"
+            prior_rows = _load_jsonl_records(ops_paths["jsonl_path"])
+            provisional_summary = {
                 "overall_result": overall_result,
-                "failed_step": failed_step,
-                "step_results": step_results,
-            },
-            **{step_name: payload for step_name, payload in step_results.items()},
-        },
-        text_artifacts={
-            "summary_text": "\n".join(
-                [
-                    f"preset={args.preset}",
-                    f"provider={args.provider}",
-                    f"state_key={args.state_key}",
-                    f"overall_result={overall_result}",
-                    f"failed_step={failed_step or ''}",
-                ]
-            )
-        },
-        preferred_root=ops_paths["archive_root"],
-    )
+                "status_signal_date": (
+                    (((step_results.get("paper_lane_status") or {}).get("stdout_json") or {}).get("signal") or {}).get(
+                        "date"
+                    )
+                ),
+            }
+            successful_signal_days_recorded = _successful_signal_days(prior_rows + [provisional_summary])
 
-    summary_row = _build_summary_row(
-        run_id=archive.manifest["run_id"],
-        timestamp=timestamp,
-        preset_name=args.preset,
-        state_key=args.state_key,
-        provider=args.provider,
-        presets_path=resolved_presets_path,
-        data_dir=data_dir,
-        paper_base_dir=resolved_paper_base_dir,
-        ops_paths=ops_paths,
-        manifest_path=archive.paths.manifest_path,
-        step_results=step_results,
-        overall_result=overall_result,
-        failed_step=failed_step,
-        successful_signal_days_recorded=successful_signal_days_recorded,
-    )
-
-    _append_jsonl_record(ops_paths["jsonl_path"], summary_row)
-    all_rows = _load_jsonl_records(ops_paths["jsonl_path"])
-    _write_csv(ops_paths["csv_path"], rows=all_rows)
-    _write_xlsx(ops_paths["xlsx_path"], rows=all_rows, timestamp=timestamp)
-
-    text_summary = _render_summary_text(run_id=archive.manifest["run_id"], summary_row=summary_row)
-    if args.emit == "json":
-        print(
-            json.dumps(
-                {
-                    "schema_name": RUN_SCHEMA_NAME,
-                    "schema_version": RUN_SCHEMA_VERSION,
-                    "archive_manifest_path": str(archive.paths.manifest_path),
-                    "summary": summary_row,
-                    "step_results": step_results,
+            archive = write_run_archive(
+                timestamp=timestamp,
+                run_kind="paper_lane_daily_ops",
+                mode=overall_result,
+                label=args.state_key,
+                identity_parts=[args.state_key, args.preset, timestamp.date().isoformat()],
+                manifest_fields={
+                    "failed_step": failed_step,
+                    "preset": args.preset,
+                    "provider": args.provider,
+                    "state_key": args.state_key,
                 },
-                indent=2,
-                sort_keys=True,
-                ensure_ascii=False,
+                json_artifacts={
+                    "daily_ops_run": {
+                        "schema_name": RUN_SCHEMA_NAME,
+                        "schema_version": RUN_SCHEMA_VERSION,
+                        "timestamp_chicago": timestamp.isoformat(),
+                        "preset": args.preset,
+                        "provider": args.provider,
+                        "presets_file": str(resolved_presets_path),
+                        "state_key": args.state_key,
+                        "data_dir": str(data_dir),
+                        "paper_base_dir": None if resolved_paper_base_dir is None else str(resolved_paper_base_dir),
+                        "symbols": symbols,
+                        "overall_result": overall_result,
+                        "failed_step": failed_step,
+                        "step_results": step_results,
+                    },
+                    **{step_name: payload for step_name, payload in step_results.items()},
+                },
+                text_artifacts={
+                    "summary_text": "\n".join(
+                        [
+                            f"preset={args.preset}",
+                            f"provider={args.provider}",
+                            f"state_key={args.state_key}",
+                            f"overall_result={overall_result}",
+                            f"failed_step={failed_step or ''}",
+                        ]
+                    )
+                },
+                preferred_root=ops_paths["archive_root"],
             )
-        )
-    else:
-        print(text_summary)
 
-    if failed_step is not None:
-        print(
-            f"[paper_lane_daily_ops] ERROR: step {failed_step} failed; see {archive.paths.manifest_path}",
-            file=sys.stderr,
-        )
-        return failed_exit_code
+            summary_row = _build_summary_row(
+                run_id=archive.manifest["run_id"],
+                timestamp=timestamp,
+                preset_name=args.preset,
+                state_key=args.state_key,
+                provider=args.provider,
+                presets_path=resolved_presets_path,
+                data_dir=data_dir,
+                paper_base_dir=resolved_paper_base_dir,
+                ops_paths=ops_paths,
+                manifest_path=archive.paths.manifest_path,
+                step_results=step_results,
+                overall_result=overall_result,
+                failed_step=failed_step,
+                successful_signal_days_recorded=successful_signal_days_recorded,
+            )
+
+            _append_jsonl_record(ops_paths["jsonl_path"], summary_row)
+            all_rows = _load_jsonl_records(ops_paths["jsonl_path"])
+            _write_csv(ops_paths["csv_path"], rows=all_rows)
+            _write_xlsx(ops_paths["xlsx_path"], rows=all_rows, timestamp=timestamp)
+
+            text_summary = _render_summary_text(run_id=archive.manifest["run_id"], summary_row=summary_row)
+            if args.emit == "json":
+                print(
+                    json.dumps(
+                        {
+                            "schema_name": RUN_SCHEMA_NAME,
+                            "schema_version": RUN_SCHEMA_VERSION,
+                            "archive_manifest_path": str(archive.paths.manifest_path),
+                            "summary": summary_row,
+                            "step_results": step_results,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(text_summary)
+
+            if failed_step is not None:
+                print(
+                    f"[paper_lane_daily_ops] ERROR: step {failed_step} failed; see {archive.paths.manifest_path}",
+                    file=sys.stderr,
+                )
+                return failed_exit_code
+    except DailyOpsRunLockedError as exc:
+        print(f"[paper_lane_daily_ops] ERROR: {exc}", file=sys.stderr)
+        return 2
 
     return 0
 

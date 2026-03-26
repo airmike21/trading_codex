@@ -55,3 +55,27 @@ def test_print_only_renders_wsl_daily_ops_command() -> None:
     assert "'--archive-root' '/tmp/trading_codex_archive'" in stdout
     assert "'--paper-base-dir' '/tmp/trading_codex_paper'" in stdout
     assert "'--timestamp' '2026-03-26T16:10:00-05:00'" in stdout
+
+
+def test_print_only_converts_windows_style_paths_for_all_path_overrides() -> None:
+    proc = _run_wrapper(
+        "-WslRepoPath",
+        "/__trading_codex_stage2_ops__",
+        "-WslPython",
+        "/__trading_codex_stage2_ops__/.venv/bin/python",
+        "-PresetsFile",
+        "C:\\stage2\\presets.json",
+        "-ArchiveRoot",
+        "C:\\stage2\\archive",
+        "-PaperBaseDir",
+        "C:\\stage2\\paper",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "'--presets-file' '/mnt/c/stage2/presets.json'" in stdout
+    assert "'--archive-root' '/mnt/c/stage2/archive'" in stdout
+    assert "'--paper-base-dir' '/mnt/c/stage2/paper'" in stdout
+    assert "C:\\stage2\\presets.json" not in stdout
+    assert "C:\\stage2\\archive" not in stdout
+    assert "C:\\stage2\\paper" not in stdout

@@ -3,8 +3,11 @@ from __future__ import annotations
 import csv
 import json
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
+
+import pytest
 
 from scripts import paper_lane_daily_ops
 from trading_codex.execution.paper_lane import DEFAULT_PAPER_STATE_KEY
@@ -63,6 +66,34 @@ def _apply_payload(*, event_id: str, archive_manifest_path: str) -> dict[str, ob
         "event_receipt_path": f"/tmp/paper/{event_id}.json",
         "result": "applied",
     }
+
+
+def _summary_row(*, event_id: str, ops_paths: dict[str, Path]) -> dict[str, object]:
+    row = {column: "" for column in paper_lane_daily_ops.RUN_LOG_COLUMNS}
+    row.update(
+        {
+            "schema_name": paper_lane_daily_ops.SUMMARY_SCHEMA_NAME,
+            "schema_version": paper_lane_daily_ops.SUMMARY_SCHEMA_VERSION,
+            "run_id": "existing-run",
+            "timestamp_chicago": "2026-03-26T16:10:00-05:00",
+            "ops_date": "2026-03-26",
+            "overall_result": "ok",
+            "preset": "dual_mom_vol10_cash_core",
+            "state_key": DEFAULT_PAPER_STATE_KEY,
+            "provider": "stooq",
+            "status_signal_date": "2026-03-26",
+            "status_signal_action": "HOLD",
+            "status_signal_symbol": "BIL",
+            "status_target_shares": 200,
+            "status_next_rebalance": "2026-04-24",
+            "status_event_id": event_id,
+            "daily_ops_jsonl_path": str(ops_paths["jsonl_path"]),
+            "daily_ops_csv_path": str(ops_paths["csv_path"]),
+            "daily_ops_xlsx_path": str(ops_paths["xlsx_path"]),
+            "successful_signal_days_recorded": 1,
+        }
+    )
+    return row
 
 
 def test_build_paper_lane_cmd_places_emit_before_subcommand(tmp_path: Path) -> None:
@@ -244,3 +275,97 @@ def test_main_logs_failed_step_and_returns_nonzero(tmp_path: Path, monkeypatch, 
     assert rows[0]["apply_exit_code"] == ""
     assert ops_paths["csv_path"].exists()
     assert ops_paths["xlsx_path"].exists()
+
+
+def test_main_refuses_overlapping_run_before_rewriting_cumulative_logs(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    if paper_lane_daily_ops.fcntl is None:
+        pytest.skip("paper_lane_daily_ops locking requires POSIX fcntl")
+
+    presets_path = tmp_path / "presets.json"
+    archive_root = tmp_path / "archive"
+    data_dir = tmp_path / "data"
+    _write_presets(presets_path, data_dir=data_dir)
+
+    ops_paths = paper_lane_daily_ops.resolve_ops_paths(
+        state_key=DEFAULT_PAPER_STATE_KEY,
+        archive_root=archive_root,
+        create=True,
+    )
+    existing_row = _summary_row(event_id="evt-a", ops_paths=ops_paths)
+    paper_lane_daily_ops._append_jsonl_record(ops_paths["jsonl_path"], existing_row)
+    paper_lane_daily_ops._write_csv(ops_paths["csv_path"], rows=[existing_row])
+    paper_lane_daily_ops._write_xlsx(
+        ops_paths["xlsx_path"],
+        rows=[existing_row],
+        timestamp=paper_lane_daily_ops._resolve_timestamp("2026-03-26T16:10:00-05:00"),
+    )
+    csv_before = ops_paths["csv_path"].read_bytes()
+    xlsx_before = ops_paths["xlsx_path"].read_bytes()
+
+    lock_holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl, os, sys\n"
+                "from pathlib import Path\n"
+                "path = Path(sys.argv[1])\n"
+                "path.parent.mkdir(parents=True, exist_ok=True)\n"
+                "with path.open('a+', encoding='utf-8') as fh:\n"
+                "    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)\n"
+                "    fh.seek(0)\n"
+                "    fh.truncate(0)\n"
+                "    fh.write('pid=999 state_key=paper acquired_at_chicago=2026-03-26T16:10:00-05:00\\n')\n"
+                "    fh.flush()\n"
+                "    os.fsync(fh.fileno())\n"
+                "    print('locked', flush=True)\n"
+                "    sys.stdin.read()\n"
+            ),
+            str(ops_paths["lock_path"]),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert lock_holder.stdout is not None
+        assert lock_holder.stdin is not None
+        locked_line = lock_holder.stdout.readline().strip()
+        if locked_line != "locked":
+            stderr = "" if lock_holder.stderr is None else lock_holder.stderr.read()
+            raise AssertionError(f"lock holder failed to start: stdout={locked_line!r} stderr={stderr!r}")
+
+        def fail_run_process(cmd: list[str], *, repo_root: Path) -> subprocess.CompletedProcess[str]:
+            raise AssertionError(f"daily ops steps should not start while lock is held: {cmd}")
+
+        monkeypatch.setattr(paper_lane_daily_ops, "_run_process", fail_run_process)
+
+        rc = paper_lane_daily_ops.main(
+            [
+                "--presets-file",
+                str(presets_path),
+                "--archive-root",
+                str(archive_root),
+                "--timestamp",
+                "2026-03-26T16:15:00-05:00",
+            ]
+        )
+        captured = capsys.readouterr()
+
+        assert rc == 2
+        assert "already active" in captured.err
+        assert "lock_path=" in captured.err
+
+        rows = paper_lane_daily_ops._load_jsonl_records(ops_paths["jsonl_path"])
+        assert [row["status_event_id"] for row in rows] == ["evt-a"]
+        assert ops_paths["csv_path"].read_bytes() == csv_before
+        assert ops_paths["xlsx_path"].read_bytes() == xlsx_before
+    finally:
+        if lock_holder.stdin is not None:
+            lock_holder.stdin.close()
+        lock_holder.wait(timeout=5)

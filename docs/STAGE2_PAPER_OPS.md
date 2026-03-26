@@ -64,6 +64,8 @@ Source of truth:
 Convenience artifact:
 
 - The XLSX workbook is regenerated from the structured data so Excel review is easy, but JSON + CSV remain the durable source.
+- A single-instance lock file lives at `<archive_root>/stage2_paper_ops/primary_live_candidate_v1/paper_lane_daily_ops.lock`.
+  If a second scheduler launch starts while a run is active, it exits non-zero immediately and does not rewrite the cumulative JSONL/CSV/XLSX artifacts.
 
 ## Review Checkpoint
 
@@ -73,6 +75,10 @@ Convenience artifact:
 - At that checkpoint, review whether the routine stayed clean, repeatable, and explainable for 20 market days in a row.
 
 ## Windows Task Scheduler
+
+Schedule this only after the locking and Windows-path safety fixes in this slice are present on the promoted checkout you are using.
+Do not point the scheduled job at a Builder worktree.
+Point it at a separate promoted checkout that is synced to the promoted `origin/master` HOLD posture.
 
 Use the repo-managed PowerShell wrapper:
 
@@ -86,10 +92,10 @@ Example Task Scheduler action:
 - Add arguments:
 
 ```powershell
--NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\path\to\repo\scripts\windows\trading_codex_stage2_daily_ops.ps1" -WslRepoPath "/home/aarondaugherty/trading_codex" -Provider stooq
+-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\path\to\promoted\trading_codex\scripts\windows\trading_codex_stage2_daily_ops.ps1" -WslRepoPath "/home/aarondaugherty/trading_codex" -Provider stooq
 ```
 
-If you want to target a builder worktree instead of the main checkout, point `-WslRepoPath` at that worktree path.
+In that example, `/home/aarondaugherty/trading_codex` must be the promoted WSL checkout that matches the promoted `origin/master` operational lane.
 
 You can inspect the exact WSL command before scheduling it:
 
