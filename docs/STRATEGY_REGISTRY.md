@@ -1,6 +1,6 @@
 # Strategy Registry
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 This registry is the durable control-plane for strategy status in the first-live program.
 Use it to keep the primary live candidate distinct from the wider research bench.
@@ -17,7 +17,7 @@ Use it to keep the primary live candidate distinct from the wider research bench
 
 | Strategy ID | Status | Summary | Cadence | Instruments | Sizing | Initial constraints | Next meaningful move |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1` | Primary live candidate, shadow/pre-paper | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Complete Stage 1 sandbox work, then run through the first persistent paper lane |
+| `primary_live_candidate_v1` | Primary live candidate, paper-enabled | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Keep the persistent paper lane running forward operationally; HOLD unless a concrete repo defect appears |
 
 ## Shadow Bench
 
@@ -29,7 +29,7 @@ Use it to keep the primary live candidate distinct from the wider research bench
 
 | Strategy ID | Status | Paper lane | Current scope | Notes |
 | --- | --- | --- | --- | --- |
-| None yet | N/A | No strategies are paper-enabled yet. | Stage 2 has not been exited yet. | Add rows here only after the paper promotion rules are satisfied. |
+| `primary_live_candidate_v1` | Paper-enabled, primary live candidate | Persistent local paper lane on promoted master via `scripts/paper_lane.py` | One strategy only; long-only ETFs; whole shares; daily/weekly execution; durable state and review artifacts | Narrow Stage 2 scope only. The next meaningful move is operational forward paper use, not live promotion and not broad bench expansion by default. |
 
 ## Live / Promoted Strategies
 

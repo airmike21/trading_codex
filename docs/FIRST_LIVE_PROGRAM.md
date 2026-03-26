@@ -1,16 +1,24 @@
 # First Live Program
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 This document is the durable control-plane for the first-live program.
 It exists so future chats and future Builder slices ground on the same staged plan instead of recreating it from conversation.
 
 ## Grounding
 
-- Promoted baseline: `origin/master` at `0723b45a1a0b9dca725fd03117643deb7df641f6`
-- Most recent promoted purpose: `fix: block ungated live canary submits`
-- Prior live-canary release-gate work is complete and promoted.
-- The meaningful next move after that release-gate slice is repo-level control-plane documentation, followed by the staged first-live program below.
+- Promoted baseline: `origin/master` at `01bf644668460fbfdeeeddc8c07a230c35a8957b`
+- Most recent promoted purpose: Stage 2 persistent paper lane is complete on promoted master, with the latest hardening fix rejecting stale paper-lane marks.
+- Stage 1 bounded tastytrade sandbox work is complete.
+- Stage 2 persistent paper lane work is complete and exited on promoted master.
+- The meaningful next move after Stage 2 is conservative operational forward paper running. HOLD unless a concrete repo defect appears.
+
+## Current Program Status
+
+- Current stage status: Stage 1 complete; Stage 2 complete/exited; Stage 3 not started as a coding priority.
+- The primary live candidate now has a persistent paper lane and should keep running there operationally.
+- Stage 2 completion does not authorize broad bench expansion by default.
+- Stage 2 completion does not authorize live promotion.
 
 ## Staged Program
 
@@ -39,7 +47,7 @@ Current preference: choose the paper lane that best preserves parity with the ev
 
 ### Stage 3: Expand the strategy bench one strategy at a time
 
-Once the first paper lane is stable, additional strategies may be added to shadow or paper one at a time.
+Only after the first paper lane is operating cleanly enough and evidence justifies more bench work, additional strategies may be added to shadow or paper one at a time.
 
 This stage exists to widen the bench without destabilizing the first-live path. New strategy work is allowed only after the primary lane is operating cleanly enough that it no longer needs to monopolize attention.
 
@@ -72,6 +80,7 @@ The first live deployment is intentionally narrow:
 - The program is one live strategy and many shadow/paper strategies.
 - The first live account must be clean and separate from discretionary/manual positions.
 - Do not let new strategy work delay the primary live candidate without evidence.
+- Do not treat Stage 2 completion as automatic permission to start Stage 3 bench expansion.
 - Do not launch multiple strategies live first.
 - When in doubt, choose the meaningful next move that closes the current stage rather than opening later-stage work early.
 
