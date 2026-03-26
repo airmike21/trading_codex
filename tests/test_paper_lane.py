@@ -44,6 +44,7 @@ def _event_id(payload: dict[str, object]) -> str:
 
 def _signal_payload(
     *,
+    date: str = SIGNAL_DATE,
     action: str,
     symbol: str,
     price: float | None,
@@ -56,7 +57,7 @@ def _signal_payload(
         "schema_name": "next_action",
         "schema_version": 1,
         "schema_minor": 0,
-        "date": SIGNAL_DATE,
+        "date": date,
         "strategy": STRATEGY,
         "action": action,
         "symbol": symbol,
@@ -96,6 +97,19 @@ def _read_ledger(path: Path) -> list[dict[str, object]]:
         for line in fh:
             rows.append(json.loads(line))
     return rows
+
+
+def _init_and_enter_efa(*, base_dir: Path) -> dict[str, object]:
+    initialize_paper_lane(state_key="paper_test", base_dir=base_dir, timestamp=TIMESTAMP)
+    enter_signal = _signal_payload(date="2026-03-20", action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+    return apply_paper_lane_signal(
+        state_key="paper_test",
+        base_dir=base_dir,
+        signal_raw=enter_signal,
+        source_kind="test",
+        source_label="seed_enter",
+        timestamp=TIMESTAMP,
+    )
 
 
 def test_paper_lane_state_init_and_reset_clears_event_receipts(tmp_path: Path) -> None:
@@ -316,6 +330,43 @@ def test_paper_lane_fail_closed_on_malformed_payload(tmp_path: Path) -> None:
             source_kind="test",
             source_label="bad_payload",
             timestamp=TIMESTAMP,
+        )
+
+
+def test_status_fails_closed_for_existing_holding_without_current_pricing_source(tmp_path: Path) -> None:
+    base_dir = tmp_path / "paper"
+    _init_and_enter_efa(base_dir=base_dir)
+
+    rotate_signal = _signal_payload(date="2026-03-21", action="ROTATE", symbol="BIL", price=50.0, target_shares=200)
+
+    with pytest.raises(ValueError, match="current approved pricing source"):
+        build_paper_lane_status(
+            state_key="paper_test",
+            base_dir=base_dir,
+            signal_raw=rotate_signal,
+            source_kind="test",
+            source_label="status_missing_price",
+            timestamp="2026-03-21T16:05:00-05:00",
+        )
+
+
+def test_apply_fails_closed_for_existing_holding_with_unusable_current_pricing_source(tmp_path: Path) -> None:
+    base_dir = tmp_path / "paper"
+    _init_and_enter_efa(base_dir=base_dir)
+    empty_data_dir = tmp_path / "empty_data"
+    empty_data_dir.mkdir()
+
+    rotate_signal = _signal_payload(date="2026-03-21", action="ROTATE", symbol="BIL", price=50.0, target_shares=200)
+
+    with pytest.raises(ValueError, match="current approved pricing source"):
+        apply_paper_lane_signal(
+            state_key="paper_test",
+            base_dir=base_dir,
+            signal_raw=rotate_signal,
+            source_kind="test",
+            source_label="apply_missing_price",
+            data_dir=empty_data_dir,
+            timestamp="2026-03-21T16:05:00-05:00",
         )
 
 

@@ -383,8 +383,6 @@ def _resolve_holding_price(
     store_price = _price_from_store(data_dir=data_dir, symbol=holding.symbol, as_of_date=signal.date)
     if store_price is not None:
         return store_price
-    if holding.last_price is not None:
-        return float(holding.last_price)
     return None
 
 
@@ -400,8 +398,9 @@ def _paper_broker_snapshot(
         price = _resolve_holding_price(holding=holding, signal=signal, data_dir=data_dir)
         if price is None:
             raise ValueError(
-                f"Paper lane cannot value existing holding {symbol} for signal date {signal.date}; "
-                "provide a resolvable --data-dir or reset stale state."
+                f"Paper lane cannot value existing holding {symbol} for signal date {signal.date} from a current "
+                "approved pricing source; pass --data-dir with current bars for held symbols. "
+                "Stored last_price state marks are not accepted for status/apply."
             )
         positions[symbol] = BrokerPosition(
             symbol=symbol,
