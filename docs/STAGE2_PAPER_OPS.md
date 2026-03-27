@@ -4,7 +4,7 @@ Last updated: 2026-03-27
 
 This is the narrow daily operations routine for the existing local Stage 2 paper-lane groundwork.
 It exists so the primary live candidate can keep running forward cleanly, with retained evidence, without opening Stage 3 bench work or live broker work.
-Under the clarified program definition, this routine is useful groundwork and retained-evidence infrastructure, but by itself it does not complete or exit Stage 2 because Stage 2 now requires one real persistent paper-execution lane.
+Under the clarified program definition, this routine is useful groundwork and retained-evidence infrastructure, but by itself it does not complete or exit Stage 2 because Stage 2 now requires one real persistent paper-execution lane, with IBKR PaperTrader as the preferred primary lane.
 
 ## Daily Command
 
@@ -134,7 +134,8 @@ What the next move is:
 
 - Keep running the local paper lane cleanly when it is useful as groundwork.
 - Keep the evidence.
-- Choose/build one real persistent paper-execution lane that best preserves parity with the eventual live path when practical.
+- After control-plane alignment, the next implementation move is a minimal IBKR PaperTrader operational acceptance path for the primary live candidate.
+- Use tastytrade sandbox as secondary regression coverage for tastytrade-specific auth/account/order-flow behavior, not as the main Stage 2 paper lane.
 - Review the first 20 market-day block for operational reliability, but do not treat that local checkpoint alone as full Stage 2 exit.
 
 What the intended live target still is:

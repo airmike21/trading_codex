@@ -12,16 +12,19 @@ It exists so future chats and future Builder slices ground on the same staged pl
 - Prior promoted docs sync: `95cf8e5095c8ea4deafb9793de14016a340a76b5` (`docs: sync control plane after stage2 paper lane`)
 - Stage 1 bounded tastytrade sandbox work is complete at `ed91cb19f64f132a16a6c7ecf03a4c5323cee53f`.
 - Promoted master contains useful local Stage 2 groundwork: `scripts/paper_lane.py`, `scripts/paper_lane_daily_ops.py`, and retained local paper-lane artifacts.
-- Under the clarified program definition, Stage 2 is reopened and not yet exited. The existing local persistent paper lane is useful groundwork, but Stage 2 now requires one real persistent paper-execution lane.
-- The meaningful next move is to choose/build one real persistent paper-execution lane for the primary live candidate that best preserves parity with the eventual live path when practical.
+- Under the clarified program definition, Stage 2 is reopened and not yet exited. The existing local persistent paper lane is useful groundwork, but Stage 2 now requires one real persistent paper-execution lane, with IBKR PaperTrader approved as the preferred primary lane.
+- After this control-plane alignment, the meaningful next implementation move is a minimal IBKR PaperTrader operational acceptance path for the primary live candidate. That does not open Stage 3 or require generalized broker abstraction first.
 
 ## Current Program Status
 
 - Current stage status: Stage 1 complete; Stage 2 reopened/in progress; Stage 3 not started as a default coding priority.
+- IBKR PaperTrader is the preferred primary persistent paper-execution lane for clarified Stage 2.
+- tastytrade sandbox remains relevant as secondary regression coverage for tastytrade-specific auth/account/order-flow behavior on the intended live path.
 - The primary live candidate has useful local persistent paper-lane groundwork and daily ops evidence infrastructure.
 - That groundwork is not, by itself, enough to satisfy the clarified Stage 2 definition.
 - Stage 2 does not authorize broad bench expansion by default.
 - Stage 2 does not authorize live promotion.
+- Stage 2 does not require generalized broker abstraction before the approved primary paper lane proves useful.
 
 ## Staged Program
 
@@ -40,7 +43,7 @@ This stage is intentionally bounded. The goal is not to build every tastytrade c
 
 Build one serious paper-trading lane that is deep enough for multi-month forward testing, while keeping the initial scope narrow.
 
-The purpose of this stage is not just local mock bookkeeping. The purpose is to run one strategy through a real paper-execution lane so we can observe paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety in a way that is meaningfully closer to the eventual live path.
+For clarified Stage 2, the preferred primary persistent paper-execution lane is IBKR PaperTrader. The purpose of this stage is not just local mock bookkeeping. The purpose is to run one strategy through IBKR PaperTrader so we can observe paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety in a way that is operationally real enough to judge Stage 2.
 
 Keep the scope narrow:
 
@@ -50,9 +53,11 @@ Keep the scope narrow:
 - daily/weekly execution only
 - durable state, retained review artifacts, and a repeatable operational routine
 
-Current preference: choose the paper-execution lane that best preserves parity with the eventual live path when practical. Tastytrade remains the intended live target unless evidence clearly justifies change.
+Retain the existing local paper lane and daily ops routine as supporting groundwork and retained evidence. Use tastytrade sandbox as secondary integration/regression coverage for tastytrade-specific auth/account/order-flow behavior relevant to the intended live path. Tastytrade remains the intended live target unless evidence clearly justifies change.
 
-Stage 2 is complete only when one strategy can keep running persistently in the paper lane with forward-testing evidence accumulating over time, and the lane is operationally reviewable enough to detect drift, execution mistakes, scheduling problems, reconciliation issues, or restart problems without ad hoc repo surgery.
+This decision does not open Stage 3, does not promote any strategy live, and does not require a generalized broker abstraction before Stage 2 proves useful.
+
+Stage 2 is complete only when one strategy can keep running persistently in the IBKR PaperTrader lane with forward-testing evidence accumulating over time, and the lane is operationally reviewable enough to detect drift, execution mistakes, scheduling problems, reconciliation issues, or restart problems without ad hoc repo surgery.
 
 ### Stage 3: Expand the strategy bench one strategy at a time
 
@@ -86,11 +91,14 @@ The first live deployment is intentionally narrow:
 ## Durable Policies
 
 - Tastytrade remains the live target unless evidence clearly justifies change.
+- For clarified Stage 2, IBKR PaperTrader is the preferred primary persistent paper-execution lane.
+- tastytrade sandbox remains secondary regression coverage for tastytrade-specific auth/account/order-flow behavior on the intended live path, not the main Stage 2 paper lane.
 - The program is one live strategy and many shadow/paper strategies.
 - The first live account must be clean and separate from discretionary/manual positions.
 - Do not let new strategy work delay the primary live candidate without evidence.
 - Do not treat the existing local paper-lane groundwork as Stage 2 exit by itself.
 - Do not let local Stage 2 groundwork become automatic permission to start Stage 3 bench expansion.
+- Do not require generalized broker abstraction before the approved Stage 2 paper lane proves useful.
 - Do not launch multiple strategies live first.
 - When in doubt, choose the meaningful next move that closes the current stage rather than opening later-stage work early.
 

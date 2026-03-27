@@ -50,36 +50,38 @@ Anti-goals and out of scope:
 
 Exit criteria:
 
-- One real paper-execution lane exists for the primary live candidate and can be operated repeatedly without ad hoc repo surgery.
-- The lane is deep enough for multi-month forward testing: forward evidence accumulates over time, and paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety are all reviewable.
+- The approved primary real paper-execution lane for clarified Stage 2 is IBKR PaperTrader, and it can be operated repeatedly for the primary live candidate without ad hoc repo surgery.
+- The IBKR PaperTrader lane is deep enough for multi-month forward testing: forward evidence accumulates over time, and paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety are all reviewable.
 - The lane remains intentionally narrow: one strategy, long-only ETF exposure, whole shares, and daily/weekly execution.
 - Durable state and retained review artifacts exist so drift, execution mistakes, scheduling problems, reconciliation issues, and restart problems can be detected without guesswork.
-- The strategy can keep running forward through that real paper-execution lane without being blocked by unresolved Stage 1 ambiguity.
+- The strategy can keep running forward through IBKR PaperTrader without being blocked by unresolved Stage 1 ambiguity.
 - The existing local persistent paper lane and daily ops routine may contribute useful groundwork and retained evidence, but they are not by themselves sufficient to exit Stage 2.
+- tastytrade sandbox may remain useful as secondary regression coverage for tastytrade-specific auth/account/order-flow behavior, but it is not the main Stage 2 paper lane.
 
 Continue coding when:
 
-- no real persistent paper-execution lane has been selected or built yet
+- the minimal IBKR PaperTrader operational acceptance path is not built yet or is not yet operationally reviewable
 - the lane cannot yet accumulate forward evidence cleanly over time
-- paper order, fill, scheduling, reconciliation, or restart behavior is not reviewable enough
-- the primary strategy still cannot operate end to end through the real paper-execution lane
+- paper order, fill, scheduling, reconciliation, or restart behavior in IBKR PaperTrader is not reviewable enough
+- the primary strategy still cannot operate end to end through IBKR PaperTrader
 
 Hold when:
 
-- the remaining blocker is paper-account setup, paper-service access, broker access, credentials, or other external operations rather than a repo defect
+- the remaining blocker is IBKR PaperTrader account setup, paper-service access, broker access, credentials, or other external operations rather than a repo defect
 - the repo is waiting on forward evidence to accumulate over time rather than on missing code
 
 Shadow-only when:
 
-- strategy logic can still be validated safely while the real paper-execution lane is being chosen or stabilized
-- local paper-lane groundwork or retained evidence infrastructure can keep running, but the real paper-execution lane is not yet trustworthy enough to serve as the main decision surface
+- strategy logic can still be validated safely while the IBKR PaperTrader lane is being stabilized
+- local paper-lane groundwork, retained evidence infrastructure, or tastytrade sandbox regression coverage can keep running, but IBKR PaperTrader is not yet trustworthy enough to serve as the main decision surface
 
 Anti-goals and out of scope:
 
-- broad multi-strategy paper deployment before the first real paper-execution lane is stable
+- broad multi-strategy paper deployment before the IBKR PaperTrader lane is stable
 - accidental broker pivot or speculative paper-service lock-in without evidence
+- generalized broker abstraction work before the approved Stage 2 lane proves operationally useful
 - expanding into options, shorting, leverage, or intraday complexity
-- treating local mock bookkeeping alone as proof that Stage 2 is complete
+- treating tastytrade sandbox or local mock bookkeeping alone as proof that Stage 2 is complete
 
 ## Stage 3: Strategy Bench Expansion
 

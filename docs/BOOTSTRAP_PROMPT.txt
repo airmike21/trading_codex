@@ -6,7 +6,7 @@ Current project state:
 - Data updater work is complete.
 - Daily runner / next-action alert workflow work is complete and validated.
 - Do not reopen that plumbing unless a regression appears.
-- The next implementation priority is strategy and signal accuracy: improve correctness, validation, and confidence in the backtest/live decision path.
+- The next implementation priority is the narrow clarified Stage 2 paper-execution path: implement a minimal IBKR PaperTrader operational acceptance path for the primary live candidate. Do not reopen Stage 3 strategy work or generic broker abstraction by default.
 
 Hard rules:
 - `--next-action-json` = exactly one minified stdout line.
