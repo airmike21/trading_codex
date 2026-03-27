@@ -1,6 +1,6 @@
 # Strategy Registry
 
-Last updated: 2026-03-26
+Last updated: 2026-03-27
 
 This registry is the durable control-plane for strategy status in the first-live program.
 Use it to keep the primary live candidate distinct from the wider research bench.
@@ -11,13 +11,14 @@ Use it to keep the primary live candidate distinct from the wider research bench
 - A strategy can be in shadow, paper, or live only if its role is explicit here.
 - Promotion is sequential: `shadow -> paper -> live`.
 - Multiple strategies may exist in shadow or paper, but the first live deployment remains one strategy only.
+- Under the clarified Stage 2 definition, `paper-enabled` means one real persistent paper-execution lane is operating with reviewable forward evidence over time. The existing local paper lane and daily ops routine are useful groundwork, not by themselves paper promotion.
 - Update this file whenever a strategy changes status or the primary live candidate changes.
 
 ## Primary Live Candidate
 
 | Strategy ID | Status | Summary | Cadence | Instruments | Sizing | Initial constraints | Next meaningful move |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1` | Primary live candidate, paper-enabled | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Keep the persistent paper lane running forward operationally; HOLD unless a concrete repo defect appears |
+| `primary_live_candidate_v1` | Primary live candidate; Stage 2 reopened; not yet real-paper-enabled | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Choose/build one real persistent paper-execution lane that best preserves parity with the eventual live path when practical; existing local paper lane and daily ops routine remain useful groundwork only |
 
 ## Shadow Bench
 
@@ -29,7 +30,7 @@ Use it to keep the primary live candidate distinct from the wider research bench
 
 | Strategy ID | Status | Paper lane | Current scope | Notes |
 | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1` | Paper-enabled, primary live candidate | Persistent local paper lane on promoted master via `scripts/paper_lane.py` | One strategy only; long-only ETFs; whole shares; daily/weekly execution; durable state and review artifacts | Narrow Stage 2 scope only. The next meaningful move is operational forward paper use, not live promotion and not broad bench expansion by default. |
+| None yet | N/A | No real persistent paper-execution lane has been exited yet under the clarified Stage 2 definition. | Existing local `scripts/paper_lane.py` + `scripts/paper_lane_daily_ops.py` remain useful groundwork and retained-evidence infrastructure. | Do not promote paper-enabled status until one real persistent paper-execution lane is operating cleanly for `primary_live_candidate_v1`. |
 
 ## Live / Promoted Strategies
 
@@ -47,7 +48,7 @@ Promote a strategy from shadow to paper only when all of the following are true:
 - the strategy has a bounded role relative to the first-live program
 - shadow evidence is clean enough that the strategy is worth spending paper-lane attention on
 - promoting it will not delay the current primary live candidate without evidence
-- a persistent paper lane exists or is being extended in a controlled way for that specific strategy
+- one real persistent paper-execution lane exists for that specific strategy and is operationally reviewable enough to accumulate forward paper evidence over time
 
 ### Paper -> Live
 

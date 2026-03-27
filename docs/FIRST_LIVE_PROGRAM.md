@@ -1,25 +1,27 @@
 # First Live Program
 
-Last updated: 2026-03-26
+Last updated: 2026-03-27
 
 This document is the durable control-plane for the first-live program.
 It exists so future chats and future Builder slices ground on the same staged plan instead of recreating it from conversation.
 
 ## Grounding
 
-- Promoted baseline: `origin/master` at `01bf644668460fbfdeeeddc8c07a230c35a8957b`
-- Most recent promoted purpose: Stage 2 persistent paper lane is complete on promoted master, with the latest hardening fix rejecting stale paper-lane marks.
-- Stage 1 bounded tastytrade sandbox work is complete.
-- Stage 2 persistent paper lane work is complete and exited on promoted master.
-- Stage 2 forward paper operations routine now lives in `docs/STAGE2_PAPER_OPS.md` and `scripts/paper_lane_daily_ops.py`.
-- The meaningful next move after Stage 2 is conservative operational forward paper running. HOLD unless a concrete repo defect appears.
+- Promoted baseline: `origin/master` at `a48d815f5e15e2d8dc50f0a098a02bf72d1b3942`
+- Most recent promoted purpose: `fix: harden stage2 daily ops scheduling`
+- Prior promoted docs sync: `95cf8e5095c8ea4deafb9793de14016a340a76b5` (`docs: sync control plane after stage2 paper lane`)
+- Stage 1 bounded tastytrade sandbox work is complete at `ed91cb19f64f132a16a6c7ecf03a4c5323cee53f`.
+- Promoted master contains useful local Stage 2 groundwork: `scripts/paper_lane.py`, `scripts/paper_lane_daily_ops.py`, and retained local paper-lane artifacts.
+- Under the clarified program definition, Stage 2 is reopened and not yet exited. The existing local persistent paper lane is useful groundwork, but Stage 2 now requires one real persistent paper-execution lane.
+- The meaningful next move is to choose/build one real persistent paper-execution lane for the primary live candidate that best preserves parity with the eventual live path when practical.
 
 ## Current Program Status
 
-- Current stage status: Stage 1 complete; Stage 2 complete/exited; Stage 3 not started as a coding priority.
-- The primary live candidate now has a persistent paper lane and should keep running there operationally.
-- Stage 2 completion does not authorize broad bench expansion by default.
-- Stage 2 completion does not authorize live promotion.
+- Current stage status: Stage 1 complete; Stage 2 reopened/in progress; Stage 3 not started as a default coding priority.
+- The primary live candidate has useful local persistent paper-lane groundwork and daily ops evidence infrastructure.
+- That groundwork is not, by itself, enough to satisfy the clarified Stage 2 definition.
+- Stage 2 does not authorize broad bench expansion by default.
+- Stage 2 does not authorize live promotion.
 
 ## Staged Program
 
@@ -34,17 +36,23 @@ Finish the bounded tastytrade sandbox lane needed for the first-live program:
 
 This stage is intentionally bounded. The goal is not to build every tastytrade capability. The goal is to remove ambiguity around the live target broker and produce enough understanding to support later paper and live work without guesswork.
 
-### Stage 2: Build one persistent paper-trading lane
+### Stage 2: Build one real persistent paper-execution lane
 
-Build a serious paper lane that can run long enough for multi-month forward testing, while keeping the initial scope narrow:
+Build one serious paper-trading lane that is deep enough for multi-month forward testing, while keeping the initial scope narrow.
+
+The purpose of this stage is not just local mock bookkeeping. The purpose is to run one strategy through a real paper-execution lane so we can observe paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety in a way that is meaningfully closer to the eventual live path.
+
+Keep the scope narrow:
 
 - one strategy only
 - long-only ETFs only
 - whole shares only
 - daily/weekly execution only
-- durable state, review artifacts, and operational routine
+- durable state, retained review artifacts, and a repeatable operational routine
 
-Current preference: choose the paper lane that best preserves parity with the eventual live path when practical. That is a current preference, not permanent law. The durable requirement is a persistent paper lane, not a forever paper-broker commitment.
+Current preference: choose the paper-execution lane that best preserves parity with the eventual live path when practical. Tastytrade remains the intended live target unless evidence clearly justifies change.
+
+Stage 2 is complete only when one strategy can keep running persistently in the paper lane with forward-testing evidence accumulating over time, and the lane is operationally reviewable enough to detect drift, execution mistakes, scheduling problems, reconciliation issues, or restart problems without ad hoc repo surgery.
 
 ### Stage 3: Expand the strategy bench one strategy at a time
 
@@ -81,7 +89,8 @@ The first live deployment is intentionally narrow:
 - The program is one live strategy and many shadow/paper strategies.
 - The first live account must be clean and separate from discretionary/manual positions.
 - Do not let new strategy work delay the primary live candidate without evidence.
-- Do not treat Stage 2 completion as automatic permission to start Stage 3 bench expansion.
+- Do not treat the existing local paper-lane groundwork as Stage 2 exit by itself.
+- Do not let local Stage 2 groundwork become automatic permission to start Stage 3 bench expansion.
 - Do not launch multiple strategies live first.
 - When in doubt, choose the meaningful next move that closes the current stage rather than opening later-stage work early.
 

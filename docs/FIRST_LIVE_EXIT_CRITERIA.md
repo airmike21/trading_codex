@@ -1,6 +1,6 @@
 # First Live Exit Criteria
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
 
 This document defines when each first-live stage is complete, when future chats should continue coding, when they should hold for operational work, when they should stay shadow-only, and when live is allowed.
 
@@ -9,7 +9,7 @@ This document defines when each first-live stage is complete, when future chats 
 The intended sequence is fixed unless evidence justifies a change:
 
 1. bounded tastytrade sandbox work
-2. serious but narrow persistent paper lane
+2. one real persistent paper-execution lane
 3. broader strategy bench work in shadow/paper
 4. funded clean tastytrade live account
 5. one-strategy limited live deployment
@@ -18,7 +18,7 @@ The intended sequence is fixed unless evidence justifies a change:
 
 - Continue coding when the current stage has repo-solvable gaps and the work directly closes them.
 - Hold when the current stage is blocked by credentials, account setup, broker operations, or other external constraints rather than a repo defect.
-- Stay shadow-only when strategy research can still advance safely but the paper or live gates are not met.
+- Stay shadow-only when strategy research or local retained-evidence groundwork can still advance safely but the real paper-execution or live gates are not met.
 - Allow live only when Stages 1 through 4 are exited and the Stage 5 criteria are explicitly satisfied for exactly one strategy.
 
 ## Stage 1: Bounded Tastytrade Sandbox Work
@@ -46,35 +46,40 @@ Anti-goals and out of scope:
 - generalized broker abstraction work that does not directly serve the staged first-live path
 - opening multiple strategy lanes during sandbox completion
 
-## Stage 2: Persistent Paper Lane
+## Stage 2: One Real Persistent Paper-Execution Lane
 
 Exit criteria:
 
-- One paper-trading lane exists for the primary live candidate and can be operated repeatedly without ad hoc repo surgery.
-- The lane is persistent enough for multi-month forward testing: durable state, durable review artifacts, and a repeatable operational routine all exist.
+- One real paper-execution lane exists for the primary live candidate and can be operated repeatedly without ad hoc repo surgery.
+- The lane is deep enough for multi-month forward testing: forward evidence accumulates over time, and paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety are all reviewable.
 - The lane remains intentionally narrow: one strategy, long-only ETF exposure, whole shares, and daily/weekly execution.
-- Position, order, and reconciliation behavior are reviewable enough to detect drift or operational mistakes.
-- The strategy can keep running forward in paper without being blocked by unresolved Stage 1 ambiguity.
+- Durable state and retained review artifacts exist so drift, execution mistakes, scheduling problems, reconciliation issues, and restart problems can be detected without guesswork.
+- The strategy can keep running forward through that real paper-execution lane without being blocked by unresolved Stage 1 ambiguity.
+- The existing local persistent paper lane and daily ops routine may contribute useful groundwork and retained evidence, but they are not by themselves sufficient to exit Stage 2.
 
 Continue coding when:
 
-- the paper lane is not yet persistent
-- the paper lane cannot be reviewed reliably
-- the primary strategy still cannot operate end to end in paper
+- no real persistent paper-execution lane has been selected or built yet
+- the lane cannot yet accumulate forward evidence cleanly over time
+- paper order, fill, scheduling, reconciliation, or restart behavior is not reviewable enough
+- the primary strategy still cannot operate end to end through the real paper-execution lane
 
 Hold when:
 
-- the remaining blocker is paper-account setup, broker access, or external operations rather than a repo defect
+- the remaining blocker is paper-account setup, paper-service access, broker access, credentials, or other external operations rather than a repo defect
+- the repo is waiting on forward evidence to accumulate over time rather than on missing code
 
 Shadow-only when:
 
-- strategy logic can still be validated forward, but the paper lane is not yet stable enough to trust as the main decision surface
+- strategy logic can still be validated safely while the real paper-execution lane is being chosen or stabilized
+- local paper-lane groundwork or retained evidence infrastructure can keep running, but the real paper-execution lane is not yet trustworthy enough to serve as the main decision surface
 
 Anti-goals and out of scope:
 
-- broad multi-strategy paper deployment before the first paper lane is stable
-- premature paper-broker lock-in treated as irrevocable law
+- broad multi-strategy paper deployment before the first real paper-execution lane is stable
+- accidental broker pivot or speculative paper-service lock-in without evidence
 - expanding into options, shorting, leverage, or intraday complexity
+- treating local mock bookkeeping alone as proof that Stage 2 is complete
 
 ## Stage 3: Strategy Bench Expansion
 

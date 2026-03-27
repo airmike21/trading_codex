@@ -1,9 +1,10 @@
 # Stage 2 Paper Ops
 
-Last updated: 2026-03-26
+Last updated: 2026-03-27
 
-This is the narrow daily operations routine for the Stage 2 persistent local paper lane.
+This is the narrow daily operations routine for the existing local Stage 2 paper-lane groundwork.
 It exists so the primary live candidate can keep running forward cleanly, with retained evidence, without opening Stage 3 bench work or live broker work.
+Under the clarified program definition, this routine is useful groundwork and retained-evidence infrastructure, but by itself it does not complete or exit Stage 2 because Stage 2 now requires one real persistent paper-execution lane.
 
 ## Daily Command
 
@@ -21,7 +22,7 @@ This routine runs three steps in order and stops on the first failure:
 
 It only updates local market data and local paper-lane state.
 It does not place live broker orders.
-It does not write to Alpaca.
+It does not place external paper-execution orders through a broker or paper service.
 It does not open Stage 3 work by default.
 
 ## What Runs Each Day
@@ -71,7 +72,7 @@ Convenience artifact:
 
 - The first operational review checkpoint is 20 market-day runs.
 - That checkpoint is about ops reliability and retained evidence.
-- It is not proof of strategy edge.
+- It is not proof of strategy edge or full Stage 2 exit by itself.
 - At that checkpoint, review whether the routine stayed clean, repeatable, and explainable for 20 market days in a row.
 
 ## Windows Task Scheduler
@@ -120,21 +121,21 @@ Use it only if you also want separate shadow evidence in addition to the Stage 2
 What is already finished:
 
 - Stage 1 sandbox understanding is done.
-- Stage 2 persistent local paper lane is done.
-- The repo now has a daily button for running the paper lane forward and keeping the receipts.
+- The repo has useful Stage 2 groundwork: a persistent local paper lane, a daily button for running it forward, and retained receipts.
 
 What is not finished yet:
 
+- Clarified Stage 2 is not done yet. It now requires one real persistent paper-execution lane with reviewable paper order, fill, scheduling, reconciliation, and restart behavior accumulating evidence over time.
 - Stage 3 bench expansion is not the default next step.
-- Alpaca paper trading is not the default next step.
 - Live funding and a clean live account are later stages.
 - Live broker trading is still later.
 
 What the next move is:
 
-- Run the paper lane cleanly each market day.
+- Keep running the local paper lane cleanly when it is useful as groundwork.
 - Keep the evidence.
-- Review the first 20 market-day block for operational reliability.
+- Choose/build one real persistent paper-execution lane that best preserves parity with the eventual live path when practical.
+- Review the first 20 market-day block for operational reliability, but do not treat that local checkpoint alone as full Stage 2 exit.
 
 What the intended live target still is:
 
