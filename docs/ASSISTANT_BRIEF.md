@@ -4,7 +4,7 @@ Last updated: 2026-03-27
 
 ## Current State
 
-- Promoted `origin/master` baseline: `a48d815f5e15e2d8dc50f0a098a02bf72d1b3942` (`fix: harden stage2 daily ops scheduling`).
+- Promoted `origin/master` baseline: `3a705dd8c3df5f064fa99df398cfdfd296c19de9` (`docs: reopen stage2 around real paper execution lane`).
 - Prior promoted docs sync: `95cf8e5095c8ea4deafb9793de14016a340a76b5` (`docs: sync control plane after stage2 paper lane`).
 - Stage 1 bounded tastytrade sandbox work is complete and promoted at `ed91cb19f64f132a16a6c7ecf03a4c5323cee53f`.
 - Stage 2 is reopened under the clarified program definition: promoted master has useful local persistent paper-lane groundwork and daily ops evidence infrastructure, but not yet the approved primary real persistent paper-execution lane in IBKR PaperTrader.

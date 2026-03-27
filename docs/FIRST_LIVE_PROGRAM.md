@@ -7,8 +7,8 @@ It exists so future chats and future Builder slices ground on the same staged pl
 
 ## Grounding
 
-- Promoted baseline: `origin/master` at `a48d815f5e15e2d8dc50f0a098a02bf72d1b3942`
-- Most recent promoted purpose: `fix: harden stage2 daily ops scheduling`
+- Promoted baseline: `origin/master` at `3a705dd8c3df5f064fa99df398cfdfd296c19de9`
+- Most recent promoted purpose: `docs: reopen stage2 around real paper execution lane`
 - Prior promoted docs sync: `95cf8e5095c8ea4deafb9793de14016a340a76b5` (`docs: sync control plane after stage2 paper lane`)
 - Stage 1 bounded tastytrade sandbox work is complete at `ed91cb19f64f132a16a6c7ecf03a4c5323cee53f`.
 - Promoted master contains useful local Stage 2 groundwork: `scripts/paper_lane.py`, `scripts/paper_lane_daily_ops.py`, and retained local paper-lane artifacts.
