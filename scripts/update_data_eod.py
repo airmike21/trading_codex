@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+import requests
 
 from trading_codex.data import LocalStore
 from trading_codex.data.providers import StooqDataSource
