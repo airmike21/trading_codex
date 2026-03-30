@@ -4,9 +4,11 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from scripts import update_data_eod
 from trading_codex.data import LocalStore
+from trading_codex.data.providers import StooqDataSource
 
 
 def _df_for_dates(dates: list[str], base: float = 100.0) -> pd.DataFrame:
@@ -101,6 +103,48 @@ def test_main_stooq_writes_localstore(monkeypatch, tmp_path: Path) -> None:
     store = LocalStore(base_dir=data_dir)
     df = store.read_bars("AAA")
     assert len(df) == 3
+
+
+def test_stooq_provider_empty_response_raises_explicit_error(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.text = ""
+            self.status_code = 200
+            self.headers = {"content-type": "text/html"}
+            self.url = "https://stooq.com/q/d/l/?s=spy.us&i=d"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    provider = StooqDataSource(timeout=1.0)
+    monkeypatch.setattr(provider.session, "get", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(ValueError, match="empty response body"):
+        provider.get_daily_bars(["SPY"], pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02"))
+
+
+def test_main_stooq_fetch_error_is_explicit_and_nonzero(monkeypatch, tmp_path: Path, capsys) -> None:
+    def fake_fetch(symbol: str, start: date, end: date, suffix: str, timeout: float) -> pd.DataFrame:
+        raise ValueError(
+            "Stooq returned an empty response body for symbol 'SPY' "
+            "(url=https://stooq.com/q/d/l/?s=spy.us&i=d, status=200, content_type=text/html)."
+        )
+
+    monkeypatch.setattr(update_data_eod, "_fetch_stooq_bars", fake_fetch)
+
+    rc = update_data_eod.main([
+        "--provider",
+        "stooq",
+        "--data-dir",
+        str(tmp_path / "data"),
+        "--symbols",
+        "SPY",
+    ])
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "provider=stooq fetch failed" in captured.err
+    assert "empty response body" in captured.err
 
 
 def test_main_uses_presets_when_symbols_omitted(monkeypatch, tmp_path: Path) -> None:

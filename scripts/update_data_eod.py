@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
-import requests
 
 from trading_codex.data import LocalStore
 from trading_codex.data.providers import StooqDataSource
@@ -124,30 +123,11 @@ def _fetch_stooq_bars(
     stooq_suffix: str,
     timeout: float,
 ) -> pd.DataFrame:
-    # Reuse the existing provider then adapt for optional suffix override.
-    if stooq_suffix == ".us":
-        provider = StooqDataSource(timeout=timeout)
-        panel = provider.get_daily_bars([symbol], pd.Timestamp(start), pd.Timestamp(end))
-        if panel.empty or symbol not in panel.columns.get_level_values(0):
-            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-        return _ensure_ohlcv(panel[symbol])
-
-    # Custom suffix path for non-.us symbols.
-    url = "https://stooq.com/q/d/l/"
-    params = {"s": f"{symbol.lower()}{stooq_suffix}", "i": "d"}
-    resp = requests.get(url, params=params, timeout=timeout)
-    resp.raise_for_status()
-    df = pd.read_csv(pd.io.common.StringIO(resp.text))
-    if "Date" not in df.columns or df.empty:
+    provider = StooqDataSource(timeout=timeout, symbol_suffix=stooq_suffix)
+    panel = provider.get_daily_bars([symbol], pd.Timestamp(start), pd.Timestamp(end))
+    if panel.empty or symbol not in panel.columns.get_level_values(0):
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-    bars = (
-        df.assign(Date=pd.to_datetime(df["Date"]))
-        .set_index("Date")
-        .sort_index()
-        .rename(columns=str.lower)
-    )
-    bars = bars.loc[(bars.index >= pd.Timestamp(start)) & (bars.index <= pd.Timestamp(end))]
-    return _ensure_ohlcv(bars)
+    return _ensure_ohlcv(panel[symbol])
 
 
 def _fetch_tiingo_bars(
@@ -287,9 +267,23 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if args.provider == "tiingo":
-            new_df = _fetch_tiingo_bars(symbol, fetch_start, end, tiingo_key, args.timeout)
+            try:
+                new_df = _fetch_tiingo_bars(symbol, fetch_start, end, tiingo_key, args.timeout)
+            except Exception as exc:
+                print(
+                    f"[update_data_eod] ERROR: {symbol}: provider=tiingo fetch failed: {exc}",
+                    file=sys.stderr,
+                )
+                return 2
         else:
-            new_df = _fetch_stooq_bars(symbol, fetch_start, end, args.stooq_suffix, args.timeout)
+            try:
+                new_df = _fetch_stooq_bars(symbol, fetch_start, end, args.stooq_suffix, args.timeout)
+            except Exception as exc:
+                print(
+                    f"[update_data_eod] ERROR: {symbol}: provider=stooq fetch failed: {exc}",
+                    file=sys.stderr,
+                )
+                return 2
 
         if new_df.empty:
             if args.verbose:

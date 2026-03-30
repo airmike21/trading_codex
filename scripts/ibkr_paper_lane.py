@@ -50,9 +50,17 @@ def _extract_flag_value(args: list[str], flag: str) -> str | None:
 
 def _extract_option_values(args: list[str], flag: str) -> list[str]:
     values: list[str] = []
-    for index, item in enumerate(args):
-        if item == flag and index + 1 < len(args):
-            values.append(str(args[index + 1]))
+    index = 0
+    while index < len(args):
+        if args[index] != flag:
+            index += 1
+            continue
+        index += 1
+        while index < len(args) and not args[index].startswith("--"):
+            value = args[index].strip()
+            if value:
+                values.append(value)
+            index += 1
     return values
 
 

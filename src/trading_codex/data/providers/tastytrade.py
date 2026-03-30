@@ -56,9 +56,36 @@ class StooqDataSource(DataSource):
 
     BASE_URL = "https://stooq.com/q/d/l/"
 
-    def __init__(self, timeout: float = 30.0) -> None:
+    def __init__(self, timeout: float = 30.0, symbol_suffix: str = ".us") -> None:
         self.session = requests.Session()
         self.timeout = timeout
+        self.symbol_suffix = symbol_suffix
+
+    def _parse_daily_bars_response(self, *, symbol: str, response: requests.Response) -> pd.DataFrame:
+        response_url = getattr(response, "url", self.BASE_URL)
+        content_type = str(response.headers.get("content-type", "")).strip() or "unknown"
+        raw_text = response.text.lstrip("\ufeff")
+        if not raw_text.strip():
+            raise ValueError(
+                f"Stooq returned an empty response body for symbol {symbol!r} "
+                f"(url={response_url}, status={response.status_code}, content_type={content_type})."
+            )
+
+        try:
+            df = pd.read_csv(StringIO(raw_text))
+        except pd.errors.EmptyDataError as exc:
+            raise ValueError(
+                f"Stooq returned a non-CSV/empty payload for symbol {symbol!r} "
+                f"(url={response_url}, status={response.status_code}, content_type={content_type})."
+            ) from exc
+
+        if "Date" not in df.columns:
+            preview = " ".join(raw_text.splitlines()[:2])[:160]
+            raise ValueError(
+                f"Unexpected Stooq response for symbol {symbol!r}: missing Date column "
+                f"(url={response_url}, status={response.status_code}, content_type={content_type}, preview={preview!r})."
+            )
+        return df
 
     def _fetch_symbol_daily_bars(
         self,
@@ -68,14 +95,12 @@ class StooqDataSource(DataSource):
     ) -> pd.DataFrame:
         response = self.session.get(
             self.BASE_URL,
-            params={"s": f"{symbol.lower()}.us", "i": "d"},
+            params={"s": f"{symbol.lower()}{self.symbol_suffix}", "i": "d"},
             timeout=self.timeout,
         )
         response.raise_for_status()
 
-        df = pd.read_csv(StringIO(response.text))
-        if "Date" not in df.columns:
-            raise ValueError(f"Unexpected Stooq response for symbol {symbol!r}.")
+        df = self._parse_daily_bars_response(symbol=symbol, response=response)
         if df.empty:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 

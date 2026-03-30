@@ -18,6 +18,8 @@ Use `scripts/ibkr_paper_bringup.py` to:
 - optionally attempt a real IBKR PaperTrader apply only behind an unmistakable opt-in flag
 - retain machine-readable evidence plus a short human-readable summary outside the repo tree
 
+For the current promoted Stage 2 acceptance path, use the `dual_mom_vol10_cash_core` preset unless you are intentionally validating a different preset.
+
 ## Prerequisites / External Blockers
 
 - IBKR Client Portal / Web API must be running and reachable.

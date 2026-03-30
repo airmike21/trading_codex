@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import ibkr_paper_bringup
+from scripts import daily_signal, ibkr_paper_bringup
 from trading_codex.execution.ibkr_paper_lane import IbkrPaperClientConfig
 
 
@@ -237,6 +237,88 @@ def test_ibkr_paper_bringup_preflight_no_write_success_and_archives_report(
     assert archived_report["requested_mode"] == "preflight"
     assert archived_report["status_payload"]["signal"]["event_id"] == signal["event_id"]
     assert client.place_order_payloads == []
+
+
+def test_ibkr_paper_bringup_preflight_from_preset_derives_full_allowed_universe(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    archive_root = tmp_path / "archive"
+    data_dir = tmp_path / "data"
+    signal = {
+        "schema_name": "next_action",
+        "schema_version": 1,
+        "schema_minor": 0,
+        "date": "2026-03-26",
+        "strategy": "dual_mom",
+        "action": "HOLD",
+        "symbol": "EFA",
+        "price": 100.0,
+        "target_shares": 105,
+        "resize_prev_shares": None,
+        "resize_new_shares": None,
+        "next_rebalance": "2026-03-31",
+    }
+    signal["event_id"] = _event_id(signal)
+    preset = daily_signal.Preset(
+        name="dual_mom_core",
+        description="test preset",
+        run_backtest_args=[
+            "--strategy",
+            "dual_mom",
+            "--symbols",
+            "SPY",
+            "QQQ",
+            "IWM",
+            "EFA",
+            "--defensive",
+            "BIL",
+            "--data-dir",
+            str(data_dir),
+            "--no-plot",
+        ],
+    )
+
+    def fake_load_signal_from_preset(*, repo_root: Path, preset_name: str, presets_path: Path | None):
+        assert preset_name == "dual_mom_core"
+        return signal, preset, tmp_path / "presets.json"
+
+    monkeypatch.setattr(ibkr_paper_bringup.ibkr_paper_lane, "_load_signal_from_preset", fake_load_signal_from_preset)
+
+    client = FakeIbkrClient(positions=[], summary=_summary_payload())
+
+    def _factory(*, config: IbkrPaperClientConfig) -> FakeIbkrClient:
+        assert config.account_id == ACCOUNT_ID
+        return client
+
+    rc = ibkr_paper_bringup.main(
+        [
+            "--emit",
+            "json",
+            "--mode",
+            "preflight",
+            "--archive-root",
+            str(archive_root),
+            "--base-dir",
+            str(base_dir),
+            "--state-key",
+            STATE_KEY,
+            "--timestamp",
+            TIMESTAMP,
+            "--ibkr-account-id",
+            ACCOUNT_ID,
+            "--preset",
+            "dual_mom_core",
+        ],
+        client_factory=_factory,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["overall_status"] == "ok"
+    assert payload["allowed_symbols"] == ["BIL", "EFA", "IWM", "QQQ", "SPY"]
+    assert payload["signal"]["symbol"] == "EFA"
+    assert payload["status_payload"]["signal"]["event_id"] == signal["event_id"]
 
 
 def test_ibkr_paper_bringup_apply_requires_explicit_opt_in_and_succeeds(
