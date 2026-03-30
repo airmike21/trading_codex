@@ -87,6 +87,32 @@ def _positions_payload(*items: dict[str, object]) -> list[dict[str, object]]:
     return list(items)
 
 
+def _documented_account_prep(
+    *,
+    account_id: str = ACCOUNT_ID,
+    is_paper: bool,
+    selected_account: str | None = None,
+) -> dict[str, object]:
+    return {
+        "brokerage_accounts": {
+            "accounts": [account_id],
+            "isPaper": is_paper,
+            "selectedAccount": selected_account or account_id,
+        },
+        "portfolio_accounts": [{"accountId": account_id, "id": account_id}],
+    }
+
+
+def _custom_per_account_prep(*, account_id: str = ACCOUNT_ID, is_paper: bool) -> dict[str, object]:
+    return {
+        "brokerage_accounts": {
+            "accounts": [{"accountId": account_id, "isPaper": is_paper}],
+            "selectedAccount": account_id,
+        },
+        "portfolio_accounts": [{"accountId": account_id, "id": account_id, "isPaper": is_paper}],
+    }
+
+
 class FakeIbkrClient:
     def __init__(
         self,
@@ -101,14 +127,7 @@ class FakeIbkrClient:
         confirm_reply_responses: list[object] | None = None,
     ) -> None:
         self.account_prep = copy.deepcopy(
-            account_prep
-            or {
-                "brokerage_accounts": {
-                    "accounts": [{"accountId": ACCOUNT_ID, "isPaper": True}],
-                    "selectedAccount": ACCOUNT_ID,
-                },
-                "portfolio_accounts": [{"accountId": ACCOUNT_ID, "id": ACCOUNT_ID, "isPaper": True}],
-            }
+            account_prep or _documented_account_prep(is_paper=True)
         )
         self.positions = copy.deepcopy(positions or [])
         self.summary = copy.deepcopy(summary or _summary_payload())
@@ -283,18 +302,41 @@ def test_ibkr_paper_apply_happy_path_and_duplicate_protection(tmp_path: Path) ->
     assert state.last_applied["result"] == "applied"
 
 
-@pytest.mark.parametrize("mode", ["status", "apply"])
-def test_ibkr_paper_lane_refuses_non_paper_account_before_broker_loads(tmp_path: Path, mode: str) -> None:
+def test_ibkr_paper_status_accepts_documented_cpapi_top_level_paper_metadata(tmp_path: Path) -> None:
     base_dir = tmp_path / "ibkr_paper"
-    non_paper_account = "U1234567"
     client = FakeIbkrClient(
-        account_prep={
-            "brokerage_accounts": {
-                "accounts": [{"accountId": non_paper_account, "isPaper": False}],
-                "selectedAccount": non_paper_account,
-            },
-            "portfolio_accounts": [{"accountId": non_paper_account, "id": non_paper_account, "isPaper": False}],
-        }
+        account_prep=_documented_account_prep(is_paper=True),
+        positions=[],
+        summary=_summary_payload(),
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    payload = build_ibkr_paper_status(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="status_documented_cpapi",
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["broker_account_prep"]["brokerage_accounts"]["isPaper"] is True
+    assert payload["broker_account_prep"]["brokerage_accounts"]["selectedAccount"] == ACCOUNT_ID
+    assert client.position_requests == [ACCOUNT_ID]
+    assert client.summary_requests == [ACCOUNT_ID]
+
+
+@pytest.mark.parametrize("mode", ["status", "apply"])
+def test_ibkr_paper_lane_refuses_documented_cpapi_non_paper_session_before_broker_loads(
+    tmp_path: Path, mode: str
+) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    non_paper_account = ACCOUNT_ID
+    client = FakeIbkrClient(
+        account_prep=_documented_account_prep(account_id=non_paper_account, is_paper=False)
     )
     signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
     config = IbkrPaperClientConfig(account_id=non_paper_account)
@@ -327,12 +369,37 @@ def test_ibkr_paper_lane_refuses_non_paper_account_before_broker_loads(tmp_path:
 
     message = str(exc_info.value)
     assert "verified as paper" in message
-    assert "isPaper:False" in message
-    assert "DU account-id format" in message
+    assert "brokerage_accounts.isPaper=False" in message
     assert client.ensure_calls == [non_paper_account]
     assert client.position_requests == []
     assert client.summary_requests == []
     assert client.place_order_payloads == []
+
+
+def test_ibkr_paper_status_accepts_custom_per_account_ispaper_metadata_shape(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        account_prep=_custom_per_account_prep(is_paper=True),
+        positions=[],
+        summary=_summary_payload(),
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    payload = build_ibkr_paper_status(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="status_custom_shape",
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["broker_account_prep"]["brokerage_accounts"]["selectedAccount"] == ACCOUNT_ID
+    assert client.position_requests == [ACCOUNT_ID]
+    assert client.summary_requests == [ACCOUNT_ID]
 
 
 def test_ibkr_paper_apply_persists_acknowledged_submit_before_status_fetch(tmp_path: Path) -> None:

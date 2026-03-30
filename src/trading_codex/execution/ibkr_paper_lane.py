@@ -149,6 +149,8 @@ class RequestsIbkrPaperClient:
                 raise ValueError(
                     f"IBKR refused to switch the active brokerage account to {normalized_account!r}."
                 )
+            brokerage_accounts = dict(brokerage_accounts)
+            brokerage_accounts["selectedAccount"] = normalized_account
         return {
             "brokerage_accounts": brokerage_accounts,
             "portfolio_accounts": portfolio_accounts,
@@ -755,26 +757,56 @@ def _looks_like_ibkr_paper_account_id(account_id: str) -> bool:
 
 def _require_verified_paper_account(*, account_id: str, account_prep: dict[str, Any]) -> None:
     normalized_account_id = account_id.strip().upper()
-    matching_is_paper_records: list[tuple[str, bool]] = []
-    for label, payload in _iter_account_metadata_records(account_prep):
-        if normalized_account_id not in _account_metadata_identifiers(payload):
-            continue
-        is_paper = _coerce_bool_like(payload.get("isPaper"))
-        if is_paper is not None:
-            matching_is_paper_records.append((label, is_paper))
-
     failure_reasons: list[str] = []
     if not _looks_like_ibkr_paper_account_id(normalized_account_id):
         failure_reasons.append(
             f"configured account {normalized_account_id!r} does not match the narrow Stage 2 PaperTrader DU account-id format"
         )
 
-    if not matching_is_paper_records:
-        failure_reasons.append(
-            f"account-selection metadata for {normalized_account_id!r} did not report isPaper=true"
-        )
+    paper_verified = False
+    brokerage_accounts = account_prep.get("brokerage_accounts")
+    top_level_is_paper = (
+        _coerce_bool_like(brokerage_accounts.get("isPaper"))
+        if isinstance(brokerage_accounts, dict)
+        else None
+    )
+    selected_account = (
+        _normalize_account_id_candidate(brokerage_accounts.get("selectedAccount"))
+        if isinstance(brokerage_accounts, dict)
+        else None
+    )
+
+    if top_level_is_paper is not None:
+        if top_level_is_paper is False:
+            failure_reasons.append(
+                "account-selection metadata reported a non-paper account/session (brokerage_accounts.isPaper=False)"
+            )
+        elif selected_account != normalized_account_id:
+            if selected_account is None:
+                failure_reasons.append(
+                    f"brokerage_accounts.isPaper=True but brokerage_accounts.selectedAccount was missing for configured account {normalized_account_id!r}"
+                )
+            else:
+                failure_reasons.append(
+                    "brokerage_accounts.isPaper=True but "
+                    f"brokerage_accounts.selectedAccount={selected_account!r} does not match configured account {normalized_account_id!r}"
+                )
+        else:
+            paper_verified = True
     else:
-        if not any(is_paper for _, is_paper in matching_is_paper_records):
+        matching_is_paper_records: list[tuple[str, bool]] = []
+        for label, payload in _iter_account_metadata_records(account_prep):
+            if normalized_account_id not in _account_metadata_identifiers(payload):
+                continue
+            is_paper = _coerce_bool_like(payload.get("isPaper"))
+            if is_paper is not None:
+                matching_is_paper_records.append((label, is_paper))
+
+        if not matching_is_paper_records:
+            failure_reasons.append(
+                f"account-selection metadata for {normalized_account_id!r} did not report paper-session evidence"
+            )
+        elif not any(is_paper for _, is_paper in matching_is_paper_records):
             rendered = ", ".join(f"{label}=isPaper:{is_paper}" for label, is_paper in matching_is_paper_records)
             failure_reasons.append(
                 f"account-selection metadata reported a non-paper account/session ({rendered})"
@@ -784,8 +816,10 @@ def _require_verified_paper_account(*, account_id: str, account_prep: dict[str, 
             failure_reasons.append(
                 f"account-selection metadata for {normalized_account_id!r} is internally inconsistent ({rendered})"
             )
+        else:
+            paper_verified = True
 
-    if failure_reasons:
+    if not paper_verified or failure_reasons:
         raise ValueError(
             "IBKR paper lane refuses to proceed unless the configured account/session is explicitly verified as paper. "
             + " ".join(failure_reasons)
