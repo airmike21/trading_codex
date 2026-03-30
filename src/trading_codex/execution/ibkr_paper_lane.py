@@ -693,6 +693,105 @@ def _ibkr_error_detail(payload: object) -> str | None:
     return None
 
 
+def _normalize_account_id_candidate(value: object) -> str | None:
+    if value is None:
+        return None
+    candidate = str(value).strip().upper()
+    return candidate or None
+
+
+def _account_metadata_identifiers(payload: dict[str, Any]) -> set[str]:
+    identifiers = {
+        _normalize_account_id_candidate(payload.get(key))
+        for key in (
+            "accountId",
+            "accountID",
+            "account_id",
+            "acctId",
+            "acctID",
+            "account",
+            "acct",
+            "id",
+        )
+    }
+    return {identifier for identifier in identifiers if identifier is not None}
+
+
+def _iter_account_metadata_records(account_prep: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    records: list[tuple[str, dict[str, Any]]] = []
+    brokerage_accounts = account_prep.get("brokerage_accounts")
+    if isinstance(brokerage_accounts, dict):
+        for key, raw_value in brokerage_accounts.items():
+            if isinstance(raw_value, dict):
+                records.append((f"brokerage_accounts.{key}", dict(raw_value)))
+            elif isinstance(raw_value, list):
+                for index, item in enumerate(raw_value):
+                    if isinstance(item, dict):
+                        records.append((f"brokerage_accounts.{key}[{index}]", dict(item)))
+
+    portfolio_accounts = account_prep.get("portfolio_accounts")
+    if isinstance(portfolio_accounts, list):
+        for index, item in enumerate(portfolio_accounts):
+            if isinstance(item, dict):
+                records.append((f"portfolio_accounts[{index}]", dict(item)))
+    return records
+
+
+def _coerce_bool_like(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return None
+
+
+def _looks_like_ibkr_paper_account_id(account_id: str) -> bool:
+    return bool(re.fullmatch(r"DU[0-9]+", account_id.strip().upper()))
+
+
+def _require_verified_paper_account(*, account_id: str, account_prep: dict[str, Any]) -> None:
+    normalized_account_id = account_id.strip().upper()
+    matching_is_paper_records: list[tuple[str, bool]] = []
+    for label, payload in _iter_account_metadata_records(account_prep):
+        if normalized_account_id not in _account_metadata_identifiers(payload):
+            continue
+        is_paper = _coerce_bool_like(payload.get("isPaper"))
+        if is_paper is not None:
+            matching_is_paper_records.append((label, is_paper))
+
+    failure_reasons: list[str] = []
+    if not _looks_like_ibkr_paper_account_id(normalized_account_id):
+        failure_reasons.append(
+            f"configured account {normalized_account_id!r} does not match the narrow Stage 2 PaperTrader DU account-id format"
+        )
+
+    if not matching_is_paper_records:
+        failure_reasons.append(
+            f"account-selection metadata for {normalized_account_id!r} did not report isPaper=true"
+        )
+    else:
+        if not any(is_paper for _, is_paper in matching_is_paper_records):
+            rendered = ", ".join(f"{label}=isPaper:{is_paper}" for label, is_paper in matching_is_paper_records)
+            failure_reasons.append(
+                f"account-selection metadata reported a non-paper account/session ({rendered})"
+            )
+        elif any(not is_paper for _, is_paper in matching_is_paper_records):
+            rendered = ", ".join(f"{label}=isPaper:{is_paper}" for label, is_paper in matching_is_paper_records)
+            failure_reasons.append(
+                f"account-selection metadata for {normalized_account_id!r} is internally inconsistent ({rendered})"
+            )
+
+    if failure_reasons:
+        raise ValueError(
+            "IBKR paper lane refuses to proceed unless the configured account/session is explicitly verified as paper. "
+            + " ".join(failure_reasons)
+        )
+
+
 def _normalized_summary_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.strip().lower())
 
@@ -902,6 +1001,7 @@ def _build_status_payload(
     _ensure_state_constraints(state=state, signal=signal, config=config, allowed_symbols=allowed_symbols)
 
     account_prep = client.ensure_account_access(account_id=config.account_id)
+    _require_verified_paper_account(account_id=config.account_id, account_prep=account_prep)
     positions_raw = client.load_positions(account_id=config.account_id)
     summary_raw = client.load_summary(account_id=config.account_id)
     broker_snapshot, broker_metrics = _normalize_ibkr_broker_snapshot(
@@ -1255,6 +1355,45 @@ def _submit_order_with_replies(
     raise ValueError("IBKR order reply confirmation did not resolve to a submitted order within 8 confirmations.")
 
 
+def _claim_has_acknowledged_submit(submitted_orders: list[dict[str, Any]]) -> bool:
+    return any(
+        bool(order.get("acknowledged_submit"))
+        or isinstance(order.get("broker_order_id"), str)
+        and bool(str(order.get("broker_order_id")).strip())
+        for order in submitted_orders
+    )
+
+
+def _write_claim_progress(
+    *,
+    paths: IbkrPaperPaths,
+    event_id: str,
+    initial_claim: dict[str, Any],
+    submitted_orders: list[dict[str, Any]],
+    result: str,
+    error: str | None = None,
+    pending_reply: dict[str, Any] | None = None,
+    reply_required: bool | None = None,
+) -> Path:
+    current_claim = _load_event_claim(paths, event_id) or dict(initial_claim)
+    current_claim["acknowledged_submit_may_have_reached_ibkr"] = _claim_has_acknowledged_submit(submitted_orders)
+    if error is None:
+        current_claim.pop("error", None)
+    else:
+        current_claim["error"] = error
+    if pending_reply is None:
+        current_claim.pop("pending_reply", None)
+    else:
+        current_claim["pending_reply"] = pending_reply
+    if reply_required is None:
+        current_claim.pop("reply_required", None)
+    else:
+        current_claim["reply_required"] = reply_required
+    current_claim["result"] = result
+    current_claim["submitted_orders"] = list(submitted_orders)
+    return _write_event_claim(paths, current_claim)
+
+
 def render_ibkr_paper_status_text(payload: dict[str, Any]) -> str:
     signal = payload["signal"]
     lines = [
@@ -1380,6 +1519,7 @@ def apply_ibkr_paper_signal(
             event_claim_path = str(claim_path)
         else:
             initial_claim = {
+                "acknowledged_submit_may_have_reached_ibkr": False,
                 "account_id": config.account_id,
                 "allowed_symbols": list(normalized_allowed_symbols),
                 "broker_account": {
@@ -1477,33 +1617,40 @@ def apply_ibkr_paper_signal(
                             confirm_replies=confirm_replies,
                         )
                         if normalized_response["reply_required"]:
-                            current_claim = _load_event_claim(paths, signal.event_id) or dict(initial_claim)
-                            current_claim["reply_required"] = True
-                            current_claim["result"] = "claim_pending_manual_clearance_required"
-                            current_claim["submitted_orders"] = list(submitted_orders)
-                            current_claim["pending_reply"] = {
-                                "messages": normalized_response["reply_messages"],
-                                "reply_id": normalized_response.get("reply_id"),
-                            }
-                            _write_event_claim(paths, current_claim)
+                            _write_claim_progress(
+                                paths=paths,
+                                event_id=signal.event_id,
+                                initial_claim=initial_claim,
+                                submitted_orders=submitted_orders,
+                                result="claim_pending_manual_clearance_required",
+                                pending_reply={
+                                    "messages": normalized_response["reply_messages"],
+                                    "reply_id": normalized_response.get("reply_id"),
+                                },
+                                reply_required=True,
+                            )
                             result = "claim_pending_manual_clearance_required"
                             break
 
                         broker_order_id = normalized_response["broker_order_id"]
-                        broker_status_payload = (
-                            client.load_order_status(order_id=broker_order_id)
-                            if broker_order_id is not None
-                            else {}
-                        )
                         submitted_order = {
+                            "acknowledged_at_chicago": resolved_timestamp.isoformat(),
+                            "acknowledged_submit": True,
                             "broker_order_id": broker_order_id,
                             "broker_status": normalized_response["broker_status"],
+                            "cOID": order_ref,
                             "classification": candidate["classification"],
                             "conid": int(contract["conid"]),
+                            "contract_identity": {
+                                "conid": int(contract["conid"]),
+                                "source": contract["source"],
+                                "symbol": candidate["symbol"],
+                            },
                             "contract_source": contract["source"],
+                            "event_id": signal.event_id,
                             "order_payload": order_payload["orders"][0],
+                            "order_submission_ack": normalized_response["raw_response"],
                             "order_ref": order_ref,
-                            "order_status": broker_status_payload,
                             "quantity": int(candidate["quantity"]),
                             "reference_price": candidate["reference_price"],
                             "side": candidate["side"],
@@ -1512,9 +1659,27 @@ def apply_ibkr_paper_signal(
                         if normalized_response.get("reply_confirmations"):
                             submitted_order["reply_confirmations"] = normalized_response["reply_confirmations"]
                         submitted_orders.append(submitted_order)
-                        current_claim = _load_event_claim(paths, signal.event_id) or dict(initial_claim)
-                        current_claim["submitted_orders"] = submitted_orders
-                        _write_event_claim(paths, current_claim)
+                        _write_claim_progress(
+                            paths=paths,
+                            event_id=signal.event_id,
+                            initial_claim=initial_claim,
+                            submitted_orders=submitted_orders,
+                            result="claim_pending_manual_clearance_required",
+                        )
+
+                        broker_status_payload = (
+                            client.load_order_status(order_id=broker_order_id)
+                            if broker_order_id is not None
+                            else {}
+                        )
+                        submitted_order["order_status"] = broker_status_payload
+                        _write_claim_progress(
+                            paths=paths,
+                            event_id=signal.event_id,
+                            initial_claim=initial_claim,
+                            submitted_orders=submitted_orders,
+                            result="claim_pending_manual_clearance_required",
+                        )
 
                     if result != "claim_pending_manual_clearance_required":
                         receipt_payload = {
@@ -1536,11 +1701,14 @@ def apply_ibkr_paper_signal(
                         event_receipt_path = str(receipt_path)
                         event_claim_path = None
                 except Exception as exc:
-                    current_claim = _load_event_claim(paths, signal.event_id) or dict(initial_claim)
-                    current_claim["error"] = str(exc)
-                    current_claim["result"] = "claim_pending_manual_clearance_required"
-                    current_claim["submitted_orders"] = submitted_orders
-                    _write_event_claim(paths, current_claim)
+                    _write_claim_progress(
+                        paths=paths,
+                        event_id=signal.event_id,
+                        initial_claim=initial_claim,
+                        submitted_orders=submitted_orders,
+                        result="claim_pending_manual_clearance_required",
+                        error=str(exc),
+                    )
                     result = "claim_pending_manual_clearance_required"
 
         archive_manifest_path, archive_error = _archive_run(

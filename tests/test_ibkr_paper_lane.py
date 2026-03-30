@@ -12,6 +12,7 @@ from trading_codex.execution.ibkr_paper_lane import (
     apply_ibkr_paper_signal,
     build_ibkr_paper_status,
     event_already_applied,
+    event_claim_pending,
     load_ibkr_paper_state,
     resolve_ibkr_paper_paths,
 )
@@ -90,13 +91,25 @@ class FakeIbkrClient:
     def __init__(
         self,
         *,
+        account_prep: dict[str, object] | None = None,
         positions: list[dict[str, object]] | None = None,
         summary: dict[str, object] | None = None,
         contracts: dict[str, dict[str, object]] | None = None,
         place_order_responses: list[object] | None = None,
         order_statuses: dict[str, dict[str, object]] | None = None,
+        order_status_errors: dict[str, Exception] | None = None,
         confirm_reply_responses: list[object] | None = None,
     ) -> None:
+        self.account_prep = copy.deepcopy(
+            account_prep
+            or {
+                "brokerage_accounts": {
+                    "accounts": [{"accountId": ACCOUNT_ID, "isPaper": True}],
+                    "selectedAccount": ACCOUNT_ID,
+                },
+                "portfolio_accounts": [{"accountId": ACCOUNT_ID, "id": ACCOUNT_ID, "isPaper": True}],
+            }
+        )
         self.positions = copy.deepcopy(positions or [])
         self.summary = copy.deepcopy(summary or _summary_payload())
         self.contracts = copy.deepcopy(
@@ -109,8 +122,11 @@ class FakeIbkrClient:
         )
         self.place_order_responses = list(place_order_responses or [])
         self.order_statuses = copy.deepcopy(order_statuses or {})
+        self.order_status_errors = dict(order_status_errors or {})
         self.confirm_reply_responses = list(confirm_reply_responses or [])
         self.ensure_calls: list[str] = []
+        self.position_requests: list[str] = []
+        self.summary_requests: list[str] = []
         self.place_order_payloads: list[dict[str, object]] = []
         self.order_status_requests: list[str] = []
         self.contract_requests: list[str] = []
@@ -118,17 +134,16 @@ class FakeIbkrClient:
 
     def ensure_account_access(self, *, account_id: str) -> dict[str, object]:
         self.ensure_calls.append(account_id)
-        return {
-            "brokerage_accounts": {"accounts": [account_id], "selectedAccount": account_id},
-            "portfolio_accounts": [{"accountId": account_id, "id": account_id}],
-        }
+        return copy.deepcopy(self.account_prep)
 
     def load_positions(self, *, account_id: str) -> list[dict[str, object]]:
         assert account_id == ACCOUNT_ID
+        self.position_requests.append(account_id)
         return copy.deepcopy(self.positions)
 
     def load_summary(self, *, account_id: str) -> dict[str, object]:
         assert account_id == ACCOUNT_ID
+        self.summary_requests.append(account_id)
         return copy.deepcopy(self.summary)
 
     def resolve_stock_contract(self, *, symbol: str) -> dict[str, object]:
@@ -151,6 +166,8 @@ class FakeIbkrClient:
 
     def load_order_status(self, *, order_id: str) -> dict[str, object]:
         self.order_status_requests.append(order_id)
+        if order_id in self.order_status_errors:
+            raise self.order_status_errors[order_id]
         return copy.deepcopy(self.order_statuses[order_id])
 
 
@@ -264,6 +281,125 @@ def test_ibkr_paper_apply_happy_path_and_duplicate_protection(tmp_path: Path) ->
     assert state.last_attempt["result"] == "duplicate_event_refused"
     assert state.last_applied is not None
     assert state.last_applied["result"] == "applied"
+
+
+@pytest.mark.parametrize("mode", ["status", "apply"])
+def test_ibkr_paper_lane_refuses_non_paper_account_before_broker_loads(tmp_path: Path, mode: str) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    non_paper_account = "U1234567"
+    client = FakeIbkrClient(
+        account_prep={
+            "brokerage_accounts": {
+                "accounts": [{"accountId": non_paper_account, "isPaper": False}],
+                "selectedAccount": non_paper_account,
+            },
+            "portfolio_accounts": [{"accountId": non_paper_account, "id": non_paper_account, "isPaper": False}],
+        }
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+    config = IbkrPaperClientConfig(account_id=non_paper_account)
+
+    with pytest.raises(ValueError) as exc_info:
+        if mode == "status":
+            build_ibkr_paper_status(
+                client=client,
+                config=config,
+                allowed_symbols=ALLOWED_SYMBOLS,
+                state_key=STATE_KEY,
+                base_dir=base_dir,
+                signal_raw=signal,
+                source_kind="test",
+                source_label=f"{mode}_blocked",
+                timestamp=TIMESTAMP,
+            )
+        else:
+            apply_ibkr_paper_signal(
+                client=client,
+                config=config,
+                allowed_symbols=ALLOWED_SYMBOLS,
+                state_key=STATE_KEY,
+                base_dir=base_dir,
+                signal_raw=signal,
+                source_kind="test",
+                source_label=f"{mode}_blocked",
+                timestamp=TIMESTAMP,
+            )
+
+    message = str(exc_info.value)
+    assert "verified as paper" in message
+    assert "isPaper:False" in message
+    assert "DU account-id format" in message
+    assert client.ensure_calls == [non_paper_account]
+    assert client.position_requests == []
+    assert client.summary_requests == []
+    assert client.place_order_payloads == []
+
+
+def test_ibkr_paper_apply_persists_acknowledged_submit_before_status_fetch(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"order_id": 7001, "order_status": "Submitted"}]],
+        order_status_errors={"7001": RuntimeError("simulated status lookup failure after acknowledgement")},
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    first = apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_ack_pending",
+        timestamp=TIMESTAMP,
+    )
+    second = apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_ack_pending_repeat",
+        timestamp=TIMESTAMP,
+    )
+
+    assert first["result"] == "claim_pending_manual_clearance_required"
+    assert first["event_claim_pending"] is True
+    assert first["event_claim_path"] is not None
+    assert first["event_receipt_path"] is None
+    assert first["submitted_orders"][0]["broker_order_id"] == "7001"
+    assert first["submitted_orders"][0]["cOID"] == f"{signal['event_id']}:1:BUY:EFA"
+    assert first["submitted_orders"][0]["symbol"] == "EFA"
+    assert first["submitted_orders"][0]["side"] == "BUY"
+    assert first["submitted_orders"][0]["quantity"] == 100
+    assert first["submitted_orders"][0]["contract_identity"] == {
+        "conid": 1111,
+        "source": "trsrv_stocks",
+        "symbol": "EFA",
+    }
+    assert "order_status" not in first["submitted_orders"][0]
+
+    claim_path = Path(str(first["event_claim_path"]))
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert claim["acknowledged_submit_may_have_reached_ibkr"] is True
+    assert claim["error"] == "simulated status lookup failure after acknowledgement"
+    assert claim["submitted_orders"][0]["event_id"] == signal["event_id"]
+    assert claim["submitted_orders"][0]["broker_order_id"] == "7001"
+    assert claim["submitted_orders"][0]["cOID"] == f"{signal['event_id']}:1:BUY:EFA"
+    assert claim["submitted_orders"][0]["symbol"] == "EFA"
+    assert claim["submitted_orders"][0]["side"] == "BUY"
+    assert claim["submitted_orders"][0]["quantity"] == 100
+    assert claim["submitted_orders"][0]["contract_identity"]["conid"] == 1111
+    assert event_claim_pending(resolve_ibkr_paper_paths(state_key=STATE_KEY, base_dir=base_dir, create=False), signal["event_id"]) is True
+
+    assert second["result"] == "claim_pending_manual_clearance_required"
+    assert second["submitted_orders"] == []
+    assert len(client.place_order_payloads) == 1
 
 
 def test_ibkr_paper_apply_refuses_unmanaged_positions_plan_blockers(tmp_path: Path) -> None:
