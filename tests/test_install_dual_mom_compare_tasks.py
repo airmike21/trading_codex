@@ -28,6 +28,18 @@ def _run_print_only(*extra_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
 
 
+def _copy_installer_fixture(tmp_path: Path) -> Path:
+    repo_root = Path(__file__).resolve().parents[1]
+    fixture_root = tmp_path / "scripts" / "windows"
+    fixture_root.mkdir(parents=True)
+    for name in (
+        "install_dual_mom_compare_tasks.ps1",
+        "trading_codex_scheduled_dual_compare.ps1",
+    ):
+        shutil.copy2(repo_root / "scripts" / "windows" / name, fixture_root / name)
+    return fixture_root / "install_dual_mom_compare_tasks.ps1"
+
+
 def test_hidden_mode_prints_hidden_powershell_launcher() -> None:
     proc = _run_print_only(
         "-InstallMode",
@@ -55,8 +67,22 @@ def test_hidden_mode_prints_hidden_powershell_launcher() -> None:
     assert "-PresetsFile /tmp/trading_codex_runs/presets.json" in stdout
 
 
-def test_background_mode_prints_s4u_wsl_action() -> None:
-    proc = _run_print_only(
+def test_background_mode_prints_s4u_wsl_action(tmp_path: Path) -> None:
+    if POWERSHELL_EXE is None:
+        pytest.skip("powershell.exe is required for Windows task installer tests")
+
+    installer = _copy_installer_fixture(tmp_path)
+    missing_shell_runner = installer.parent / "trading_codex_scheduled_dual_compare.sh"
+    assert not missing_shell_runner.exists()
+
+    cmd = [
+        POWERSHELL_EXE,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(installer),
+        "-PrintOnly",
         "-InstallMode",
         "Background",
         "-WslDistro",
@@ -67,7 +93,8 @@ def test_background_mode_prints_s4u_wsl_action() -> None:
         "/__trading_codex_print_only_preview_should_not_need_repo__/.venv/bin/python",
         "-BaseDir",
         "/tmp/trading_codex_runs",
-    )
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(tmp_path))
 
     assert proc.returncode == 0, proc.stderr
     stdout = proc.stdout

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -569,3 +571,20 @@ def test_ibkr_paper_lane_cli_smoke_with_fake_client(tmp_path: Path, capsys: pyte
     assert apply_stdout["schema_name"] == "ibkr_paper_lane_apply_result"
     assert apply_stdout["result"] == "applied"
     assert apply_stdout["submitted_orders"][0]["broker_order_id"] == "9001"
+
+
+def test_ibkr_paper_lane_script_help_smoke() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "scripts" / "ibkr_paper_lane.py"
+
+    assert script_path.exists()
+
+    proc = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Operate the narrow IBKR PaperTrader lane" in proc.stdout
