@@ -1,6 +1,6 @@
 # Promotion Runbook
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 This runbook defines the only approved promotion path.
 Use it after Builder has delivered an exact diff and exact file list.
@@ -57,6 +57,7 @@ test "$(git rev-parse "$BASE_REF")" = "$BASE_SHA"
 git switch --detach "$BASE_SHA"
 git status --short --branch
 git fetch origin "$BUILDER_BRANCH"
+test "$(git rev-parse FETCH_HEAD)" = "$BUILDER_COMMIT"
 git show --no-patch --oneline "$BUILDER_COMMIT"
 diff -u <(printf '%s\n' "${APPROVED_FILES[@]}" | sort) <(git diff --name-only "$BASE_SHA".."$BUILDER_COMMIT" | sort)
 git restore --source "$BUILDER_COMMIT" -- "${APPROVED_FILES[@]}"
@@ -84,10 +85,12 @@ git diff --name-only "$BASE_SHA".."$BUILDER_COMMIT"
 ## Validation Steps
 
 Run Brain's exact validation commands before commit.
+- Validation source-of-truth rule: Promotion validation decisions must be based on results from the Builder workspace or a clean `/tmp` clone, not from a stale or unrelated local checkout.
+- If local checkout results disagree with Builder or clean-clone results, treat the clean Builder workspace or clean `/tmp` clone as authoritative.
 If Brain did not specify validation commands and the repo offers no narrower doc-specific validation, use the repo-standard default plus whitespace checks:
 
 ```bash
-python -m pytest
+.venv/bin/python -m pytest -q
 git diff --check
 ```
 
@@ -164,6 +167,7 @@ Stop immediately and return to Builder if any of the following is true:
 - the approved file list does not match the Builder diff
 - the staged file list does not match the approved file list
 - the wrong branch or wrong base ref is in use
+- the fetched Builder branch tip does not match the approved Builder commit
 - the promotion is not happening from a clean `/tmp` clone
 - `origin/master` moved after review or validation
 - promotion reveals missing files, extra files, or unapproved changes
@@ -178,6 +182,7 @@ Do not continue with partial fixes.
 - Extra files were staged by accident. Stop, discard the promotion clone, and return to Builder.
 - Someone tried to promote directly from a dirty runtime checkout. Stop and restart from a clean `/tmp` clone.
 - Reviewer approval was for an older Builder commit. Stop and get fresh review for the exact commit.
+- The fetched Builder branch tip did not match the approved Builder commit. Stop and get a fresh approved commit or fresh review for the newer tip.
 - Validation was skipped or run against different content. Stop and rerun promotion from a clean `/tmp` clone after Builder or Brain corrects the gap.
 - The wrong branch or wrong base was used. Stop and restart from the approved base ref.
 - The runtime repo was used to author or amend a commit. Stop and return to Builder. Do not salvage it in place.
