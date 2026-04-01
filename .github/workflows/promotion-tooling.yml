@@ -1,0 +1,69 @@
+name: Promotion Tooling
+
+on:
+  pull_request:
+    paths:
+      - docs/PROMOTION_RUNBOOK.md
+      - scripts/promote_from_builder.sh
+      - .github/workflows/promotion-tooling.yml
+  push:
+    paths:
+      - docs/PROMOTION_RUNBOOK.md
+      - scripts/promote_from_builder.sh
+      - .github/workflows/promotion-tooling.yml
+
+jobs:
+  promotion-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Check helper syntax
+        run: bash -n scripts/promote_from_builder.sh
+
+      - name: Check runbook guidance
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'Future promotions should use `~/trading_codex/scripts/promote_from_builder.sh` as the standard execution path.' docs/PROMOTION_RUNBOOK.md
+          grep -F 'Use full 40-character SHAs for promotion inputs, especially `--builder-commit` and `--base-sha`.' docs/PROMOTION_RUNBOOK.md
+
+      - name: Check helper guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing_output="$(scripts/promote_from_builder.sh --repo-url 2>&1 || true)"
+          grep -F 'ERROR: missing value for --repo-url' <<<"$missing_output"
+
+          runtime_dir="$(mktemp -d)"
+          trap 'rm -rf "$runtime_dir"' EXIT
+
+          set +e
+          short_base_output="$(scripts/promote_from_builder.sh \
+            --repo-url https://example.invalid/repo.git \
+            --runtime-dir "$runtime_dir" \
+            --base-sha deadbeef \
+            --builder-branch tooling/example \
+            --builder-commit 0123456789abcdef0123456789abcdef01234567 \
+            --commit-message "promotion tooling guardrail" \
+            --approved-file docs/PROMOTION_RUNBOOK.md 2>&1)"
+          short_base_status=$?
+          set -e
+          test "$short_base_status" -ne 0
+          grep -F 'ERROR: --base-sha must be a full 40-character commit SHA' <<<"$short_base_output"
+
+          set +e
+          short_builder_output="$(scripts/promote_from_builder.sh \
+            --repo-url https://example.invalid/repo.git \
+            --runtime-dir "$runtime_dir" \
+            --base-sha 0123456789abcdef0123456789abcdef01234567 \
+            --builder-branch tooling/example \
+            --builder-commit deadbeef \
+            --commit-message "promotion tooling guardrail" \
+            --approved-file docs/PROMOTION_RUNBOOK.md 2>&1)"
+          short_builder_status=$?
+          set -e
+          test "$short_builder_status" -ne 0
+          grep -F 'ERROR: --builder-commit must be a full 40-character commit SHA' <<<"$short_builder_output"
