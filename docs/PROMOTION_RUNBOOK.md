@@ -47,8 +47,9 @@ APPROVED_FILES=(
 Run promotion only from a new clean clone under `/tmp`.
 Do not author commits from `~/trading_codex`.
 A dirty runtime checkout alone does not block promotion if the `/tmp` clone is clean and the runtime checkout is updated only after promotion by final `fetch` and `reset`.
-Because long pasted command blocks can be corrupted in terminal paste, prefer using the reviewed helper script instead of pasting the full command sequence by hand.
-The runbook remains the policy source of truth. The helper script is an implementation aid only and does not replace Brain verification or Reviewer approval.
+Use the reviewed helper script as the preferred promotion path, especially when following chat-provided instructions, because long pasted command blocks can be corrupted in terminal paste.
+The manual command sequence below remains the audit/reference path and fallback method.
+The runbook remains the policy source of truth. The helper script does not replace Brain verification, Reviewer approval, or runbook policy.
 
 Preferred helper invocation from a trusted local checkout that already contains the reviewed script:
 

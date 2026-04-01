@@ -26,6 +26,19 @@ die() {
   exit 1
 }
 
+consume_option_value() {
+  local option="$1"
+  shift
+
+  [[ $# -gt 0 ]] || die "missing value for $option"
+
+  local value="$1"
+  [[ -n "$value" ]] || die "missing value for $option"
+  [[ "$value" != -* ]] || die "missing value for $option (got another flag: $value)"
+
+  printf '%s\n' "$value"
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -117,35 +130,35 @@ trap cleanup_notice EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo-url)
-      repo_url="${2:-}"
+      repo_url="$(consume_option_value "$1" "${@:2}")"
       shift 2
       ;;
     --runtime-dir)
-      runtime_dir="${2:-}"
+      runtime_dir="$(consume_option_value "$1" "${@:2}")"
       shift 2
       ;;
     --base-ref)
-      base_ref="${2:-}"
+      base_ref="$(consume_option_value "$1" "${@:2}")"
       shift 2
       ;;
     --base-sha)
-      base_sha="${2:-}"
+      base_sha="$(consume_option_value "$1" "${@:2}")"
       shift 2
       ;;
     --builder-branch)
-      builder_branch="${2:-}"
+      builder_branch="$(consume_option_value "$1" "${@:2}")"
       shift 2
       ;;
     --builder-commit)
-      builder_commit="${2:-}"
+      builder_commit="$(consume_option_value "$1" "${@:2}")"
       shift 2
       ;;
     --commit-message)
-      commit_message="${2:-}"
+      commit_message="$(consume_option_value "$1" "${@:2}")"
       shift 2
       ;;
     --approved-file)
-      approved_files+=("${2:-}")
+      approved_files+=("$(consume_option_value "$1" "${@:2}")")
       shift 2
       ;;
     -h|--help)
