@@ -32,9 +32,9 @@ export REPO_URL=git@github.com:airmike21/trading_codex.git
 export PROMO_DIR=/tmp/trading_codex_promotion
 export RUNTIME_DIR=~/trading_codex
 export BASE_REF=origin/master
-export BASE_SHA=<approved-origin-master-sha>
+export BASE_SHA=<approved-origin-master-full-40-char-sha>
 export BUILDER_BRANCH=<builder-branch>
-export BUILDER_COMMIT=<approved-builder-commit-sha>
+export BUILDER_COMMIT=<approved-builder-commit-full-40-char-sha>
 export COMMIT_MSG='<approved-promotion-commit-message>'
 APPROVED_FILES=(
   path/to/file1
@@ -47,11 +47,13 @@ APPROVED_FILES=(
 Run promotion only from a new clean clone under `/tmp`.
 Do not author commits from `~/trading_codex`.
 A dirty runtime checkout alone does not block promotion if the `/tmp` clone is clean and the runtime checkout is updated only after promotion by final `fetch` and `reset`.
-Use the reviewed helper script as the preferred promotion path, especially when following chat-provided instructions, because long pasted command blocks can be corrupted in terminal paste.
-The manual command sequence below remains the audit/reference path and fallback method.
-The runbook remains the policy source of truth. The helper script does not replace Brain verification, Reviewer approval, or runbook policy.
+Future promotions should use `~/trading_codex/scripts/promote_from_builder.sh` as the standard execution path.
+This is the standard path because long pasted terminal blocks have been observed to get corrupted.
+The manual command sequence below remains the audit/reference path and fallback/debug method only.
+Brain verification, Reviewer approval when required, the approved file list, and runbook policy still govern promotion.
+Use full 40-character SHAs for promotion inputs, especially `--builder-commit` and `--base-sha`.
 
-Preferred helper invocation from a trusted local checkout that already contains the reviewed script:
+Standard helper invocation for future promotions from a trusted local checkout:
 
 ```bash
 ~/trading_codex/scripts/promote_from_builder.sh \

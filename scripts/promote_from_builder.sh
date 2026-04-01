@@ -7,9 +7,9 @@ Usage:
   scripts/promote_from_builder.sh \
     --repo-url <repo-url> \
     --runtime-dir <runtime-dir> \
-    --base-sha <approved-base-sha> \
+    --base-sha <approved-base-sha-40hex> \
     --builder-branch <builder-branch> \
-    --builder-commit <approved-builder-commit> \
+    --builder-commit <approved-builder-commit-40hex> \
     --commit-message <approved-commit-message> \
     --approved-file <path> \
     [--approved-file <path> ...] \
@@ -17,7 +17,8 @@ Usage:
 
 This helper creates a fresh clean clone under /tmp, restores only the approved
 paths from the approved Builder commit, runs the required promotion checks, and
-pushes the resulting commit to master.
+pushes the resulting commit to master. Use full 40-character SHAs for
+--base-sha and --builder-commit.
 EOF
 }
 
@@ -47,6 +48,12 @@ require_nonempty() {
   local value="$1"
   local name="$2"
   [[ -n "$value" ]] || die "missing required argument: $name"
+}
+
+require_full_sha() {
+  local value="$1"
+  local name="$2"
+  [[ "$value" =~ ^[0-9a-fA-F]{40}$ ]] || die "$name must be a full 40-character commit SHA"
 }
 
 validate_repo_path() {
@@ -178,6 +185,8 @@ require_nonempty "$base_sha" "--base-sha"
 require_nonempty "$builder_branch" "--builder-branch"
 require_nonempty "$builder_commit" "--builder-commit"
 require_nonempty "$commit_message" "--commit-message"
+require_full_sha "$base_sha" "--base-sha"
+require_full_sha "$builder_commit" "--builder-commit"
 [[ ${#approved_files[@]} -gt 0 ]] || die "at least one --approved-file is required"
 [[ -d "$runtime_dir" ]] || die "runtime dir does not exist: $runtime_dir"
 [[ "$base_ref" == "origin/master" ]] || die "this helper only supports --base-ref origin/master"
