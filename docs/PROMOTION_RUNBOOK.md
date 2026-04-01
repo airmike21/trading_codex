@@ -1,6 +1,6 @@
 # Promotion Runbook
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 This runbook defines the only approved promotion path.
 Use it after Builder has delivered an exact diff and exact file list.
@@ -84,6 +84,8 @@ git diff --name-only "$BASE_SHA".."$BUILDER_COMMIT"
 ## Validation Steps
 
 Run Brain's exact validation commands before commit.
+- Validation source-of-truth rule: Promotion validation decisions must be based on results from the Builder workspace or a clean `/tmp` clone, not from a stale or unrelated local checkout.
+- If local checkout results disagree with Builder or clean-clone results, treat the clean Builder workspace or clean `/tmp` clone as authoritative.
 If Brain did not specify validation commands and the repo offers no narrower doc-specific validation, use the repo-standard default plus whitespace checks:
 
 ```bash

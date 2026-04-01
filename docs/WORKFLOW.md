@@ -1,6 +1,6 @@
 # Workflow
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 This document defines the strict four-role workflow for Trading Codex changes and promotions.
 Use it with `docs/PROMOTION_RUNBOOK.md`.
@@ -47,6 +47,8 @@ Use it with `docs/PROMOTION_RUNBOOK.md`.
 - Promote from a clean `/tmp` clone only.
 - Never author commits from the runtime checkout.
 - A dirty runtime checkout does not block promotion if the `/tmp` promotion clone is clean and runtime is updated only by final `fetch` and `reset`.
+- Validation source-of-truth rule: Promotion validation decisions must be based on results from the Builder workspace or a clean `/tmp` clone, not from a stale or unrelated local checkout.
+- If local checkout results disagree with Builder or clean-clone results, treat the clean Builder workspace or clean `/tmp` clone as authoritative.
 - Stage and commit only approved files.
 - Never use broad staging such as `git add .`.
 - Validation must pass before commit.
