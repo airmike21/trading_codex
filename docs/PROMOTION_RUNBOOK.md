@@ -47,6 +47,25 @@ APPROVED_FILES=(
 Run promotion only from a new clean clone under `/tmp`.
 Do not author commits from `~/trading_codex`.
 A dirty runtime checkout alone does not block promotion if the `/tmp` clone is clean and the runtime checkout is updated only after promotion by final `fetch` and `reset`.
+Because long pasted command blocks can be corrupted in terminal paste, prefer using the reviewed helper script instead of pasting the full command sequence by hand.
+The runbook remains the policy source of truth. The helper script is an implementation aid only and does not replace Brain verification or Reviewer approval.
+
+Preferred helper invocation from a trusted local checkout that already contains the reviewed script:
+
+```bash
+~/trading_codex/scripts/promote_from_builder.sh \
+  --repo-url "$REPO_URL" \
+  --runtime-dir "$RUNTIME_DIR" \
+  --base-sha "$BASE_SHA" \
+  --builder-branch "$BUILDER_BRANCH" \
+  --builder-commit "$BUILDER_COMMIT" \
+  --commit-message "$COMMIT_MSG" \
+  --approved-file path/to/file1 \
+  --approved-file path/to/file2
+```
+
+The helper creates and uses its own clean clone under `/tmp`, runs the same checks documented below, and leaves the runtime update as a separate explicit step.
+Keep the manual command sequence below as the audit reference for the enforced safety checks.
 
 ```bash
 rm -rf "$PROMO_DIR"
@@ -89,6 +108,7 @@ Run Brain's exact validation commands before commit.
 - If local checkout results disagree with Builder or clean-clone results, treat the clean Builder workspace or clean `/tmp` clone as authoritative.
 - Validation environment rule: Validation must be executed in an environment where project dependencies are available.
 - If the clean `/tmp` clone does not have a ready environment, for example `.venv` is missing, either initialize the environment in the `/tmp` clone or run validation in the Builder workspace and treat those results as authoritative per the validation source-of-truth rule.
+- The reviewed helper script applies the same rule: it runs `.venv/bin/python -m pytest -q` only when that interpreter exists in the clean `/tmp` clone, otherwise it prints that Builder-side validation plus any required review approval is being relied on and still runs `git diff --check`.
 - Do not skip validation.
 If Brain did not specify validation commands and the repo offers no narrower doc-specific validation, use the repo-standard default plus whitespace checks in the prepared environment:
 
