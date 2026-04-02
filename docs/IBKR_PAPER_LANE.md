@@ -46,6 +46,29 @@ Operate from a saved signal payload:
   --allowed-symbols SPY,QQQ,IWM,EFA,BIL
 ```
 
+Shadow execution v1 against the confirmed WSL Paper TWS socket. This is read-only and no-submit only:
+
+```bash
+.venv/bin/python scripts/ibkr_shadow_paper.py --emit json \
+  --ibkr-account-id DUXXXXXXX \
+  --preset dual_mom_vol10_cash_core
+```
+
+Defaults for the shadow path:
+
+- host `172.26.192.1`
+- port `7497`
+- market orders are translated only as a proposed IBKR order shape
+- no orders are placed and no broker/account state is mutated
+
+The shadow payload includes:
+
+- endpoint used
+- timestamp
+- `simulation_only` / `no_submit`
+- symbol, action, target shares, current position, and delta-to-target reconciliation fields
+- intended IBKR order shape for each proposed order
+
 ## Durable Local State
 
 By default the lane stores local state under the run archive root in:

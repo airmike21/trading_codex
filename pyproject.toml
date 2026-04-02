@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Systematic trading research scaffold"
 requires-python = ">=3.10"
 dependencies = [
+  "ibapi",
   "numpy",
   "pandas",
   "pyarrow",
