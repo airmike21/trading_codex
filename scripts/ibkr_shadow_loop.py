@@ -109,7 +109,7 @@ def main(
         )
         state_path = resolve_ibkr_shadow_loop_state_path(
             state_key=state_key,
-            base_dir=args.state_dir or args.archive_root,
+            base_dir=args.state_dir,
             state_file=args.state_file,
             create=True,
         )

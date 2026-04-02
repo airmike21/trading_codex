@@ -324,3 +324,47 @@ def test_ibkr_shadow_loop_cli_smoke_detects_first_seen_then_unchanged_then_chang
     assert third_payload["shadow_action_fingerprint_short"] == shadow_action_fingerprint_short(
         third_payload["shadow_action_fingerprint"]
     )
+
+
+def test_ibkr_shadow_loop_archive_root_does_not_override_default_state_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    signal_path = tmp_path / "signal.json"
+    archive_root = tmp_path / "archive_override"
+    signal_path.write_text(json.dumps(_signal_payload()), encoding="utf-8")
+
+    def _factory(*, config: IbkrShadowConfig) -> FakeShadowClient:
+        assert config.account_id == ACCOUNT_ID
+        return FakeShadowClient(_snapshot(positions={}))
+
+    rc = ibkr_shadow_loop.main(
+        [
+            "--emit",
+            "json",
+            "--archive-root",
+            str(archive_root),
+            "--timestamp",
+            TIMESTAMP,
+            "--ibkr-account-id",
+            ACCOUNT_ID,
+            "--signal-json-file",
+            str(signal_path),
+            "--allowed-symbols",
+            "SPY,BIL",
+        ],
+        client_factory=_factory,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    state_path = Path(payload["state_file"])
+    expected_state_path = resolve_ibkr_shadow_loop_state_path(
+        state_key="signal",
+        create=False,
+    )
+
+    assert state_path == expected_state_path
+    assert state_path.exists()
+    assert archive_root in Path(payload["archive_manifest_path"]).parents
+    assert archive_root not in state_path.parents
