@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 import time
@@ -8,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from trading_codex.execution.models import BrokerPosition, BrokerSnapshot, ExecutionPlan
+from trading_codex.execution.models import BrokerPosition, BrokerSnapshot, ExecutionPlan, PlanItem
 from trading_codex.execution.planner import build_execution_plan, execution_plan_to_dict
 from trading_codex.execution.signals import parse_signal_payload
 
@@ -641,21 +643,50 @@ def _build_shadow_order_shape(
     }
 
 
+def _reconciliation_status(*, item: PlanItem) -> str:
+    if item.delta_shares == 0:
+        return "no_op"
+    if ORDER_SIDE_BY_CLASSIFICATION.get(item.classification) is not None and not item.blockers:
+        return "actionable"
+    return "drift"
+
+
+def _signal_target_payload(signal: Any) -> dict[str, Any]:
+    return {
+        "action": signal.action,
+        "desired_target_shares": signal.desired_target_shares,
+        "event_id": signal.event_id,
+        "next_rebalance": signal.next_rebalance,
+        "raw_target_shares": signal.target_shares,
+        "resize_new_shares": signal.resize_new_shares,
+        "symbol": signal.symbol,
+    }
+
+
 def _reconciliation_items(plan: ExecutionPlan) -> list[dict[str, Any]]:
-    return [
-        {
-            "action": item.classification,
-            "current_position": item.current_broker_shares,
-            "delta_to_target": item.delta_shares,
-            "estimated_notional": item.estimated_notional,
-            "reference_price": item.reference_price,
-            "symbol": item.symbol,
-            "target_shares": item.desired_target_shares,
-            "warnings": list(item.warnings),
-            "blockers": list(item.blockers),
-        }
-        for item in plan.items
-    ]
+    payload: list[dict[str, Any]] = []
+    for item in plan.items:
+        status = _reconciliation_status(item=item)
+        payload.append(
+            {
+                "action": item.classification,
+                "blockers": list(item.blockers),
+                "broker_current_position": item.current_broker_shares,
+                "current_position": item.current_broker_shares,
+                "delta_to_target": item.delta_shares,
+                "estimated_notional": item.estimated_notional,
+                "has_drift": item.delta_shares != 0,
+                "is_actionable": status == "actionable",
+                "is_noop": status == "no_op",
+                "reconciliation_status": status,
+                "reference_price": item.reference_price,
+                "signal_target_shares": item.desired_target_shares,
+                "symbol": item.symbol,
+                "target_shares": item.desired_target_shares,
+                "warnings": list(item.warnings),
+            }
+        )
+    return payload
 
 
 def _proposed_orders(plan: ExecutionPlan, *, account_id: str, config: IbkrShadowConfig) -> list[dict[str, Any]]:
@@ -699,6 +730,115 @@ def _decision_summary(*, proposed_orders: list[dict[str, Any]]) -> str:
         return "HOLD"
     rendered = [f"would {order['action']} {order['quantity']} {order['symbol']}" for order in proposed_orders]
     return "; ".join(rendered)
+
+
+def _count_nonzero_broker_positions(snapshot: BrokerSnapshot) -> int:
+    return sum(1 for position in snapshot.positions.values() if position.shares != 0)
+
+
+def _reconciliation_summary(
+    *,
+    reconciliation_items: list[dict[str, Any]],
+    proposed_orders: list[dict[str, Any]],
+    managed_symbol_count: int,
+    broker_position_symbol_count: int,
+    blockers: list[str],
+) -> dict[str, Any]:
+    drift_symbol_count = sum(1 for item in reconciliation_items if item["has_drift"])
+    noop_symbol_count = sum(1 for item in reconciliation_items if item["is_noop"])
+    actionable_symbol_count = sum(1 for item in reconciliation_items if item["is_actionable"])
+    proposed_order_count = len(proposed_orders)
+    has_drift = drift_symbol_count > 0
+    is_noop = not has_drift and proposed_order_count == 0
+    if is_noop:
+        action_state = "no_op"
+    elif proposed_order_count > 0 and not blockers:
+        action_state = "actionable"
+    else:
+        action_state = "drift"
+    return {
+        "action_state": action_state,
+        "actionable_symbol_count": actionable_symbol_count,
+        "broker_position_symbol_count": broker_position_symbol_count,
+        "drift_symbol_count": drift_symbol_count,
+        "has_drift": has_drift,
+        "is_noop": is_noop,
+        "managed_symbol_count": managed_symbol_count,
+        "noop_symbol_count": noop_symbol_count,
+        "proposed_order_count": proposed_order_count,
+    }
+
+
+def _shadow_action_fingerprint(
+    *,
+    account_id: str,
+    allowed_symbols: tuple[str, ...],
+    signal_target: dict[str, Any],
+    reconciliation_items: list[dict[str, Any]],
+    proposed_orders: list[dict[str, Any]],
+    reconciliation_summary: dict[str, Any],
+) -> str:
+    fingerprint_payload = {
+        "account_id": account_id,
+        "allowed_symbols": list(allowed_symbols),
+        "proposed_orders": [
+            {
+                "action": order["action"],
+                "classification": order["classification"],
+                "current_position": order["current_position"],
+                "delta_to_target": order["delta_to_target"],
+                "quantity": order["quantity"],
+                "symbol": order["symbol"],
+                "target_shares": order["target_shares"],
+            }
+            for order in sorted(
+                proposed_orders,
+                key=lambda item: (
+                    str(item["symbol"]),
+                    str(item["action"]),
+                    int(item["quantity"]),
+                    int(item["target_shares"]),
+                    int(item["current_position"]),
+                ),
+            )
+        ],
+        "reconciliation_items": [
+            {
+                "action": item["action"],
+                "broker_current_position": item["broker_current_position"],
+                "delta_to_target": item["delta_to_target"],
+                "reconciliation_status": item["reconciliation_status"],
+                "signal_target_shares": item["signal_target_shares"],
+                "symbol": item["symbol"],
+            }
+            for item in sorted(
+                reconciliation_items,
+                key=lambda current: (
+                    str(current["symbol"]),
+                    str(current["action"]),
+                    int(current["signal_target_shares"]),
+                    int(current["broker_current_position"]),
+                ),
+            )
+        ],
+        "reconciliation_summary": {
+            "action_state": reconciliation_summary["action_state"],
+            "broker_position_symbol_count": reconciliation_summary["broker_position_symbol_count"],
+            "drift_symbol_count": reconciliation_summary["drift_symbol_count"],
+            "has_drift": reconciliation_summary["has_drift"],
+            "is_noop": reconciliation_summary["is_noop"],
+            "managed_symbol_count": reconciliation_summary["managed_symbol_count"],
+            "noop_symbol_count": reconciliation_summary["noop_symbol_count"],
+            "proposed_order_count": reconciliation_summary["proposed_order_count"],
+        },
+        "signal_target": signal_target,
+    }
+    digest_payload = json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()
+
+
+def _render_action_state(value: str) -> str:
+    return str(value).replace("_", "-")
 
 
 def build_ibkr_shadow_report(
@@ -746,16 +886,35 @@ def build_ibkr_shadow_report(
         baseline_signal_capital=DEFAULT_SIGNAL_BASELINE_CAPITAL,
     )
     plan_payload = execution_plan_to_dict(plan)
+    signal_target = _signal_target_payload(signal)
     reconciliation_items = _reconciliation_items(plan)
     proposed_orders = _proposed_orders(plan, account_id=snapshot.resolved_account_id, config=config)
+    broker_position_symbol_count = _count_nonzero_broker_positions(snapshot.broker_snapshot)
+    reconciliation_summary = _reconciliation_summary(
+        reconciliation_items=reconciliation_items,
+        proposed_orders=proposed_orders,
+        managed_symbol_count=len(normalized_allowed_symbols),
+        broker_position_symbol_count=broker_position_symbol_count,
+        blockers=list(plan.blockers),
+    )
+    shadow_action_fingerprint = _shadow_action_fingerprint(
+        account_id=snapshot.resolved_account_id,
+        allowed_symbols=normalized_allowed_symbols,
+        signal_target=signal_target,
+        reconciliation_items=reconciliation_items,
+        proposed_orders=proposed_orders,
+        reconciliation_summary=reconciliation_summary,
+    )
 
     return {
+        "action_state": reconciliation_summary["action_state"],
         "allowed_symbols": list(normalized_allowed_symbols),
         "archive_manifest_path": None,
         "broker_account": {
             "account_id": snapshot.resolved_account_id,
             "available_accounts": list(snapshot.available_accounts),
         },
+        "broker_position_symbol_count": broker_position_symbol_count,
         "broker_snapshot": {
             "account_id": snapshot.broker_snapshot.account_id,
             "as_of": snapshot.broker_snapshot.as_of,
@@ -780,15 +939,22 @@ def build_ibkr_shadow_report(
         },
         "execution_plan": plan_payload,
         "generated_at_chicago": generated_at.isoformat(),
+        "has_drift": reconciliation_summary["has_drift"],
+        "is_noop": reconciliation_summary["is_noop"],
+        "managed_symbol_count": len(normalized_allowed_symbols),
         "no_submit": True,
         "paper_endpoint_used": f"{config.host}:{config.port}",
+        "proposed_order_count": len(proposed_orders),
         "proposed_orders": proposed_orders,
         "raw_account_summary": list(snapshot.raw_account_summary),
         "raw_positions": list(snapshot.raw_positions),
         "reconciliation_items": reconciliation_items,
+        "reconciliation_summary": reconciliation_summary,
         "schema_name": IBKR_SHADOW_SCHEMA_NAME,
         "schema_version": IBKR_SHADOW_SCHEMA_VERSION,
         "signal": dict(signal_raw),
+        "signal_target": signal_target,
+        "shadow_action_fingerprint": shadow_action_fingerprint,
         "simulation_only": True,
         "sizing_mode": sizing_mode,
         "source": {
@@ -807,12 +973,23 @@ def build_ibkr_shadow_report(
 
 
 def render_ibkr_shadow_text(payload: dict[str, Any]) -> str:
+    summary = payload.get("reconciliation_summary") or {}
     lines = [
         f"IBKR paper shadow {payload['source']['label']}",
         f"Endpoint: {payload['paper_endpoint_used']} client_id={payload['endpoint_used']['client_id']}",
         f"Account: {payload['broker_account']['account_id']}",
         f"Mode: simulation-only / no-submit",
         f"Timestamp: {payload['generated_at_chicago']}",
+        "Signal target: "
+        f"{payload['signal_target']['symbol']} "
+        f"action={payload['signal_target']['action']} "
+        f"target={payload['signal_target']['desired_target_shares']}",
+        f"Run state: {_render_action_state(payload.get('action_state', 'drift'))}",
+        "Drift: "
+        f"{summary.get('drift_symbol_count', 0)} drifted, "
+        f"{summary.get('noop_symbol_count', 0)} no-op, "
+        f"{summary.get('actionable_symbol_count', 0)} actionable",
+        f"Orders: {payload.get('proposed_order_count', 0)} proposed",
         f"Decision: {payload['decision_summary']}",
     ]
     blockers = payload.get("blockers") or []
@@ -821,20 +998,21 @@ def render_ibkr_shadow_text(payload: dict[str, Any]) -> str:
         lines.append("Blockers: " + ", ".join(str(item) for item in blockers))
     if warnings:
         lines.append("Warnings: " + ", ".join(str(item) for item in warnings))
-    if payload.get("proposed_orders"):
-        for order in payload["proposed_orders"]:
-            lines.append(
-                "Proposed: "
-                f"{order['action']} {order['quantity']} {order['symbol']} "
-                f"(current {order['current_position']} -> target {order['target_shares']}, "
-                f"delta {order['delta_to_target']:+d})"
-            )
-    else:
-        for item in payload.get("reconciliation_items") or []:
+    reconciliation_items = payload.get("reconciliation_items") or []
+    if reconciliation_items:
+        for item in reconciliation_items:
             lines.append(
                 "Reconciliation: "
-                f"{item['symbol']} {item['action']} "
-                f"(current {item['current_position']} -> target {item['target_shares']}, "
+                f"{item['symbol']} {_render_action_state(item['reconciliation_status'])} "
+                f"(target {item['signal_target_shares']}, "
+                f"current {item['broker_current_position']}, "
                 f"delta {item['delta_to_target']:+d})"
             )
+    else:
+        lines.append("Reconciliation: no managed symbol drift detected")
+    if payload.get("proposed_orders"):
+        rendered_orders = [f"{order['action']} {order['quantity']} {order['symbol']}" for order in payload["proposed_orders"]]
+        lines.append("Proposed orders: " + "; ".join(rendered_orders))
+    else:
+        lines.append("Proposed orders: none")
     return "\n".join(lines)

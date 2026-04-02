@@ -81,6 +81,7 @@ def _archive_report(
     payload: dict[str, Any],
     archive_root: Path | None,
 ) -> dict[str, Any]:
+    summary_text = render_ibkr_shadow_text(payload)
     try:
         archived = write_run_archive(
             timestamp=payload["generated_at_chicago"],
@@ -93,6 +94,7 @@ def _archive_report(
                 payload["paper_endpoint_used"],
             ],
             manifest_fields={
+                "account_id": payload["broker_account"].get("account_id"),
                 "strategy": payload["signal"].get("strategy"),
                 "symbol": payload["signal"].get("symbol"),
                 "action": payload["signal"].get("action"),
@@ -100,7 +102,16 @@ def _archive_report(
                 "resize_new_shares": payload["signal"].get("resize_new_shares"),
                 "next_rebalance": payload["signal"].get("next_rebalance"),
                 "event_id": payload["signal"].get("event_id"),
+                "endpoint_used": payload.get("endpoint_used"),
                 "decision_summary": payload.get("decision_summary"),
+                "action_state": payload.get("action_state"),
+                "has_drift": payload.get("has_drift"),
+                "is_noop": payload.get("is_noop"),
+                "proposed_order_count": payload.get("proposed_order_count"),
+                "managed_symbol_count": payload.get("managed_symbol_count"),
+                "broker_position_symbol_count": payload.get("broker_position_symbol_count"),
+                "reconciliation_summary": payload.get("reconciliation_summary"),
+                "shadow_action_fingerprint": payload.get("shadow_action_fingerprint"),
                 "simulation_only": True,
                 "no_submit": True,
                 "paper_endpoint_used": payload.get("paper_endpoint_used"),
@@ -115,6 +126,9 @@ def _archive_report(
             },
             json_artifacts={
                 "shadow_execution_report": payload,
+            },
+            text_artifacts={
+                "summary_text": summary_text,
             },
             preferred_root=archive_root,
         )
