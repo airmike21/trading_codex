@@ -46,7 +46,7 @@ Operate from a saved signal payload:
   --allowed-symbols SPY,QQQ,IWM,EFA,BIL
 ```
 
-Shadow execution v1 against the confirmed WSL Paper TWS socket. This is read-only and no-submit only:
+Shadow execution v1 against the confirmed WSL Paper TWS socket. This path uses the IBKR TWS / IB Gateway socket API via `ibapi`, not the Client Portal Gateway. It is read-only and no-submit only:
 
 ```bash
 .venv/bin/python scripts/ibkr_shadow_paper.py --emit json \
@@ -60,6 +60,14 @@ Defaults for the shadow path:
 - port `7497`
 - market orders are translated only as a proposed IBKR order shape
 - no orders are placed and no broker/account state is mutated
+
+Shadow command prerequisites:
+
+- TWS or IB Gateway must be running in paper mode
+- API access for socket clients must be enabled in TWS / IB Gateway
+- the socket endpoint must match the configured host / port; the default is `172.26.192.1:7497`
+- `ibapi` must be installed in the repo environment used to run `.venv/bin/python scripts/ibkr_shadow_paper.py`
+- the Client Portal Gateway environment variables above are not used by `scripts/ibkr_shadow_paper.py`
 
 The shadow payload includes:
 

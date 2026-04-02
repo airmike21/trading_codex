@@ -11,6 +11,7 @@ from trading_codex.execution.ibkr_shadow_paper import (
     DEFAULT_IBKR_SHADOW_PORT,
     IbkrShadowConfig,
     IbkrShadowSnapshot,
+    _resolve_shadow_account,
     build_ibkr_shadow_report,
     load_ibkr_shadow_config,
 )
@@ -133,6 +134,41 @@ def _snapshot(*, positions: dict[str, int], cash: float = 10_000.0, buying_power
 def test_load_ibkr_shadow_config_refuses_non_paper_port() -> None:
     with pytest.raises(ValueError, match="paper TWS port 7497"):
         load_ibkr_shadow_config(port=7496)
+
+
+def test_load_ibkr_shadow_config_refuses_non_du_account() -> None:
+    with pytest.raises(ValueError, match="explicit paper DU account ids"):
+        load_ibkr_shadow_config(account_id="U123456")
+
+
+def test_resolve_shadow_account_rejects_only_live_account() -> None:
+    with pytest.raises(ValueError, match="not a paper DU account"):
+        _resolve_shadow_account(
+            configured_account_id=None,
+            available_accounts=("U123456",),
+            raw_positions=[],
+            raw_account_summary=[],
+        )
+
+
+def test_resolve_shadow_account_rejects_multiple_du_accounts_without_config() -> None:
+    with pytest.raises(ValueError, match="Multiple paper accounts were reported by TWS"):
+        _resolve_shadow_account(
+            configured_account_id=None,
+            available_accounts=("DU111111", "DU222222"),
+            raw_positions=[],
+            raw_account_summary=[],
+        )
+
+
+def test_resolve_shadow_account_rejects_configured_du_missing_from_tws_list() -> None:
+    with pytest.raises(ValueError, match="Configured paper account 'DU999999' was not reported by TWS"):
+        _resolve_shadow_account(
+            configured_account_id="DU999999",
+            available_accounts=("DU111111",),
+            raw_positions=[],
+            raw_account_summary=[],
+        )
 
 
 def test_build_ibkr_shadow_report_maps_buy_order_shape_without_submit() -> None:
