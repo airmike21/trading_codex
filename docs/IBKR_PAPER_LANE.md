@@ -74,8 +74,12 @@ The shadow payload includes:
 - endpoint used
 - timestamp
 - `simulation_only` / `no_submit`
-- symbol, action, target shares, current position, and delta-to-target reconciliation fields
+- signal target metadata plus broker current position and delta-to-target reconciliation fields
+- explicit shadow reconciliation summary fields such as `action_state`, `has_drift`, `is_noop`, `proposed_order_count`, `managed_symbol_count`, and `broker_position_symbol_count`
+- a deterministic `shadow_action_fingerprint` for repeated identical shadow action sets
 - intended IBKR order shape for each proposed order
+
+The archived shadow run now also carries additive manifest metadata for the endpoint, account id, no-submit status, proposed-order count, drift/no-op summary, and a concise text summary artifact.
 
 ## Durable Local State
 
