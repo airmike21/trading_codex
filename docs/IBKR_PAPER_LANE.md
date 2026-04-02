@@ -54,6 +54,22 @@ Shadow execution v1 against the confirmed WSL Paper TWS socket. This path uses t
   --preset dual_mom_vol10_cash_core
 ```
 
+Manual shadow-loop change detection wrapper. Each invocation runs the same no-submit shadow path once, persists the last full `shadow_action_fingerprint` locally, and reports `first_seen`, `unchanged`, or `changed`:
+
+```bash
+.venv/bin/python scripts/ibkr_shadow_loop.py --emit json \
+  --ibkr-account-id DUXXXXXXX \
+  --preset dual_mom_vol10_cash_core
+```
+
+Wrapper notes:
+
+- manual invocation only; no scheduler, daemon, or polling loop is introduced
+- text output is a single concise line with `state`, `change`, and short fingerprint fields
+- JSON output includes the full `shadow_action_fingerprint`, additive `shadow_action_fingerprint_short`, and `change_status`
+- local change-detection state defaults to the same durable path policy used elsewhere: `~/.trading_codex`, then `~/.cache/trading_codex`, then `/tmp/trading_codex`
+- override the persisted change-detection state location with `--state-dir` or `--state-file`; override the logical key with `--state-key`
+
 Defaults for the shadow path:
 
 - host `172.26.192.1`
