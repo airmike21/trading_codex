@@ -105,6 +105,7 @@ def _archive_report(
                 "endpoint_used": payload.get("endpoint_used"),
                 "decision_summary": payload.get("decision_summary"),
                 "action_state": payload.get("action_state"),
+                "has_blockers": payload.get("has_blockers"),
                 "has_drift": payload.get("has_drift"),
                 "is_noop": payload.get("is_noop"),
                 "proposed_order_count": payload.get("proposed_order_count"),

@@ -86,13 +86,30 @@ class FakeShadowClient:
 
 
 def _snapshot(*, positions: dict[str, int], cash: float = 10_000.0, buying_power: float = 10_000.0, net_liquidation: float = 10_000.0) -> IbkrShadowSnapshot:
+    return _snapshot_with_metadata(
+        positions=positions,
+        cash=cash,
+        buying_power=buying_power,
+        net_liquidation=net_liquidation,
+    )
+
+
+def _snapshot_with_metadata(
+    *,
+    positions: dict[str, int],
+    instrument_types: dict[str, str] | None = None,
+    underlying_symbols: dict[str, str] | None = None,
+    cash: float = 10_000.0,
+    buying_power: float = 10_000.0,
+    net_liquidation: float = 10_000.0,
+) -> IbkrShadowSnapshot:
     broker_positions = {
         symbol: BrokerPosition(
             symbol=symbol,
             shares=shares,
             price=100.0,
-            instrument_type="Equity",
-            underlying_symbol=symbol,
+            instrument_type=(instrument_types or {}).get(symbol, "Equity"),
+            underlying_symbol=(underlying_symbols or {}).get(symbol, symbol),
             raw={"symbol": symbol, "shares": shares},
         )
         for symbol, shares in positions.items()
@@ -118,7 +135,7 @@ def _snapshot(*, positions: dict[str, int], cash: float = 10_000.0, buying_power
                 "account": ACCOUNT_ID,
                 "symbol": symbol,
                 "position": float(shares),
-                "secType": "STK",
+                "secType": "OPT" if (instrument_types or {}).get(symbol, "Equity").lower() == "option" else "STK",
                 "avgCost": 100.0,
             }
             for symbol, shares in positions.items()
@@ -192,6 +209,7 @@ def test_build_ibkr_shadow_report_maps_buy_order_shape_without_submit() -> None:
     assert payload["simulation_only"] is True
     assert payload["no_submit"] is True
     assert payload["action_state"] == "actionable"
+    assert payload["has_blockers"] is False
     assert payload["has_drift"] is True
     assert payload["is_noop"] is False
     assert payload["decision_summary"] == "would BUY 100 SPY"
@@ -211,8 +229,11 @@ def test_build_ibkr_shadow_report_maps_buy_order_shape_without_submit() -> None:
     assert payload["reconciliation_summary"] == {
         "action_state": "actionable",
         "actionable_symbol_count": 1,
+        "blocked_symbol_count": 0,
+        "blocker_count": 0,
         "broker_position_symbol_count": 0,
         "drift_symbol_count": 1,
+        "has_blockers": False,
         "has_drift": True,
         "is_noop": False,
         "managed_symbol_count": len(ALLOWED_SYMBOLS),
@@ -227,6 +248,7 @@ def test_build_ibkr_shadow_report_maps_buy_order_shape_without_submit() -> None:
             "current_position": 0,
             "delta_to_target": 100,
             "estimated_notional": 10000.0,
+            "has_blockers": False,
             "has_drift": True,
             "is_actionable": True,
             "is_noop": False,
@@ -296,6 +318,7 @@ def test_build_ibkr_shadow_report_matching_position_is_noop() -> None:
     )
 
     assert payload["action_state"] == "no_op"
+    assert payload["has_blockers"] is False
     assert payload["has_drift"] is False
     assert payload["is_noop"] is True
     assert payload["decision_summary"] == "HOLD"
@@ -304,8 +327,11 @@ def test_build_ibkr_shadow_report_matching_position_is_noop() -> None:
     assert payload["reconciliation_summary"] == {
         "action_state": "no_op",
         "actionable_symbol_count": 0,
+        "blocked_symbol_count": 0,
+        "blocker_count": 0,
         "broker_position_symbol_count": 1,
         "drift_symbol_count": 0,
+        "has_blockers": False,
         "has_drift": False,
         "is_noop": True,
         "managed_symbol_count": len(ALLOWED_SYMBOLS),
@@ -341,6 +367,7 @@ def test_build_ibkr_shadow_report_cash_signal_emits_sell_shadow_order() -> None:
 
     assert payload["decision_summary"] == "would SELL 37 SPY"
     assert payload["action_state"] == "actionable"
+    assert payload["has_blockers"] is False
     assert payload["has_drift"] is True
     assert payload["is_noop"] is False
     assert payload["proposed_orders"][0]["action"] == "SELL"
@@ -352,6 +379,97 @@ def test_build_ibkr_shadow_report_cash_signal_emits_sell_shadow_order() -> None:
     assert payload["reconciliation_items"][0]["delta_to_target"] == -37
     assert payload["signal_target"]["symbol"] == "CASH"
     assert payload["signal_target"]["desired_target_shares"] == 0
+
+
+def test_build_ibkr_shadow_report_blocked_by_managed_unsupported_position() -> None:
+    client = FakeShadowClient(
+        _snapshot_with_metadata(
+            positions={"SPY": 10},
+            instrument_types={"SPY": "Option"},
+            underlying_symbols={"SPY": "SPY"},
+        )
+    )
+    config = IbkrShadowConfig(account_id=ACCOUNT_ID)
+    signal = _signal_payload(action="EXIT", symbol="CASH", price=None, target_shares=0)
+
+    payload = build_ibkr_shadow_report(
+        client=client,
+        config=config,
+        allowed_symbols={"SPY", "BIL"},
+        signal_raw=signal,
+        source_kind="test",
+        source_label="shadow_blocked_unsupported",
+        source_ref=None,
+        data_dir=None,
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["action_state"] == "blocked"
+    assert payload["has_blockers"] is True
+    assert payload["has_drift"] is False
+    assert payload["is_noop"] is False
+    assert payload["proposed_order_count"] == 0
+    assert payload["reconciliation_items"] == []
+    assert "managed_unsupported_positions_present" in payload["blockers"]
+    assert "managed_unsupported_symbols:SPY" in payload["blockers"]
+    assert payload["reconciliation_summary"] == {
+        "action_state": "blocked",
+        "actionable_symbol_count": 0,
+        "blocked_symbol_count": 0,
+        "blocker_count": 2,
+        "broker_position_symbol_count": 1,
+        "drift_symbol_count": 0,
+        "has_blockers": True,
+        "has_drift": False,
+        "is_noop": False,
+        "managed_symbol_count": 2,
+        "noop_symbol_count": 0,
+        "proposed_order_count": 0,
+    }
+    text = render_ibkr_shadow_text(payload)
+    assert "Run state: blocked" in text
+    assert "Blockers: managed_unsupported_positions_present, managed_unsupported_symbols:SPY" in text
+    assert "Reconciliation: blocked before managed-symbol reconciliation items were produced" in text
+    assert "no managed symbol drift detected" not in text
+
+
+def test_build_ibkr_shadow_report_blocked_run_overrides_actionable_item_state() -> None:
+    client = FakeShadowClient(
+        _snapshot_with_metadata(
+            positions={"QQQ": 5},
+            instrument_types={"QQQ": "Option"},
+            underlying_symbols={"QQQ": "QQQ"},
+        )
+    )
+    config = IbkrShadowConfig(account_id=ACCOUNT_ID)
+    signal = _signal_payload(action="ENTER", symbol="SPY", price=100.0, target_shares=100)
+
+    payload = build_ibkr_shadow_report(
+        client=client,
+        config=config,
+        allowed_symbols=ALLOWED_SYMBOLS,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="shadow_blocked_actionable_item",
+        source_ref=None,
+        data_dir=None,
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["action_state"] == "blocked"
+    assert payload["has_blockers"] is True
+    assert payload["is_noop"] is False
+    assert payload["has_drift"] is True
+    assert payload["proposed_order_count"] == 1
+    assert payload["reconciliation_summary"]["actionable_symbol_count"] == 0
+    assert payload["reconciliation_summary"]["blocked_symbol_count"] == 1
+    assert payload["reconciliation_items"][0]["symbol"] == "SPY"
+    assert payload["reconciliation_items"][0]["reconciliation_status"] == "blocked"
+    assert payload["reconciliation_items"][0]["is_actionable"] is False
+    assert payload["reconciliation_items"][0]["has_blockers"] is True
+    text = render_ibkr_shadow_text(payload)
+    assert "Run state: blocked" in text
+    assert "Reconciliation: SPY blocked (target 100, current 0, delta +100)" in text
 
 
 def test_build_ibkr_shadow_report_fingerprint_is_stable_for_repeated_identical_shadow_actions() -> None:
@@ -384,6 +502,44 @@ def test_build_ibkr_shadow_report_fingerprint_is_stable_for_repeated_identical_s
     assert first_payload["shadow_action_fingerprint"] == second_payload["shadow_action_fingerprint"]
     assert first_payload["reconciliation_summary"] == second_payload["reconciliation_summary"]
     assert first_payload["proposed_orders"] == second_payload["proposed_orders"]
+
+
+def test_build_ibkr_shadow_report_fingerprint_differs_between_blocked_and_non_blocked_runs() -> None:
+    config = IbkrShadowConfig(account_id=ACCOUNT_ID)
+    signal = _signal_payload(action="ENTER", symbol="SPY", price=100.0, target_shares=100)
+
+    non_blocked_payload = build_ibkr_shadow_report(
+        client=FakeShadowClient(_snapshot(positions={})),
+        config=config,
+        allowed_symbols=ALLOWED_SYMBOLS,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="shadow_fingerprint_open",
+        source_ref=None,
+        data_dir=None,
+        timestamp=TIMESTAMP,
+    )
+    blocked_payload = build_ibkr_shadow_report(
+        client=FakeShadowClient(
+            _snapshot_with_metadata(
+                positions={"QQQ": 5},
+                instrument_types={"QQQ": "Option"},
+                underlying_symbols={"QQQ": "QQQ"},
+            )
+        ),
+        config=config,
+        allowed_symbols=ALLOWED_SYMBOLS,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="shadow_fingerprint_blocked",
+        source_ref=None,
+        data_dir=None,
+        timestamp=TIMESTAMP,
+    )
+
+    assert non_blocked_payload["action_state"] == "actionable"
+    assert blocked_payload["action_state"] == "blocked"
+    assert non_blocked_payload["shadow_action_fingerprint"] != blocked_payload["shadow_action_fingerprint"]
 
 
 def test_ibkr_shadow_paper_cli_json_archives_and_defaults_no_submit(
@@ -431,6 +587,7 @@ def test_ibkr_shadow_paper_cli_json_archives_and_defaults_no_submit(
     assert payload["no_submit"] is True
     assert payload["paper_endpoint_used"] == f"{DEFAULT_IBKR_SHADOW_HOST}:{DEFAULT_IBKR_SHADOW_PORT}"
     assert payload["action_state"] == "actionable"
+    assert payload["has_blockers"] is False
     assert payload["has_drift"] is True
     assert payload["is_noop"] is False
     assert payload["decision_summary"] == "would BUY 100 SPY"
@@ -447,14 +604,18 @@ def test_ibkr_shadow_paper_cli_json_archives_and_defaults_no_submit(
     assert manifest["simulation_only"] is True
     assert manifest["no_submit"] is True
     assert manifest["decision_summary"] == "would BUY 100 SPY"
+    assert manifest["has_blockers"] is False
     assert manifest["proposed_order_count"] == 1
     assert manifest["has_drift"] is True
     assert manifest["is_noop"] is False
     assert manifest["reconciliation_summary"] == {
         "action_state": "actionable",
         "actionable_symbol_count": 1,
+        "blocked_symbol_count": 0,
+        "blocker_count": 0,
         "broker_position_symbol_count": 0,
         "drift_symbol_count": 1,
+        "has_blockers": False,
         "has_drift": True,
         "is_noop": False,
         "managed_symbol_count": 2,
