@@ -38,6 +38,14 @@ Apply from the primary preset:
 .venv/bin/python scripts/ibkr_paper_lane.py --emit json apply --preset dual_mom_vol10_cash_core
 ```
 
+Socket API reachability and handshake smoke test from WSL before shadow execution:
+
+```bash
+.venv/bin/python scripts/test_ibkr_connection.py --host 172.26.192.1 --port 7497 --client-id 999
+```
+
+The TCP probe always runs. The IBKR handshake step requires `ibapi` to be importable in the repo environment and otherwise fails closed.
+
 Operate from a saved signal payload:
 
 ```bash
