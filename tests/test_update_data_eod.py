@@ -165,7 +165,7 @@ def test_main_stooq_writes_localstore(monkeypatch, tmp_path: Path) -> None:
     assert len(df) == 3
 
 
-def test_fetch_stooq_bars_uses_stooq_provider_and_not_tastytrade(monkeypatch) -> None:
+def test_fetch_stooq_bars_uses_current_stooq_download_export_and_not_tastytrade(monkeypatch) -> None:
     assert update_data_eod.StooqDataSource.__module__ == "trading_codex.data.providers.stooq"
 
     def fail_if_called(*args, **kwargs) -> pd.DataFrame:
@@ -176,7 +176,7 @@ def test_fetch_stooq_bars_uses_stooq_provider_and_not_tastytrade(monkeypatch) ->
             self.text = text
             self.status_code = 200
             self.headers = {"content-type": "text/csv"}
-            self.url = "https://stooq.com/q/d/l/?s=spy.us&i=d"
+            self.url = "https://stooq.com/q/l/?s=spy.us&f=sd2t2ohlcv&h=&e=csv"
 
         def raise_for_status(self) -> None:
             return None
@@ -189,12 +189,12 @@ def test_fetch_stooq_bars_uses_stooq_provider_and_not_tastytrade(monkeypatch) ->
         timeout: float,
     ) -> FakeResponse:
         assert url == StooqDataSource.BASE_URL
-        assert params == {"s": "spy.us", "i": "d"}
+        assert params == {"s": "spy.us", "f": "sd2t2ohlcv", "h": "", "e": "csv"}
         assert timeout == 9.5
         return FakeResponse(
-            "Date,Open,High,Low,Close,Volume\n"
-            "2024-01-02,100,101,99,100.5,12345\n"
-            "2024-01-03,101,102,100,101.5,23456\n"
+            "Symbol,Date,Time,Open,High,Low,Close,Volume\n"
+            "SPY.US,2024-01-02,22:00:21,100,101,99,100.5,12345\n"
+            "SPY.US,2024-01-03,22:00:21,101,102,100,101.5,23456\n"
         )
 
     monkeypatch.setattr(TastytradeDataSource, "get_daily_bars", fail_if_called)
@@ -219,7 +219,7 @@ def test_stooq_provider_empty_response_raises_explicit_error(monkeypatch) -> Non
             self.text = ""
             self.status_code = 200
             self.headers = {"content-type": "text/html"}
-            self.url = "https://stooq.com/q/d/l/?s=spy.us&i=d"
+            self.url = "https://stooq.com/q/l/?s=spy.us&f=sd2t2ohlcv&h=&e=csv"
 
         def raise_for_status(self) -> None:
             return None
@@ -240,7 +240,7 @@ def test_fetch_stooq_bars_empty_response_raises_explicit_error(monkeypatch) -> N
             self.text = ""
             self.status_code = 200
             self.headers = {"content-type": "text/html"}
-            self.url = "https://stooq.com/q/d/l/?s=spy.us&i=d"
+            self.url = "https://stooq.com/q/l/?s=spy.us&f=sd2t2ohlcv&h=&e=csv"
 
         def raise_for_status(self) -> None:
             return None
@@ -262,7 +262,7 @@ def test_main_stooq_fetch_error_is_explicit_and_nonzero(monkeypatch, tmp_path: P
     def fake_fetch(symbol: str, start: date, end: date, suffix: str, timeout: float) -> pd.DataFrame:
         raise ValueError(
             "Stooq returned an empty response body for symbol 'SPY' "
-            "(url=https://stooq.com/q/d/l/?s=spy.us&i=d, status=200, content_type=text/html)."
+            "(url=https://stooq.com/q/l/?s=spy.us&f=sd2t2ohlcv&h=&e=csv, status=200, content_type=text/html)."
         )
 
     monkeypatch.setattr(update_data_eod, "_fetch_stooq_bars", fake_fetch)

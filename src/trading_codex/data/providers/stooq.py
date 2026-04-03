@@ -12,7 +12,8 @@ from trading_codex.data.datasource import DataSource
 class StooqDataSource(DataSource):
     """Daily bars provider backed by Stooq CSV downloads."""
 
-    BASE_URL = "https://stooq.com/q/d/l/"
+    BASE_URL = "https://stooq.com/q/l/"
+    EXPORT_FORMAT = "sd2t2ohlcv"
 
     def __init__(self, timeout: float = 30.0, symbol_suffix: str = ".us") -> None:
         self.session = requests.Session()
@@ -53,7 +54,12 @@ class StooqDataSource(DataSource):
     ) -> pd.DataFrame:
         response = self.session.get(
             self.BASE_URL,
-            params={"s": f"{symbol.lower()}{self.symbol_suffix}", "i": "d"},
+            params={
+                "s": f"{symbol.lower()}{self.symbol_suffix}",
+                "f": self.EXPORT_FORMAT,
+                "h": "",
+                "e": "csv",
+            },
             timeout=self.timeout,
         )
         response.raise_for_status()
