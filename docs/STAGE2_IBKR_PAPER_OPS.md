@@ -25,6 +25,33 @@ It does not add generalized broker abstraction.
 It does not open Stage 3 bench work.
 It does not turn the shadow no-submit lane into the main Stage 2 runner.
 
+Windows scheduled entrypoint for the same lane:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\trading_codex_stage2_ibkr_paper_daily_ops.ps1 `
+  -IbkrAccountId DUPXXXXXXX
+```
+
+Weekday Task Scheduler installer:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\install_stage2_ibkr_paper_daily_ops_task.ps1 `
+  -IbkrAccountId DUPXXXXXXX `
+  -StartTime 16:10
+```
+
+The Windows wrapper is the intended scheduled entrypoint for this Stage 2 lane.
+It keeps the existing retained artifact surface unchanged and adds only a fail-closed preflight before the daily run:
+
+- confirm `IBKR_PAPER_ACCOUNT_ID` or an explicit `-IbkrAccountId`
+- confirm the expected preset file path, defaulting to `configs/presets.example.json`
+- confirm the local Client Portal Gateway is reachable and explicitly reporting a paper session for the configured account
+
+If any preflight check fails, the wrapper exits non-zero before the daily runner starts.
+Scheduler-visible wrapper logs default to:
+
+- `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log`
+
 ## Review Command
 
 Text summary:

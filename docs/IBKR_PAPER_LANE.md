@@ -35,6 +35,29 @@ Repo-managed daily ops / forward-evidence runner:
 This runner keeps cumulative forward-evidence artifacts separate from the existing local paper-lane daily ops lane.
 See `docs/STAGE2_IBKR_PAPER_OPS.md` for the retained artifact locations, failure-closed behavior, and review workflow.
 
+Windows scheduled-entrypoint wrapper for the same Stage 2 lane:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\trading_codex_stage2_ibkr_paper_daily_ops.ps1 `
+  -IbkrAccountId DUPXXXXXXX
+```
+
+Scheduler installer for the weekday background task:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\install_stage2_ibkr_paper_daily_ops_task.ps1 `
+  -IbkrAccountId DUPXXXXXXX `
+  -StartTime 16:10
+```
+
+Windows wrapper notes:
+
+- the wrapper is the single intended scheduled entrypoint for the Stage 2 IBKR PaperTrader daily ops lane
+- it defaults to the repo-managed `configs/presets.example.json` path instead of silently switching between preset files
+- before daily ops it runs a fail-closed preflight that verifies the configured paper account id, the expected preset file, and a reachable IBKR Client Portal Gateway session explicitly marked as paper
+- wrapper, preflight, and daily-ops output is appended to `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log` unless `-LogDir` overrides it
+- if the gateway is down, unauthenticated, not marked as paper, or missing the configured account, the wrapper exits non-zero before calling `scripts/ibkr_paper_lane_daily_ops.py`
+
 Read-only ops review for the retained forward-evidence lane:
 
 ```bash
