@@ -56,7 +56,7 @@ Run only the fail-closed preflight stage and stop before daily ops.
 WSL distro name. Default: `Ubuntu`.
 
 .PARAMETER WslRepoPath
-Repo path inside WSL. Default: `~/trading_codex`.
+Repo path inside WSL. Default: `~/.codex-workspaces/trading-builder`.
 
 .PARAMETER WslPython
 Python path inside WSL. Defaults to `<WslRepoPath>/.venv/bin/python`.
@@ -71,7 +71,7 @@ Show this help text.
 ./trading_codex_stage2_ibkr_paper_daily_ops.ps1 -IbkrAccountId DUPXXXXXXX
 
 .EXAMPLE
-./trading_codex_stage2_ibkr_paper_daily_ops.ps1 -PrintOnly -WslRepoPath ~/trading_codex
+./trading_codex_stage2_ibkr_paper_daily_ops.ps1 -PrintOnly -WslRepoPath ~/.codex-workspaces/trading-builder
 #>
 [CmdletBinding()]
 param(
@@ -89,7 +89,7 @@ param(
   [string]$LogDir,
   [switch]$PreflightOnly,
   [string]$WslDistro = "Ubuntu",
-  [string]$WslRepoPath = "~/trading_codex",
+  [string]$WslRepoPath = "~/.codex-workspaces/trading-builder",
   [string]$WslPython,
   [switch]$PrintOnly,
   [switch]$Help
