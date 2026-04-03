@@ -130,6 +130,7 @@ class FakeIbkrClient:
         order_statuses: dict[str, dict[str, object]] | None = None,
         order_status_errors: dict[str, Exception] | None = None,
         confirm_reply_responses: list[object] | None = None,
+        expected_account_id: str = ACCOUNT_ID,
     ) -> None:
         self.account_prep = copy.deepcopy(
             account_prep or _documented_account_prep(is_paper=True)
@@ -155,18 +156,19 @@ class FakeIbkrClient:
         self.order_status_requests: list[str] = []
         self.contract_requests: list[str] = []
         self.reply_requests: list[str] = []
+        self.expected_account_id = expected_account_id
 
     def ensure_account_access(self, *, account_id: str) -> dict[str, object]:
         self.ensure_calls.append(account_id)
         return copy.deepcopy(self.account_prep)
 
     def load_positions(self, *, account_id: str) -> list[dict[str, object]]:
-        assert account_id == ACCOUNT_ID
+        assert account_id == self.expected_account_id
         self.position_requests.append(account_id)
         return copy.deepcopy(self.positions)
 
     def load_summary(self, *, account_id: str) -> dict[str, object]:
-        assert account_id == ACCOUNT_ID
+        assert account_id == self.expected_account_id
         self.summary_requests.append(account_id)
         return copy.deepcopy(self.summary)
 
@@ -175,7 +177,7 @@ class FakeIbkrClient:
         return copy.deepcopy(self.contracts[symbol])
 
     def place_order(self, *, account_id: str, payload: dict[str, object]) -> object:
-        assert account_id == ACCOUNT_ID
+        assert account_id == self.expected_account_id
         self.place_order_payloads.append(copy.deepcopy(payload))
         if self.place_order_responses:
             return self.place_order_responses.pop(0)
@@ -195,8 +197,8 @@ class FakeIbkrClient:
         return copy.deepcopy(self.order_statuses[order_id])
 
 
-def _config() -> IbkrPaperClientConfig:
-    return IbkrPaperClientConfig(account_id=ACCOUNT_ID)
+def _config(*, account_id: str = ACCOUNT_ID) -> IbkrPaperClientConfig:
+    return IbkrPaperClientConfig(account_id=account_id)
 
 
 def _read_jsonl_records(path: Path) -> list[dict[str, object]]:
@@ -413,6 +415,125 @@ def test_ibkr_paper_status_accepts_custom_per_account_ispaper_metadata_shape(tmp
     assert payload["broker_account_prep"]["brokerage_accounts"]["selectedAccount"] == ACCOUNT_ID
     assert client.position_requests == [ACCOUNT_ID]
     assert client.summary_requests == [ACCOUNT_ID]
+
+
+def test_ibkr_paper_status_accepts_gateway_dup_account_id_shape_with_explicit_paper_metadata(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    gateway_account_id = "DUP652353"
+    client = FakeIbkrClient(
+        account_prep=_documented_account_prep(account_id=gateway_account_id, is_paper=True),
+        positions=[],
+        summary=_summary_payload(),
+        expected_account_id=gateway_account_id,
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    payload = build_ibkr_paper_status(
+        client=client,
+        config=_config(account_id=gateway_account_id),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="status_gateway_dup_shape",
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["broker_account"]["account_id"] == gateway_account_id
+    assert payload["broker_account_prep"]["brokerage_accounts"]["isPaper"] is True
+    assert payload["broker_account_prep"]["brokerage_accounts"]["selectedAccount"] == gateway_account_id
+    assert client.position_requests == [gateway_account_id]
+    assert client.summary_requests == [gateway_account_id]
+
+
+def test_ibkr_paper_status_refuses_gateway_dup_account_without_paper_session_metadata(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    gateway_account_id = "DUP652353"
+    client = FakeIbkrClient(
+        account_prep=_documented_account_prep(account_id=gateway_account_id, is_paper=False),
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_ibkr_paper_status(
+            client=client,
+            config=_config(account_id=gateway_account_id),
+            allowed_symbols=ALLOWED_SYMBOLS,
+            state_key=STATE_KEY,
+            base_dir=base_dir,
+            signal_raw=signal,
+            source_kind="test",
+            source_label="status_gateway_dup_non_paper",
+            timestamp=TIMESTAMP,
+        )
+
+    message = str(exc_info.value)
+    assert "verified as paper" in message
+    assert "brokerage_accounts.isPaper=False" in message
+    assert client.ensure_calls == [gateway_account_id]
+    assert client.position_requests == []
+    assert client.summary_requests == []
+
+
+def test_ibkr_paper_status_refuses_gateway_dup_account_when_selected_account_mismatches(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    gateway_account_id = "DUP652353"
+    client = FakeIbkrClient(
+        account_prep=_documented_account_prep(
+            account_id=gateway_account_id,
+            is_paper=True,
+            selected_account="DUP999999",
+        ),
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_ibkr_paper_status(
+            client=client,
+            config=_config(account_id=gateway_account_id),
+            allowed_symbols=ALLOWED_SYMBOLS,
+            state_key=STATE_KEY,
+            base_dir=base_dir,
+            signal_raw=signal,
+            source_kind="test",
+            source_label="status_gateway_dup_selected_account_mismatch",
+            timestamp=TIMESTAMP,
+        )
+
+    message = str(exc_info.value)
+    assert "selectedAccount='DUP999999' does not match configured account 'DUP652353'" in message
+    assert client.ensure_calls == [gateway_account_id]
+    assert client.position_requests == []
+    assert client.summary_requests == []
+
+
+def test_ibkr_paper_status_still_refuses_arbitrary_account_ids_even_with_paper_metadata(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    arbitrary_account_id = "ABC652353"
+    client = FakeIbkrClient(
+        account_prep=_documented_account_prep(account_id=arbitrary_account_id, is_paper=True),
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_ibkr_paper_status(
+            client=client,
+            config=_config(account_id=arbitrary_account_id),
+            allowed_symbols=ALLOWED_SYMBOLS,
+            state_key=STATE_KEY,
+            base_dir=base_dir,
+            signal_raw=signal,
+            source_kind="test",
+            source_label="status_arbitrary_account_id_rejected",
+            timestamp=TIMESTAMP,
+        )
+
+    message = str(exc_info.value)
+    assert "does not match the narrow Stage 2 PaperTrader DU/DUP paper account-id format" in message
+    assert client.ensure_calls == [arbitrary_account_id]
+    assert client.position_requests == []
+    assert client.summary_requests == []
 
 
 def test_ibkr_paper_apply_persists_acknowledged_submit_before_status_fetch(tmp_path: Path) -> None:

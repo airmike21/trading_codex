@@ -812,7 +812,8 @@ def _coerce_bool_like(value: object) -> bool | None:
 
 
 def _looks_like_ibkr_paper_account_id(account_id: str) -> bool:
-    return bool(re.fullmatch(r"DU[0-9]+", account_id.strip().upper()))
+    normalized = account_id.strip().upper()
+    return bool(re.fullmatch(r"DU(?:P)?[0-9]+", normalized))
 
 
 def _require_verified_paper_account(*, account_id: str, account_prep: dict[str, Any]) -> None:
@@ -820,7 +821,7 @@ def _require_verified_paper_account(*, account_id: str, account_prep: dict[str, 
     failure_reasons: list[str] = []
     if not _looks_like_ibkr_paper_account_id(normalized_account_id):
         failure_reasons.append(
-            f"configured account {normalized_account_id!r} does not match the narrow Stage 2 PaperTrader DU account-id format"
+            f"configured account {normalized_account_id!r} does not match the narrow Stage 2 PaperTrader DU/DUP paper account-id format"
         )
 
     paper_verified = False
