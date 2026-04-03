@@ -53,6 +53,8 @@ IBKR_PAPER_CLAIM_STATUS_SCHEMA_NAME = "ibkr_paper_lane_claim_status"
 IBKR_PAPER_CLAIM_STATUS_SCHEMA_VERSION = 1
 IBKR_PAPER_CLAIM_RESOLUTION_SCHEMA_NAME = "ibkr_paper_lane_claim_resolution"
 IBKR_PAPER_CLAIM_RESOLUTION_SCHEMA_VERSION = 1
+IBKR_PAPER_PREFLIGHT_SCHEMA_NAME = "ibkr_paper_lane_preflight"
+IBKR_PAPER_PREFLIGHT_SCHEMA_VERSION = 1
 
 CLAIM_RESOLUTION_MARK_APPLIED = "mark_applied"
 CLAIM_RESOLUTION_CLEAR_FOR_RETRY = "clear_for_retry"
@@ -273,6 +275,27 @@ class RequestsIbkrPaperClient:
 
 def build_ibkr_paper_client(*, config: IbkrPaperClientConfig) -> RequestsIbkrPaperClient:
     return RequestsIbkrPaperClient(config=config)
+
+
+def build_ibkr_paper_preflight(
+    *,
+    client: IbkrPaperClient,
+    config: IbkrPaperClientConfig,
+) -> dict[str, Any]:
+    account_prep = client.ensure_account_access(account_id=config.account_id)
+    if not isinstance(account_prep, dict):
+        raise ValueError("IBKR ensure_account_access must return a JSON object.")
+    _require_verified_paper_account(account_id=config.account_id, account_prep=account_prep)
+    return {
+        "schema_name": IBKR_PAPER_PREFLIGHT_SCHEMA_NAME,
+        "schema_version": IBKR_PAPER_PREFLIGHT_SCHEMA_VERSION,
+        "account_id": config.account_id,
+        "base_url": config.base_url,
+        "timeout_seconds": config.timeout_seconds,
+        "verify_ssl": config.verify_ssl,
+        "paper_verified": True,
+        "broker_account_prep": account_prep,
+    }
 
 
 def load_ibkr_paper_client_config(

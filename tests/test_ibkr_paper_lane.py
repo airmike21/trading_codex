@@ -13,6 +13,7 @@ from trading_codex.execution import ibkr_paper_lane as ibkr_paper_lane_execution
 from trading_codex.execution.ibkr_paper_lane import (
     IbkrPaperClientConfig,
     apply_ibkr_paper_signal,
+    build_ibkr_paper_preflight,
     build_ibkr_paper_claim_status,
     build_ibkr_paper_status,
     event_already_applied,
@@ -534,6 +535,41 @@ def test_ibkr_paper_status_still_refuses_arbitrary_account_ids_even_with_paper_m
     assert client.ensure_calls == [arbitrary_account_id]
     assert client.position_requests == []
     assert client.summary_requests == []
+
+
+def test_build_ibkr_paper_preflight_accepts_gateway_dup_account_with_explicit_paper_metadata() -> None:
+    gateway_account_id = "DUP652353"
+    client = FakeIbkrClient(
+        account_prep=_documented_account_prep(account_id=gateway_account_id, is_paper=True),
+        expected_account_id=gateway_account_id,
+    )
+
+    payload = build_ibkr_paper_preflight(
+        client=client,
+        config=_config(account_id=gateway_account_id),
+    )
+
+    assert payload["schema_name"] == "ibkr_paper_lane_preflight"
+    assert payload["paper_verified"] is True
+    assert payload["account_id"] == gateway_account_id
+    assert payload["broker_account_prep"]["brokerage_accounts"]["selectedAccount"] == gateway_account_id
+    assert client.ensure_calls == [gateway_account_id]
+
+
+def test_build_ibkr_paper_preflight_refuses_non_paper_gateway_session() -> None:
+    gateway_account_id = "DUP652353"
+    client = FakeIbkrClient(
+        account_prep=_documented_account_prep(account_id=gateway_account_id, is_paper=False),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        build_ibkr_paper_preflight(
+            client=client,
+            config=_config(account_id=gateway_account_id),
+        )
+
+    assert "verified as paper" in str(exc_info.value)
+    assert client.ensure_calls == [gateway_account_id]
 
 
 def test_ibkr_paper_apply_persists_acknowledged_submit_before_status_fetch(tmp_path: Path) -> None:
