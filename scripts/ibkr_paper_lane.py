@@ -20,13 +20,19 @@ except ImportError:  # pragma: no cover - direct script execution path
     import daily_signal  # type: ignore[no-redef]
 
 from trading_codex.execution.ibkr_paper_lane import (
+    CLAIM_RESOLUTION_CLEAR_FOR_RETRY,
+    CLAIM_RESOLUTION_MARK_APPLIED,
     DEFAULT_IBKR_PAPER_STATE_KEY,
     apply_ibkr_paper_signal,
     build_ibkr_paper_client,
+    build_ibkr_paper_claim_status,
     build_ibkr_paper_status,
     load_ibkr_paper_client_config,
     render_ibkr_paper_apply_text,
+    render_ibkr_paper_claim_resolution_text,
+    render_ibkr_paper_claim_status_text,
     render_ibkr_paper_status_text,
+    resolve_ibkr_paper_claim,
 )
 
 
@@ -239,6 +245,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Automatically confirm IBKR order warning replies during apply. Default is fail-closed into a pending claim.",
     )
 
+    claim_status_parser = subparsers.add_parser(
+        "claim-status",
+        help="Inspect a pending IBKR paper lane submit claim without mutating local lane state.",
+    )
+    claim_lookup_group = claim_status_parser.add_mutually_exclusive_group(required=True)
+    claim_lookup_group.add_argument("--event-id", type=str, default=None, help="Explicit event_id for a pending claim.")
+    claim_lookup_group.add_argument("--latest", action="store_true", help="Inspect the latest pending claim.")
+
+    claim_resolve_parser = subparsers.add_parser(
+        "claim-resolve",
+        help="Resolve one pending IBKR paper lane submit claim after operator review.",
+    )
+    claim_resolve_parser.add_argument("--event-id", type=str, required=True, help="Explicit event_id for a pending claim.")
+    claim_resolution_group = claim_resolve_parser.add_mutually_exclusive_group(required=True)
+    claim_resolution_group.add_argument(
+        "--mark-applied",
+        action="store_true",
+        help="Write an event receipt and remove the pending claim after verifying the event applied at IBKR.",
+    )
+    claim_resolution_group.add_argument(
+        "--clear-for-retry",
+        action="store_true",
+        help="Remove the pending claim without writing an event receipt when retry is safe.",
+    )
+
     return parser
 
 
@@ -262,20 +293,19 @@ def main(
     args = parser.parse_args(argv)
 
     try:
-        signal_raw, source_kind, source_label, source_ref, data_dir, preset = _resolve_signal_source(
-            args=args,
-            repo_root=repo_root,
-        )
-        allowed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
-        config = load_ibkr_paper_client_config(
-            account_id=args.ibkr_account_id,
-            base_url=args.ibkr_base_url,
-            verify_ssl=args.ibkr_verify_ssl,
-            timeout_seconds=args.ibkr_timeout_seconds,
-        )
-        client = client_factory(config=config)
-
         if args.command in {"status", "reconcile"}:
+            signal_raw, source_kind, source_label, source_ref, data_dir, preset = _resolve_signal_source(
+                args=args,
+                repo_root=repo_root,
+            )
+            allowed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
+            config = load_ibkr_paper_client_config(
+                account_id=args.ibkr_account_id,
+                base_url=args.ibkr_base_url,
+                verify_ssl=args.ibkr_verify_ssl,
+                timeout_seconds=args.ibkr_timeout_seconds,
+            )
+            client = client_factory(config=config)
             payload = build_ibkr_paper_status(
                 client=client,
                 config=config,
@@ -296,6 +326,18 @@ def main(
             return 0
 
         if args.command == "apply":
+            signal_raw, source_kind, source_label, source_ref, data_dir, preset = _resolve_signal_source(
+                args=args,
+                repo_root=repo_root,
+            )
+            allowed_symbols = _resolve_allowed_symbols(raw_value=args.allowed_symbols, preset=preset)
+            config = load_ibkr_paper_client_config(
+                account_id=args.ibkr_account_id,
+                base_url=args.ibkr_base_url,
+                verify_ssl=args.ibkr_verify_ssl,
+                timeout_seconds=args.ibkr_timeout_seconds,
+            )
+            client = client_factory(config=config)
             payload = apply_ibkr_paper_signal(
                 client=client,
                 config=config,
@@ -314,6 +356,39 @@ def main(
                 _print_json(payload)
             else:
                 _print_text(render_ibkr_paper_apply_text(payload), archive_manifest_path=payload.get("archive_manifest_path"))
+            return 0
+
+        if args.command == "claim-status":
+            payload = build_ibkr_paper_claim_status(
+                state_key=args.state_key,
+                base_dir=args.base_dir,
+                event_id=args.event_id,
+                latest=bool(args.latest),
+                timestamp=args.timestamp,
+            )
+            if args.emit == "json":
+                _print_json(payload)
+            else:
+                _print_text(render_ibkr_paper_claim_status_text(payload), archive_manifest_path=None)
+            return 0
+
+        if args.command == "claim-resolve":
+            resolution = (
+                CLAIM_RESOLUTION_MARK_APPLIED
+                if args.mark_applied
+                else CLAIM_RESOLUTION_CLEAR_FOR_RETRY
+            )
+            payload = resolve_ibkr_paper_claim(
+                state_key=args.state_key,
+                base_dir=args.base_dir,
+                event_id=args.event_id,
+                resolution=resolution,
+                timestamp=args.timestamp,
+            )
+            if args.emit == "json":
+                _print_json(payload)
+            else:
+                _print_text(render_ibkr_paper_claim_resolution_text(payload), archive_manifest_path=None)
             return 0
     except Exception as exc:
         print(f"[ibkr_paper_lane] ERROR: {exc}", file=sys.stderr)

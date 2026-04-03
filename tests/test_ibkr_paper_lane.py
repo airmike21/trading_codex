@@ -9,13 +9,16 @@ from pathlib import Path
 import pytest
 
 from scripts import ibkr_paper_lane
+from trading_codex.execution import ibkr_paper_lane as ibkr_paper_lane_execution
 from trading_codex.execution.ibkr_paper_lane import (
     IbkrPaperClientConfig,
     apply_ibkr_paper_signal,
+    build_ibkr_paper_claim_status,
     build_ibkr_paper_status,
     event_already_applied,
     event_claim_pending,
     load_ibkr_paper_state,
+    resolve_ibkr_paper_claim,
     resolve_ibkr_paper_paths,
 )
 
@@ -194,6 +197,14 @@ class FakeIbkrClient:
 
 def _config() -> IbkrPaperClientConfig:
     return IbkrPaperClientConfig(account_id=ACCOUNT_ID)
+
+
+def _read_jsonl_records(path: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_ibkr_paper_status_reconciles_latest_signal_and_persists_state(tmp_path: Path) -> None:
@@ -471,6 +482,270 @@ def test_ibkr_paper_apply_persists_acknowledged_submit_before_status_fetch(tmp_p
     assert len(client.place_order_payloads) == 1
 
 
+def test_ibkr_paper_claim_status_reads_existing_pending_claim(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"id": "reply-7001", "message": ["warning requires confirmation"]}]],
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_claim_status_fixture",
+        timestamp=TIMESTAMP,
+    )
+
+    payload = build_ibkr_paper_claim_status(
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        event_id=str(signal["event_id"]),
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["schema_name"] == "ibkr_paper_lane_claim_status"
+    assert payload["resolved_event_id"] == signal["event_id"]
+    assert payload["acknowledged_submit_may_have_reached_ibkr"] is False
+    assert payload["clear_for_retry_allowed"] is True
+    assert payload["pending_reply_required"] is True
+    assert payload["claim"]["pending_reply"]["reply_id"] == "reply-7001"
+    assert payload["local_state"] is not None
+
+
+def test_ibkr_paper_claim_resolve_mark_applied_writes_receipt_and_updates_state(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"order_id": 7001, "order_status": "Submitted"}]],
+        order_status_errors={"7001": RuntimeError("simulated status lookup failure after acknowledgement")},
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_claim_mark_applied_fixture",
+        timestamp=TIMESTAMP,
+    )
+
+    payload = resolve_ibkr_paper_claim(
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        event_id=str(signal["event_id"]),
+        resolution="mark_applied",
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["schema_name"] == "ibkr_paper_lane_claim_resolution"
+    assert payload["result"] == "claim_marked_applied"
+    assert payload["resolution"] == "mark_applied"
+    assert payload["event_receipt_path"] is not None
+
+    receipt_path = Path(str(payload["event_receipt_path"]))
+    assert receipt_path.exists()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["result"] == "claim_marked_applied"
+    assert receipt["resolution"]["outcome"] == "mark_applied"
+    assert receipt["orders"][0]["broker_order_id"] == "7001"
+
+    paths = resolve_ibkr_paper_paths(state_key=STATE_KEY, base_dir=base_dir, create=False)
+    assert event_claim_pending(paths, str(signal["event_id"])) is False
+    assert event_already_applied(paths, str(signal["event_id"])) is True
+
+    state = load_ibkr_paper_state(paths)
+    assert state.last_attempt is not None
+    assert state.last_attempt["result"] == "claim_marked_applied"
+    assert state.last_applied is not None
+    assert state.last_applied["result"] == "claim_marked_applied"
+
+    ledger_records = _read_jsonl_records(paths.ledger_path)
+    assert ledger_records[-1]["entry_kind"] == "claim_mark_applied"
+    assert ledger_records[-1]["event_receipt_path"] == payload["event_receipt_path"]
+    assert ledger_records[-1]["event_id"] == signal["event_id"]
+    assert payload["event_receipt_preexisted"] is False
+
+
+def test_ibkr_paper_claim_resolve_mark_applied_recovers_existing_receipt_and_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"order_id": 7001, "order_status": "Submitted"}]],
+        order_status_errors={"7001": RuntimeError("simulated status lookup failure after acknowledgement")},
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_claim_mark_applied_recovery_fixture",
+        timestamp=TIMESTAMP,
+    )
+
+    def _fail_remove_event_claim(paths, event_id):  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated crash after receipt write")
+
+    monkeypatch.setattr(
+        ibkr_paper_lane_execution,
+        "_remove_event_claim",
+        _fail_remove_event_claim,
+    )
+    with pytest.raises(RuntimeError, match="simulated crash after receipt write"):
+        resolve_ibkr_paper_claim(
+            state_key=STATE_KEY,
+            base_dir=base_dir,
+            event_id=str(signal["event_id"]),
+            resolution="mark_applied",
+            timestamp=TIMESTAMP,
+        )
+    monkeypatch.undo()
+
+    paths = resolve_ibkr_paper_paths(state_key=STATE_KEY, base_dir=base_dir, create=False)
+    assert event_claim_pending(paths, str(signal["event_id"])) is True
+    assert event_already_applied(paths, str(signal["event_id"])) is True
+
+    status_payload = build_ibkr_paper_claim_status(
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        event_id=str(signal["event_id"]),
+        timestamp=TIMESTAMP,
+    )
+    assert status_payload["mark_applied_allowed"] is True
+    assert status_payload["clear_for_retry_allowed"] is False
+    assert status_payload["allowed_resolution"] == "mark-applied recovery only"
+    assert (
+        "Allowed resolution: mark-applied recovery only"
+        in ibkr_paper_lane_execution.render_ibkr_paper_claim_status_text(status_payload)
+    )
+
+    payload = resolve_ibkr_paper_claim(
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        event_id=str(signal["event_id"]),
+        resolution="mark_applied",
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["result"] == "claim_marked_applied"
+    assert payload["event_receipt_preexisted"] is True
+    assert event_claim_pending(paths, str(signal["event_id"])) is False
+    assert event_already_applied(paths, str(signal["event_id"])) is True
+
+    state = load_ibkr_paper_state(paths)
+    assert state.last_attempt is not None
+    assert state.last_attempt["result"] == "claim_marked_applied"
+    assert state.last_applied is not None
+    assert state.last_applied["result"] == "claim_marked_applied"
+
+    ledger_records = _read_jsonl_records(paths.ledger_path)
+    mark_applied_records = [record for record in ledger_records if record["entry_kind"] == "claim_mark_applied"]
+    assert len(mark_applied_records) == 1
+    assert mark_applied_records[0]["event_id"] == signal["event_id"]
+
+
+def test_ibkr_paper_claim_resolve_clear_for_retry_when_submit_not_acknowledged(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"id": "reply-8001", "message": ["warning requires confirmation"]}]],
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_claim_clear_fixture",
+        timestamp=TIMESTAMP,
+    )
+
+    payload = resolve_ibkr_paper_claim(
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        event_id=str(signal["event_id"]),
+        resolution="clear_for_retry",
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["result"] == "claim_cleared_for_retry"
+    assert payload["event_receipt_path"] is None
+
+    paths = resolve_ibkr_paper_paths(state_key=STATE_KEY, base_dir=base_dir, create=False)
+    assert event_claim_pending(paths, str(signal["event_id"])) is False
+    assert event_already_applied(paths, str(signal["event_id"])) is False
+
+    state = load_ibkr_paper_state(paths)
+    assert state.last_attempt is not None
+    assert state.last_attempt["result"] == "claim_cleared_for_retry"
+    assert state.last_applied is None
+
+    ledger_records = _read_jsonl_records(paths.ledger_path)
+    assert ledger_records[-1]["entry_kind"] == "claim_clear_for_retry"
+    assert ledger_records[-1]["event_receipt_path"] is None
+    assert ledger_records[-1]["event_id"] == signal["event_id"]
+
+
+def test_ibkr_paper_claim_resolve_refuses_clear_for_retry_after_acknowledged_submit(tmp_path: Path) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"order_id": 7001, "order_status": "Submitted"}]],
+        order_status_errors={"7001": RuntimeError("simulated status lookup failure after acknowledgement")},
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_claim_clear_refused_fixture",
+        timestamp=TIMESTAMP,
+    )
+
+    with pytest.raises(ValueError, match="acknowledged_submit_may_have_reached_ibkr is true"):
+        resolve_ibkr_paper_claim(
+            state_key=STATE_KEY,
+            base_dir=base_dir,
+            event_id=str(signal["event_id"]),
+            resolution="clear_for_retry",
+            timestamp=TIMESTAMP,
+        )
+
+    paths = resolve_ibkr_paper_paths(state_key=STATE_KEY, base_dir=base_dir, create=False)
+    assert event_claim_pending(paths, str(signal["event_id"])) is True
+
+
 def test_ibkr_paper_apply_refuses_unmanaged_positions_plan_blockers(tmp_path: Path) -> None:
     base_dir = tmp_path / "ibkr_paper"
     client = FakeIbkrClient(
@@ -571,6 +846,61 @@ def test_ibkr_paper_lane_cli_smoke_with_fake_client(tmp_path: Path, capsys: pyte
     assert apply_stdout["schema_name"] == "ibkr_paper_lane_apply_result"
     assert apply_stdout["result"] == "applied"
     assert apply_stdout["submitted_orders"][0]["broker_order_id"] == "9001"
+
+
+def test_ibkr_paper_lane_claim_cli_smoke(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"id": "reply-cli-1", "message": ["warning requires confirmation"]}]],
+    )
+
+    apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="claim_cli_fixture",
+        timestamp=TIMESTAMP,
+    )
+
+    status_exit = ibkr_paper_lane.main(
+        [
+            "--emit",
+            "json",
+            "--base-dir",
+            str(base_dir),
+            "claim-status",
+            "--event-id",
+            str(signal["event_id"]),
+        ]
+    )
+    assert status_exit == 0
+    status_stdout = json.loads(capsys.readouterr().out)
+    assert status_stdout["schema_name"] == "ibkr_paper_lane_claim_status"
+    assert status_stdout["resolved_event_id"] == signal["event_id"]
+
+    resolve_exit = ibkr_paper_lane.main(
+        [
+            "--emit",
+            "json",
+            "--base-dir",
+            str(base_dir),
+            "claim-resolve",
+            "--event-id",
+            str(signal["event_id"]),
+            "--clear-for-retry",
+        ]
+    )
+    assert resolve_exit == 0
+    resolve_stdout = json.loads(capsys.readouterr().out)
+    assert resolve_stdout["schema_name"] == "ibkr_paper_lane_claim_resolution"
+    assert resolve_stdout["result"] == "claim_cleared_for_retry"
 
 
 def test_ibkr_paper_lane_script_help_smoke() -> None:
