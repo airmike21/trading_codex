@@ -35,6 +35,19 @@ Repo-managed daily ops / forward-evidence runner:
 This runner keeps cumulative forward-evidence artifacts separate from the existing local paper-lane daily ops lane.
 See `docs/STAGE2_IBKR_PAPER_OPS.md` for the retained artifact locations, failure-closed behavior, and review workflow.
 
+Read-only ops review for the retained forward-evidence lane:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_ops_review.py --emit text
+.venv/bin/python scripts/ibkr_paper_ops_review.py --emit json --limit 20
+```
+
+This command reads the retained Stage 2 IBKR paper ops artifacts under
+`<archive_root>/stage2_ibkr_paper_ops/<state_key>/` and summarizes recent run health,
+latest signal context, pending-claim / duplicate-blocked history, submitted-order totals,
+artifact consistency, manifest-path presence, and the current 20-market-day review checkpoint.
+It is read-only: no broker calls, no lane-state mutation, and no repair actions.
+
 Status / reconcile from the primary preset:
 
 ```bash
@@ -163,6 +176,7 @@ Raw per-run manifests and JSON artifacts remain under the existing archive conve
 - `<archive_root>/runs/YYYY-MM-DD/<ibkr_paper_lane_daily_ops_run_id>/...`
 
 This evidence lane is intentionally separate from the existing local paper-lane daily ops artifacts in `stage2_paper_ops`.
+Use `scripts/ibkr_paper_ops_review.py` as the first-class operator surface for this retained lane instead of ad hoc manual inspection of JSONL, CSV, XLSX, and per-run manifests.
 
 ## Pending Claim Workflow
 
