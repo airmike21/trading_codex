@@ -74,3 +74,13 @@ def test_print_only_includes_optional_overrides_and_run_now_command() -> None:
     assert "-IbkrBaseDir C:\\stage2\\ibkr" in stdout
     assert "-VerifyIbkrSsl" in stdout
     assert "schtasks.exe /Run /TN \"TradingCodex\\stage2_ibkr_paper_daily_ops\"" in stdout
+
+
+def test_print_only_defaults_to_runtime_checkout_path() -> None:
+    proc = _run_print_only("-IbkrAccountId", "DUP652353")
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "-WslRepoPath ~/trading_codex" in stdout
+    assert "-WslPython ~/trading_codex/.venv/bin/python" in stdout
+    assert "schtasks.exe /Create /TN \"TradingCodex\\stage2_ibkr_paper_daily_ops\" /XML" in stdout

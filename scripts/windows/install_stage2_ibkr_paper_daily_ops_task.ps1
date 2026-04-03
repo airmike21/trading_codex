@@ -17,7 +17,7 @@ Weekday local start time in `HH:mm` 24-hour format. Default: `16:10`.
 WSL distro name. Default: `Ubuntu`.
 
 .PARAMETER WslRepoPath
-Repo path inside WSL. Default: `~/.codex-workspaces/trading-builder`.
+Repo path inside WSL. Default: `~/trading_codex`.
 
 .PARAMETER WslPython
 Python path inside WSL. Defaults to `<WslRepoPath>/.venv/bin/python`.
@@ -70,7 +70,7 @@ param(
   [string]$FolderName = "TradingCodex",
   [string]$StartTime = "16:10",
   [string]$WslDistro = "Ubuntu",
-  [string]$WslRepoPath = "~/.codex-workspaces/trading-builder",
+  [string]$WslRepoPath = "~/trading_codex",
   [string]$WslPython,
   [string]$Preset = "dual_mom_vol10_cash_core",
   [ValidateSet("stooq", "tiingo")]

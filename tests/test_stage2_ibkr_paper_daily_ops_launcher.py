@@ -88,3 +88,15 @@ def test_print_only_converts_windows_style_paths_for_explicit_overrides() -> Non
     assert "C:\\stage2\\presets.json" not in stdout
     assert "C:\\stage2\\archive" not in stdout
     assert "C:\\stage2\\ibkr" not in stdout
+
+
+def test_print_only_defaults_to_runtime_checkout_path() -> None:
+    proc = _run_wrapper("-IbkrAccountId", "DUP652353")
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "repo_path=~/trading_codex" in stdout
+    assert "python_path=~/trading_codex/.venv/bin/python" in stdout
+    assert "presets_file=/home/aarondaugherty/trading_codex/configs/presets.example.json" in stdout
+    assert "preflight_command=cd ~/trading_codex && ~/trading_codex/.venv/bin/python scripts/ibkr_paper_lane_daily_ops_preflight.py" in stdout
+    assert "command=cd ~/trading_codex && ~/trading_codex/.venv/bin/python scripts/ibkr_paper_lane_daily_ops.py" in stdout
