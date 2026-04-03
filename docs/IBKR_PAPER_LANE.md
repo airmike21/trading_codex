@@ -53,6 +53,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\instal
 Windows wrapper notes:
 
 - the wrapper is the single intended scheduled entrypoint for the Stage 2 IBKR PaperTrader daily ops lane
+- the installer stages the wrapper to a stable local Windows path before registering the task, so the scheduled action does not depend on `-File \\wsl$\...`
 - it defaults to the repo-managed `configs/presets.example.json` path instead of silently switching between preset files
 - before daily ops it runs a fail-closed preflight that verifies the configured paper account id, the expected preset file, and a reachable IBKR Client Portal Gateway session explicitly marked as paper
 - wrapper, preflight, and daily-ops output is appended to `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log` unless `-LogDir` overrides it

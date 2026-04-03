@@ -4,8 +4,10 @@ Create or print a weekday Task Scheduler entry for the Stage 2 IBKR paper daily 
 
 .DESCRIPTION
 Creates one weekday background task in Windows Task Scheduler that launches
-`trading_codex_stage2_ibkr_paper_daily_ops.ps1` as the single scheduled
-entrypoint for the Stage 2 IBKR PaperTrader daily ops lane.
+`trading_codex_stage2_ibkr_paper_daily_ops.ps1` from a staged local Windows
+path as the single scheduled entrypoint for the Stage 2 IBKR PaperTrader daily
+ops lane. This avoids relying on Task Scheduler launching a PowerShell script
+directly from `\\wsl$\...`.
 
 .PARAMETER FolderName
 Task Scheduler folder prefix. Default: `TradingCodex`.
@@ -139,8 +141,21 @@ function ConvertTo-XmlText {
   return [System.Security.SecurityElement]::Escape($Value)
 }
 
+function Get-LauncherDirectory {
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    return (Join-Path $env:LOCALAPPDATA "TradingCodex\stage2_ibkr_paper_ops\launcher")
+  }
+  return (Join-Path $env:TEMP "TradingCodex\stage2_ibkr_paper_ops\launcher")
+}
+
+function Get-StagedWrapperPath {
+  $launcherDir = Get-LauncherDirectory
+  return (Join-Path $launcherDir "trading_codex_stage2_ibkr_paper_daily_ops.ps1")
+}
+
 function New-TaskSpec {
   $taskName = "{0}\stage2_ibkr_paper_daily_ops" -f $FolderName
+  $scheduledWrapperPath = Get-StagedWrapperPath
   $argList = @(
     "-NoLogo",
     "-NoProfile",
@@ -148,7 +163,7 @@ function New-TaskSpec {
     "-ExecutionPolicy",
     "Bypass",
     "-File",
-    $wrapperPath,
+    $scheduledWrapperPath,
     "-Preset",
     $Preset,
     "-Provider",
@@ -189,6 +204,7 @@ function New-TaskSpec {
     StartTime = $StartTime
     ActionExecute = "powershell.exe"
     ActionArguments = $arguments
+    ScheduledWrapperPath = $scheduledWrapperPath
     PrintableCreate = "schtasks.exe /Create /TN `"$taskName`" /XML `"%TEMP%\stage2_ibkr_paper_daily_ops.xml`" /F"
   }
 }
@@ -275,6 +291,10 @@ function Install-BackgroundTask {
 
   $xmlPath = Join-Path $env:TEMP "stage2_ibkr_paper_daily_ops.xml"
   try {
+    $launcherDir = Split-Path -Parent $Task.ScheduledWrapperPath
+    New-Item -ItemType Directory -Force -Path $launcherDir | Out-Null
+    Copy-Item -LiteralPath $wrapperPath -Destination $Task.ScheduledWrapperPath -Force
+
     $xml = New-BackgroundTaskXml -Task $Task
     Set-Content -LiteralPath $xmlPath -Value $xml -Encoding Unicode
     & schtasks.exe /Create /TN $Task.TaskName /XML $xmlPath /F
