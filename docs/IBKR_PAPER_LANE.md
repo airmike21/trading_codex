@@ -1,7 +1,7 @@
 # IBKR Paper Lane
 
 This is the narrow Stage 2 IBKR PaperTrader path for `primary_live_candidate_v1`.
-It is intentionally limited to one strategy, long-only ETFs, whole shares, and manual `status` / `apply` operation.
+It is intentionally limited to one strategy, long-only ETFs, whole shares, and manual or repo-managed daily `status` / `apply` operation.
 
 ## Preconditions
 
@@ -25,6 +25,15 @@ export IBKR_WEB_API_TIMEOUT_SECONDS="15"
 `IBKR_WEB_API_VERIFY_SSL` defaults to `false` because local gateway installs often use a self-signed certificate.
 
 ## Commands
+
+Repo-managed daily ops / forward-evidence runner:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_lane_daily_ops.py --preset dual_mom_vol10_cash_core --provider stooq
+```
+
+This runner keeps cumulative forward-evidence artifacts separate from the existing local paper-lane daily ops lane.
+See `docs/STAGE2_IBKR_PAPER_OPS.md` for the retained artifact locations, failure-closed behavior, and review workflow.
 
 Status / reconcile from the primary preset:
 
@@ -140,6 +149,20 @@ Important files:
 - `pending_claims/`: restart-safe submit claims for interrupted or unresolved apply attempts
 
 If an apply leaves a pending claim, the lane will refuse duplicate submit for that same `event_id` until the claim is manually reviewed.
+
+## Forward Evidence
+
+The repo-managed IBKR daily ops runner writes cumulative forward-evidence artifacts outside the repo tree under:
+
+- `<archive_root>/stage2_ibkr_paper_ops/primary_live_candidate_v1/ibkr_paper_lane_daily_ops_log.jsonl`
+- `<archive_root>/stage2_ibkr_paper_ops/primary_live_candidate_v1/ibkr_paper_lane_daily_ops_runs.csv`
+- `<archive_root>/stage2_ibkr_paper_ops/primary_live_candidate_v1/ibkr_paper_lane_daily_ops_runs.xlsx`
+
+Raw per-run manifests and JSON artifacts remain under the existing archive convention:
+
+- `<archive_root>/runs/YYYY-MM-DD/<ibkr_paper_lane_daily_ops_run_id>/...`
+
+This evidence lane is intentionally separate from the existing local paper-lane daily ops artifacts in `stage2_paper_ops`.
 
 ## Pending Claim Workflow
 
