@@ -25,6 +25,40 @@ It does not add generalized broker abstraction.
 It does not open Stage 3 bench work.
 It does not turn the shadow no-submit lane into the main Stage 2 runner.
 
+## Review Command
+
+Text summary:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_ops_review.py --emit text
+```
+
+Machine-readable summary:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_ops_review.py --emit json --limit 20
+```
+
+Optional overrides:
+
+- `--archive-root` uses the same durable archive-root policy as the daily runner
+- `--state-key` defaults to `primary_live_candidate_v1`
+- `--limit` bounds the number of most-recent runs inspected without mutating any artifacts
+
+This review command is the read-only operator surface for the retained IBKR PaperTrader forward-evidence lane.
+It reads the cumulative JSONL log as the source of truth, checks the paired CSV and XLSX artifacts,
+and summarizes at least:
+
+- total runs inspected, ok count, failed count
+- latest run timestamp, latest overall result, and latest failed step
+- latest signal context: date, action, symbol, target shares, next rebalance, and `event_id`
+- pending-claim count, duplicate-blocked count, and submitted-order totals
+- latest `successful_signal_days_recorded`
+- whether the 20-market-day review checkpoint is reached
+- cumulative artifact presence and JSONL/CSV row-count consistency
+- latest-run and inspected-history manifest/path presence checks
+- explicit `review_status` and `attention_flags` when an operator should investigate
+
 ## Preconditions
 
 - The IBKR PaperTrader Web API bridge or Client Portal Gateway must already be running locally.
@@ -86,6 +120,7 @@ The cumulative log captures enough structure to make forward evidence operationa
 The per-run JSON archive remains the detailed source of truth.
 The cumulative JSONL and CSV files are the durable forward-evidence rollup.
 The XLSX workbook is regenerated from the structured data for convenient review.
+`scripts/ibkr_paper_ops_review.py` is the intended read-only surface for reviewing these artifacts over time.
 
 ## Review Checkpoint
 
@@ -93,6 +128,8 @@ The XLSX workbook is regenerated from the structured data for convenient review.
 - That checkpoint is about IBKR PaperTrader operational reliability and retained evidence.
 - It is not proof of strategy edge.
 - It is not, by itself, Stage 2 exit.
+- Use `scripts/ibkr_paper_ops_review.py` to judge whether the retained lane has reached 20 successful signal days,
+  whether recent run health stayed clean, and whether pending claims, duplicate refusals, or artifact inconsistencies need attention before calling the checkpoint operationally meaningful.
 
 ## Explain Like I Am 12
 
