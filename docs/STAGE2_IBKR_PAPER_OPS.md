@@ -48,6 +48,7 @@ It keeps the existing retained artifact surface unchanged and adds only a fail-c
 - confirm the local Client Portal Gateway is reachable and explicitly reporting a paper session for the configured account
 
 If any preflight check fails, the wrapper exits non-zero before the daily runner starts.
+The installer stages that PowerShell wrapper to a stable local Windows path before registering the task, so the scheduled action does not depend on `-File \\wsl$\...`.
 Scheduler-visible wrapper logs default to:
 
 - `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log`
