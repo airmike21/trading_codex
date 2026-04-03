@@ -1564,14 +1564,7 @@ def render_ibkr_paper_claim_status_text(payload: dict[str, Any]) -> str:
             f"{'yes' if payload['acknowledged_submit_may_have_reached_ibkr'] else 'no'}"
         ),
         f"Pending reply required: {'yes' if payload['pending_reply_required'] else 'no'}",
-        (
-            "Allowed resolution: "
-            + (
-                "mark-applied only"
-                if not payload["clear_for_retry_allowed"]
-                else "mark-applied or clear-for-retry"
-            )
-        ),
+        f"Allowed resolution: {payload['allowed_resolution']}",
         f"Submitted order count: {payload['submitted_order_count']}",
         f"Claim path: {payload['claim_path']}",
     ]
@@ -1619,6 +1612,52 @@ def _resolution_paths_payload(paths: IbkrPaperPaths) -> dict[str, str]:
         "pending_claims_dir": str(paths.pending_claims_dir),
         "state_path": str(paths.state_path),
     }
+
+
+def _claim_allowed_resolution(
+    *,
+    mark_applied_allowed: bool,
+    clear_for_retry_allowed: bool,
+    event_receipt_exists: bool,
+) -> str:
+    if mark_applied_allowed and clear_for_retry_allowed:
+        return "mark-applied or clear-for-retry"
+    if mark_applied_allowed and event_receipt_exists:
+        return "mark-applied recovery only"
+    if mark_applied_allowed:
+        return "mark-applied only"
+    if clear_for_retry_allowed:
+        return "clear-for-retry only"
+    return "none"
+
+
+def _claim_resolution_ledger_record_exists(
+    path: Path,
+    *,
+    entry_kind: str,
+    event_id: str,
+    resolution: str,
+    result: str,
+    event_receipt_path: str | None,
+) -> bool:
+    if not path.exists():
+        return False
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        payload = json.loads(raw_line)
+        if not isinstance(payload, dict):
+            raise ValueError(f"IBKR paper lane ledger entry must be a JSON object: {path}")
+        if (
+            payload.get("entry_kind") == entry_kind
+            and payload.get("event_id") == event_id
+            and payload.get("resolution") == resolution
+            and payload.get("result") == result
+            and payload.get("event_receipt_path") == event_receipt_path
+        ):
+            return True
+    return False
 
 
 def _claim_context(
@@ -1688,6 +1727,7 @@ def build_ibkr_paper_claim_status(
     acknowledged_submit = bool(claim_payload.get("acknowledged_submit_may_have_reached_ibkr"))
     pending_reply_required = bool(claim_payload.get("reply_required")) or claim_payload.get("pending_reply") is not None
     event_receipt_exists = event_already_applied(paths, resolved_event_id)
+    mark_applied_allowed = True
     clear_for_retry_allowed = not acknowledged_submit and not event_receipt_exists
     clear_for_retry_blocked_reason = None
     if event_receipt_exists:
@@ -1697,6 +1737,11 @@ def build_ibkr_paper_claim_status(
 
     return {
         "acknowledged_submit_may_have_reached_ibkr": acknowledged_submit,
+        "allowed_resolution": _claim_allowed_resolution(
+            mark_applied_allowed=mark_applied_allowed,
+            clear_for_retry_allowed=clear_for_retry_allowed,
+            event_receipt_exists=event_receipt_exists,
+        ),
         "claim": claim_payload,
         "claim_path": str(claim_path),
         "clear_for_retry_allowed": clear_for_retry_allowed,
@@ -1705,7 +1750,7 @@ def build_ibkr_paper_claim_status(
         "generated_at_chicago": resolved_timestamp.isoformat(),
         "local_state": _state_to_optional_dict(state_payload),
         "lookup_mode": "latest" if latest else "event_id",
-        "mark_applied_allowed": not event_receipt_exists,
+        "mark_applied_allowed": mark_applied_allowed,
         "paths": _resolution_paths_payload(paths),
         "pending_reply_required": pending_reply_required,
         "requested_event_id": None if latest else resolved_event_id,
@@ -1730,23 +1775,21 @@ def resolve_ibkr_paper_claim(
     if not event_id.strip():
         raise ValueError("IBKR paper lane claim resolution requires a non-empty event_id.")
 
+    resolved_event_id = event_id.strip()
     resolved_timestamp = _timestamp(timestamp)
     paths = resolve_ibkr_paper_paths(state_key=state_key, base_dir=base_dir, create=False)
     if not paths.base_dir.exists():
         raise ValueError(f"IBKR paper lane base_dir does not exist: {paths.base_dir}")
 
     with _state_lock(paths):
-        claim = _load_event_claim(paths, event_id.strip())
+        claim = _load_event_claim(paths, resolved_event_id)
         if claim is None:
-            raise ValueError(f"No pending IBKR paper lane claim found for event_id {event_id.strip()!r}.")
+            raise ValueError(f"No pending IBKR paper lane claim found for event_id {resolved_event_id!r}.")
 
-        claim_path = _pending_claim_path(paths, event_id.strip())
-        receipt_path = _event_receipt_path(paths, event_id.strip())
-        if receipt_path.exists():
-            raise ValueError(
-                "IBKR paper lane claim resolution refused because an event receipt already exists "
-                f"for event_id {event_id.strip()!r}."
-            )
+        claim_path = _pending_claim_path(paths, resolved_event_id)
+        receipt_path = _event_receipt_path(paths, resolved_event_id)
+        receipt_exists = receipt_path.exists()
+        receipt_existed_before_resolution = receipt_exists
 
         acknowledged_submit = bool(claim.get("acknowledged_submit_may_have_reached_ibkr"))
         if resolution == CLAIM_RESOLUTION_CLEAR_FOR_RETRY and acknowledged_submit:
@@ -1754,6 +1797,11 @@ def resolve_ibkr_paper_claim(
                 "IBKR paper lane clear-for-retry refused because "
                 "acknowledged_submit_may_have_reached_ibkr is true. "
                 "Use mark-applied after verifying the broker-side outcome."
+            )
+        if resolution == CLAIM_RESOLUTION_CLEAR_FOR_RETRY and receipt_exists:
+            raise ValueError(
+                "IBKR paper lane clear-for-retry refused because an event receipt already exists "
+                f"for event_id {resolved_event_id!r}."
             )
 
         state_before = _load_or_create_state(paths=paths, state_key=state_key, timestamp=resolved_timestamp)
@@ -1780,30 +1828,30 @@ def resolve_ibkr_paper_claim(
         ]
         event_receipt_path: str | None = None
         if resolution == CLAIM_RESOLUTION_MARK_APPLIED:
-            receipt_payload = {
-                "account_id": resolved_account_id,
-                "applied_at_chicago": resolved_timestamp.isoformat(),
-                "event_id": event_id.strip(),
-                "orders": submitted_orders,
-                "resolution": {
-                    "acknowledged_submit_may_have_reached_ibkr": acknowledged_submit,
-                    "claim_result_before_resolution": claim.get("result"),
-                    "outcome": CLAIM_RESOLUTION_MARK_APPLIED,
-                    "resolved_at_chicago": resolved_timestamp.isoformat(),
-                },
-                "result": "claim_marked_applied",
-                "schema_name": IBKR_PAPER_EVENT_RECEIPT_SCHEMA_NAME,
-                "schema_version": IBKR_PAPER_EVENT_RECEIPT_SCHEMA_VERSION,
-                "signal_action": signal_action,
-                "signal_date": signal_date,
-                "signal_symbol": signal_symbol,
-                "state_key": state_key,
-                "strategy": resolved_strategy,
-            }
-            _write_event_receipt(paths, receipt_payload)
             event_receipt_path = str(receipt_path)
-
-        _remove_event_claim(paths, event_id.strip())
+            if not receipt_exists:
+                receipt_payload = {
+                    "account_id": resolved_account_id,
+                    "applied_at_chicago": resolved_timestamp.isoformat(),
+                    "event_id": resolved_event_id,
+                    "orders": submitted_orders,
+                    "resolution": {
+                        "acknowledged_submit_may_have_reached_ibkr": acknowledged_submit,
+                        "claim_result_before_resolution": claim.get("result"),
+                        "outcome": CLAIM_RESOLUTION_MARK_APPLIED,
+                        "resolved_at_chicago": resolved_timestamp.isoformat(),
+                    },
+                    "result": "claim_marked_applied",
+                    "schema_name": IBKR_PAPER_EVENT_RECEIPT_SCHEMA_NAME,
+                    "schema_version": IBKR_PAPER_EVENT_RECEIPT_SCHEMA_VERSION,
+                    "signal_action": signal_action,
+                    "signal_date": signal_date,
+                    "signal_symbol": signal_symbol,
+                    "state_key": state_key,
+                    "strategy": resolved_strategy,
+                }
+                _write_event_receipt(paths, receipt_payload)
+                receipt_exists = True
 
         result = (
             "claim_marked_applied"
@@ -1813,7 +1861,7 @@ def resolve_ibkr_paper_claim(
         last_attempt = {
             "archive_error": None,
             "archive_manifest_path": None,
-            "event_id": event_id.strip(),
+            "event_id": resolved_event_id,
             "event_receipt_path": event_receipt_path,
             "generated_at_chicago": resolved_timestamp.isoformat(),
             "resolution": resolution,
@@ -1835,42 +1883,60 @@ def resolve_ibkr_paper_claim(
             last_applied=last_applied,
         )
         _write_ibkr_paper_state(paths, state_after)
-        _append_jsonl_record(
-            paths.ledger_path,
-            record={
-                "account_id": resolved_account_id,
-                "acknowledged_submit_may_have_reached_ibkr": acknowledged_submit,
-                "archive_error": None,
-                "archive_manifest_path": None,
-                "entry_kind": (
-                    "claim_mark_applied"
-                    if resolution == CLAIM_RESOLUTION_MARK_APPLIED
-                    else "claim_clear_for_retry"
-                ),
-                "event_claim_path": str(claim_path),
-                "event_claim_removed": True,
-                "event_id": event_id.strip(),
-                "event_receipt_path": event_receipt_path,
-                "generated_at_chicago": resolved_timestamp.isoformat(),
-                "resolution": resolution,
-                "result": result,
-                "schema_name": IBKR_PAPER_LEDGER_SCHEMA_NAME,
-                "schema_version": IBKR_PAPER_LEDGER_SCHEMA_VERSION,
-                "signal_action": signal_action,
-                "signal_date": signal_date,
-                "signal_symbol": signal_symbol,
-                "state_key": state_key,
-                "strategy": resolved_strategy,
-                "submitted_order_ids": submitted_order_ids,
-            },
+        entry_kind = (
+            "claim_mark_applied"
+            if resolution == CLAIM_RESOLUTION_MARK_APPLIED
+            else "claim_clear_for_retry"
         )
+        if not _claim_resolution_ledger_record_exists(
+            paths.ledger_path,
+            entry_kind=entry_kind,
+            event_id=resolved_event_id,
+            resolution=resolution,
+            result=result,
+            event_receipt_path=event_receipt_path,
+        ):
+            _append_jsonl_record(
+                paths.ledger_path,
+                record={
+                    "account_id": resolved_account_id,
+                    "acknowledged_submit_may_have_reached_ibkr": acknowledged_submit,
+                    "archive_error": None,
+                    "archive_manifest_path": None,
+                    "entry_kind": entry_kind,
+                    "event_claim_path": str(claim_path),
+                    "event_claim_removed": True,
+                    "event_id": resolved_event_id,
+                    "event_receipt_path": event_receipt_path,
+                    "generated_at_chicago": resolved_timestamp.isoformat(),
+                    "resolution": resolution,
+                    "result": result,
+                    "schema_name": IBKR_PAPER_LEDGER_SCHEMA_NAME,
+                    "schema_version": IBKR_PAPER_LEDGER_SCHEMA_VERSION,
+                    "signal_action": signal_action,
+                    "signal_date": signal_date,
+                    "signal_symbol": signal_symbol,
+                    "state_key": state_key,
+                    "strategy": resolved_strategy,
+                    "submitted_order_ids": submitted_order_ids,
+                },
+            )
+        _remove_event_claim(paths, resolved_event_id)
 
         return {
             "acknowledged_submit_may_have_reached_ibkr": acknowledged_submit,
+            "allowed_resolution": _claim_allowed_resolution(
+                mark_applied_allowed=resolution == CLAIM_RESOLUTION_MARK_APPLIED,
+                clear_for_retry_allowed=resolution == CLAIM_RESOLUTION_CLEAR_FOR_RETRY,
+                event_receipt_exists=receipt_exists,
+            ),
             "claim_before": claim,
             "claim_path": str(claim_path),
             "claim_removed": True,
-            "event_id": event_id.strip(),
+            "event_id": resolved_event_id,
+            "event_receipt_preexisted": (
+                resolution == CLAIM_RESOLUTION_MARK_APPLIED and receipt_existed_before_resolution
+            ),
             "event_receipt_path": event_receipt_path,
             "generated_at_chicago": resolved_timestamp.isoformat(),
             "local_state_after": _state_to_dict(state_after),

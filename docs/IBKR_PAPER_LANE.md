@@ -170,6 +170,7 @@ Safe workflow:
 3. Use `claim-resolve --event-id ... --mark-applied` once that verification is complete.
 
 This path writes an event receipt, removes the pending claim, updates local state, and writes a ledger entry showing the manual mark-applied outcome.
+If a prior `--mark-applied` run was interrupted after the receipt was written but before the pending claim was removed, rerun the same `claim-resolve --event-id ... --mark-applied` command to finish local cleanup safely.
 
 ### Retry Allowed Versus Refused
 

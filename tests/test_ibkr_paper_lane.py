@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts import ibkr_paper_lane
+from trading_codex.execution import ibkr_paper_lane as ibkr_paper_lane_execution
 from trading_codex.execution.ibkr_paper_lane import (
     IbkrPaperClientConfig,
     apply_ibkr_paper_signal,
@@ -574,6 +575,93 @@ def test_ibkr_paper_claim_resolve_mark_applied_writes_receipt_and_updates_state(
     assert ledger_records[-1]["entry_kind"] == "claim_mark_applied"
     assert ledger_records[-1]["event_receipt_path"] == payload["event_receipt_path"]
     assert ledger_records[-1]["event_id"] == signal["event_id"]
+    assert payload["event_receipt_preexisted"] is False
+
+
+def test_ibkr_paper_claim_resolve_mark_applied_recovers_existing_receipt_and_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_dir = tmp_path / "ibkr_paper"
+    client = FakeIbkrClient(
+        positions=[],
+        summary=_summary_payload(),
+        place_order_responses=[[{"order_id": 7001, "order_status": "Submitted"}]],
+        order_status_errors={"7001": RuntimeError("simulated status lookup failure after acknowledgement")},
+    )
+    signal = _signal_payload(action="ENTER", symbol="EFA", price=100.0, target_shares=100)
+
+    apply_ibkr_paper_signal(
+        client=client,
+        config=_config(),
+        allowed_symbols=ALLOWED_SYMBOLS,
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        signal_raw=signal,
+        source_kind="test",
+        source_label="apply_claim_mark_applied_recovery_fixture",
+        timestamp=TIMESTAMP,
+    )
+
+    def _fail_remove_event_claim(paths, event_id):  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated crash after receipt write")
+
+    monkeypatch.setattr(
+        ibkr_paper_lane_execution,
+        "_remove_event_claim",
+        _fail_remove_event_claim,
+    )
+    with pytest.raises(RuntimeError, match="simulated crash after receipt write"):
+        resolve_ibkr_paper_claim(
+            state_key=STATE_KEY,
+            base_dir=base_dir,
+            event_id=str(signal["event_id"]),
+            resolution="mark_applied",
+            timestamp=TIMESTAMP,
+        )
+    monkeypatch.undo()
+
+    paths = resolve_ibkr_paper_paths(state_key=STATE_KEY, base_dir=base_dir, create=False)
+    assert event_claim_pending(paths, str(signal["event_id"])) is True
+    assert event_already_applied(paths, str(signal["event_id"])) is True
+
+    status_payload = build_ibkr_paper_claim_status(
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        event_id=str(signal["event_id"]),
+        timestamp=TIMESTAMP,
+    )
+    assert status_payload["mark_applied_allowed"] is True
+    assert status_payload["clear_for_retry_allowed"] is False
+    assert status_payload["allowed_resolution"] == "mark-applied recovery only"
+    assert (
+        "Allowed resolution: mark-applied recovery only"
+        in ibkr_paper_lane_execution.render_ibkr_paper_claim_status_text(status_payload)
+    )
+
+    payload = resolve_ibkr_paper_claim(
+        state_key=STATE_KEY,
+        base_dir=base_dir,
+        event_id=str(signal["event_id"]),
+        resolution="mark_applied",
+        timestamp=TIMESTAMP,
+    )
+
+    assert payload["result"] == "claim_marked_applied"
+    assert payload["event_receipt_preexisted"] is True
+    assert event_claim_pending(paths, str(signal["event_id"])) is False
+    assert event_already_applied(paths, str(signal["event_id"])) is True
+
+    state = load_ibkr_paper_state(paths)
+    assert state.last_attempt is not None
+    assert state.last_attempt["result"] == "claim_marked_applied"
+    assert state.last_applied is not None
+    assert state.last_applied["result"] == "claim_marked_applied"
+
+    ledger_records = _read_jsonl_records(paths.ledger_path)
+    mark_applied_records = [record for record in ledger_records if record["entry_kind"] == "claim_mark_applied"]
+    assert len(mark_applied_records) == 1
+    assert mark_applied_records[0]["event_id"] == signal["event_id"]
 
 
 def test_ibkr_paper_claim_resolve_clear_for_retry_when_submit_not_acknowledged(tmp_path: Path) -> None:
