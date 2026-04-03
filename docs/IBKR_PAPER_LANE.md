@@ -38,6 +38,35 @@ Apply from the primary preset:
 .venv/bin/python scripts/ibkr_paper_lane.py --emit json apply --preset dual_mom_vol10_cash_core
 ```
 
+Inspect one pending claim explicitly by `event_id`:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_lane.py --emit json claim-status \
+  --event-id "2026-03-30:dual_mom_vol10_cash:ENTER:EFA:100::2026-04-20"
+```
+
+Inspect the latest pending claim:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_lane.py --emit text claim-status --latest
+```
+
+Resolve a pending claim as manually verified applied:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_lane.py --emit json claim-resolve \
+  --event-id "2026-03-30:dual_mom_vol10_cash:ENTER:EFA:100::2026-04-20" \
+  --mark-applied
+```
+
+Clear a pending claim for safe retry when no submit acknowledgement may have reached IBKR:
+
+```bash
+.venv/bin/python scripts/ibkr_paper_lane.py --emit text claim-resolve \
+  --event-id "2026-03-30:dual_mom_vol10_cash:ENTER:EFA:100::2026-04-20" \
+  --clear-for-retry
+```
+
 Operate from a saved signal payload:
 
 ```bash
@@ -111,3 +140,39 @@ Important files:
 - `pending_claims/`: restart-safe submit claims for interrupted or unresolved apply attempts
 
 If an apply leaves a pending claim, the lane will refuse duplicate submit for that same `event_id` until the claim is manually reviewed.
+
+## Pending Claim Workflow
+
+Use `claim-status` first. It is read-only and reports the stored pending claim, whether `acknowledged_submit_may_have_reached_ibkr` is true, whether a reply is still pending, and whether `clear-for-retry` is allowed.
+
+Use `claim-resolve` only after operator review of the broker-side outcome for that exact `event_id`.
+
+### Claim Created By Reply-Required Warning
+
+This happens when IBKR returns a reply-required warning and `apply` is run without `--confirm-replies`.
+
+Safe workflow:
+
+1. Run `claim-status --event-id ...`.
+2. If the warning was not confirmed anywhere and no acknowledged submit reached IBKR, use `claim-resolve --event-id ... --clear-for-retry`.
+3. Re-run `apply` normally once the claim is cleared.
+
+This path removes the pending claim, does not write an event receipt, updates local state, and writes a ledger entry showing the manual clear-for-retry outcome.
+
+### Claim Created After Acknowledged Submit Plus Later Error
+
+This happens when the lane received a submit acknowledgement or broker order id, but later status fetch or follow-up handling failed.
+
+Safe workflow:
+
+1. Run `claim-status --event-id ...`.
+2. Verify in IBKR PaperTrader whether the submit actually reached the broker and whether the event should be treated as applied.
+3. Use `claim-resolve --event-id ... --mark-applied` once that verification is complete.
+
+This path writes an event receipt, removes the pending claim, updates local state, and writes a ledger entry showing the manual mark-applied outcome.
+
+### Retry Allowed Versus Refused
+
+- `clear-for-retry` is allowed only when `acknowledged_submit_may_have_reached_ibkr` is false and no event receipt already exists.
+- `clear-for-retry` is refused when `acknowledged_submit_may_have_reached_ibkr` is true. In that case the lane fails closed and requires the safer `--mark-applied` path after operator verification.
+- `mark-applied` remains the safe manual resolution when broker-side evidence shows the event should be treated as already applied.
