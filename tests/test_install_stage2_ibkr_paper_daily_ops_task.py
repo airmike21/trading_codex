@@ -40,7 +40,7 @@ def _copy_installer_fixture(tmp_path: Path) -> Path:
     return fixture_root / "install_stage2_ibkr_paper_daily_ops_task.ps1"
 
 
-def test_print_only_renders_background_scheduler_install() -> None:
+def test_print_only_defaults_to_interactive_scheduler_install() -> None:
     proc = _run_print_only(
         "-StartTime",
         "16:10",
@@ -56,7 +56,8 @@ def test_print_only_renders_background_scheduler_install() -> None:
 
     assert proc.returncode == 0, proc.stderr
     stdout = proc.stdout
-    assert "# mode=Background" in stdout
+    assert "# mode=Interactive" in stdout
+    assert "InteractiveToken logged-on session; runs only while signed in" in stdout
     assert "# schedule=Mon-Fri 16:10" in stdout
     assert "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File" in stdout
     assert "TradingCodex\\stage2_ibkr_paper_ops\\launcher\\trading_codex_stage2_ibkr_paper_daily_ops.ps1" in stdout
@@ -66,6 +67,21 @@ def test_print_only_renders_background_scheduler_install() -> None:
     assert "-WslPython /__trading_codex_ibkr_stage2__/.venv/bin/python" in stdout
     assert "-LogDir C:\\trading-codex\\logs" in stdout
     assert "schtasks.exe /Create /TN \"TradingCodex\\stage2_ibkr_paper_daily_ops\" /XML" in stdout
+
+
+def test_print_only_background_mode_preserves_s4u_scheduler_install() -> None:
+    proc = _run_print_only(
+        "-InstallMode",
+        "Background",
+        "-IbkrAccountId",
+        "DUP652353",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "# mode=Background" in stdout
+    assert "S4U non-interactive; local resources only" in stdout
+    assert "stage2_ibkr_paper_daily_ops_background.xml" in stdout
 
 
 def test_print_only_uses_staged_local_launcher_instead_of_wsl_wrapper_path(tmp_path: Path) -> None:
@@ -121,6 +137,7 @@ def test_print_only_defaults_to_runtime_checkout_path() -> None:
 
     assert proc.returncode == 0, proc.stderr
     stdout = proc.stdout
+    assert "# mode=Interactive" in stdout
     assert "-WslRepoPath ~/trading_codex" in stdout
     assert "-WslPython ~/trading_codex/.venv/bin/python" in stdout
     assert "schtasks.exe /Create /TN \"TradingCodex\\stage2_ibkr_paper_daily_ops\" /XML" in stdout

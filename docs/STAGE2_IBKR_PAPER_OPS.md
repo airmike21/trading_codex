@@ -37,6 +37,7 @@ Weekday Task Scheduler installer:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\install_stage2_ibkr_paper_daily_ops_task.ps1 `
+  -InstallMode Interactive `
   -IbkrAccountId DUPXXXXXXX `
   -StartTime 16:10
 ```
@@ -50,6 +51,8 @@ It keeps the existing retained artifact surface unchanged and adds only a fail-c
 
 If any preflight check fails, the wrapper exits non-zero before the daily runner starts.
 The installer stages that PowerShell wrapper to a stable local Windows path before registering the task, so the scheduled action does not depend on `-File \\wsl$\...`.
+The installer now defaults to `-InstallMode Interactive`, which registers the task for the current logged-on user session with `InteractiveToken`.
+Use `-InstallMode Background` only if you explicitly want the prior S4U non-interactive task principal.
 Scheduler-visible wrapper logs default to:
 
 - `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log`
