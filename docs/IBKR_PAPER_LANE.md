@@ -1,7 +1,10 @@
 # IBKR Paper Lane
 
-This is the narrow Stage 2 IBKR PaperTrader path for `primary_live_candidate_v1`.
-It is intentionally limited to one strategy, long-only ETFs, whole shares, and manual or repo-managed daily `status` / `apply` operation.
+Last updated: 2026-04-06
+
+This is the Stage 2 IBKR PaperTrader lane reference for `primary_live_candidate_v1`.
+Use `docs/PROJECT_STATE.md` for current stage status and lane decision context.
+This doc is intentionally limited to one strategy, long-only ETFs, whole shares, and manual or repo-managed daily `status` / `apply` operation.
 
 ## Preconditions
 

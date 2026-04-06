@@ -1,10 +1,11 @@
 # Stage 2 Paper Ops
 
-Last updated: 2026-03-27
+Last updated: 2026-04-06
 
-This is the narrow daily operations routine for the existing local Stage 2 paper-lane groundwork.
-It exists so the primary live candidate can keep running forward cleanly, with retained evidence, without opening Stage 3 bench work or live broker work.
-Under the clarified program definition, this routine is useful groundwork and retained-evidence infrastructure, but by itself it does not complete or exit Stage 2 because Stage 2 now requires one real persistent paper-execution lane, with IBKR PaperTrader as the preferred primary lane.
+This is the reference runbook for the existing local Stage 2 paper-lane groundwork.
+Use `docs/PROJECT_STATE.md` for current stage status, blockers, and expected next move.
+This doc covers the local runner, retained artifacts, and review routine only.
+Under the Stage 2 policy, this routine is supporting groundwork and retained-evidence infrastructure. It does not by itself exit Stage 2.
 
 ## Daily Command
 
@@ -77,15 +78,15 @@ Convenience artifact:
 
 ## Windows Task Scheduler
 
-Schedule this only after the locking and Windows-path safety fixes in this slice are present on the promoted checkout you are using.
+Schedule this only from a promoted checkout that includes the required locking and Windows-path safety behavior.
 Do not point the scheduled job at a Builder worktree.
-Point it at a separate promoted checkout that is synced to the promoted `origin/master` HOLD posture.
+Point it at a separate promoted checkout that is synced to the promoted `origin/master` state you intend to operate.
 
 Use the repo-managed PowerShell wrapper:
 
 - Wrapper path: `scripts/windows/trading_codex_stage2_daily_ops.ps1`
 - The wrapper launches WSL and runs `scripts/paper_lane_daily_ops.py`.
-- The repo does not auto-register the task for you from this slice.
+- The repo does not auto-register the task for you.
 
 Example Task Scheduler action:
 
@@ -116,28 +117,8 @@ Why it stays separate:
 
 Use it only if you also want separate shadow evidence in addition to the Stage 2 paper-lane ops artifacts.
 
-## Explain Like I Am 12
+## Control-Plane Boundary
 
-What is already finished:
-
-- Stage 1 sandbox understanding is done.
-- The repo has useful Stage 2 groundwork: a persistent local paper lane, a daily button for running it forward, and retained receipts.
-
-What is not finished yet:
-
-- Clarified Stage 2 is not done yet. It now requires one real persistent paper-execution lane with reviewable paper order, fill, scheduling, reconciliation, and restart behavior accumulating evidence over time.
-- Stage 3 bench expansion is not the default next step.
-- Live funding and a clean live account are later stages.
-- Live broker trading is still later.
-
-What the next move is:
-
-- Keep running the local paper lane cleanly when it is useful as groundwork.
-- Keep the evidence.
-- After control-plane alignment, the next implementation move is a minimal IBKR PaperTrader operational acceptance path for the primary live candidate.
-- Use tastytrade sandbox as secondary regression coverage for tastytrade-specific auth/account/order-flow behavior, not as the main Stage 2 paper lane.
-- Review the first 20 market-day block for operational reliability, but do not treat that local checkpoint alone as full Stage 2 exit.
-
-What the intended live target still is:
-
-- tastytrade remains the intended live target unless evidence clearly justifies a change.
+- This doc describes the local paper-lane routine and retained artifacts only.
+- It is not the startup checkpoint for current project state or next move.
+- Use `docs/PROJECT_STATE.md` for live state, `docs/FIRST_LIVE_PROGRAM.md` for stage policy, and `docs/FIRST_LIVE_EXIT_CRITERIA.md` for stage gates.

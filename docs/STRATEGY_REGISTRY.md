@@ -1,9 +1,10 @@
 # Strategy Registry
 
-Last updated: 2026-03-27
+Last updated: 2026-04-06
 
 This registry is the durable control-plane for strategy status in the first-live program.
-Use it to keep the primary live candidate distinct from the wider research bench.
+Use `docs/PROJECT_STATE.md` for current stage, active slice, blockers, and expected next move.
+Use this file to keep the primary live candidate distinct from the wider research bench and to record promotion state.
 
 ## Registry Rules
 
@@ -11,14 +12,14 @@ Use it to keep the primary live candidate distinct from the wider research bench
 - A strategy can be in shadow, paper, or live only if its role is explicit here.
 - Promotion is sequential: `shadow -> paper -> live`.
 - Multiple strategies may exist in shadow or paper, but the first live deployment remains one strategy only.
-- Under the clarified Stage 2 definition, `paper-enabled` means the approved primary persistent paper-execution lane is operating with reviewable forward evidence over time. For the current primary candidate, that lane is IBKR PaperTrader. The existing local paper lane and daily ops routine are useful groundwork, not by themselves paper promotion.
+- Under the Stage 2 policy, `paper-enabled` means the approved primary persistent paper-execution lane is operating with reviewable forward evidence over time. For the primary candidate, that lane is IBKR PaperTrader. The existing local paper lane and daily ops routine are useful groundwork, not by themselves paper promotion.
 - Update this file whenever a strategy changes status or the primary live candidate changes.
 
 ## Primary Live Candidate
 
-| Strategy ID | Status | Summary | Cadence | Instruments | Sizing | Initial constraints | Next meaningful move |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1` | Primary live candidate; Stage 2 reopened; not yet IBKR-paper-enabled | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Complete a minimal IBKR PaperTrader operational acceptance path; keep the existing local paper lane and daily ops routine as supporting groundwork, and use tastytrade sandbox as secondary regression coverage for eventual tastytrade live-path parity |
+| Strategy ID | Role | Status | Summary | Cadence | Instruments | Sizing | Initial constraints | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `primary_live_candidate_v1` | Primary live candidate | Not paper-enabled | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Approved Stage 2 primary lane is IBKR PaperTrader. Existing local paper lane and daily ops routine are supporting groundwork, not paper promotion by themselves. |
 
 ## Shadow Bench
 
@@ -30,7 +31,7 @@ Use it to keep the primary live candidate distinct from the wider research bench
 
 | Strategy ID | Status | Paper lane | Current scope | Notes |
 | --- | --- | --- | --- | --- |
-| None yet | N/A | No approved primary persistent paper-execution lane has been exited yet under the clarified Stage 2 definition. | Existing local `scripts/paper_lane.py` + `scripts/paper_lane_daily_ops.py` remain useful groundwork and retained-evidence infrastructure; tastytrade sandbox remains secondary regression coverage only. | Do not promote paper-enabled status until IBKR PaperTrader is operating cleanly for `primary_live_candidate_v1` under the current Stage 2 plan. |
+| None yet | N/A | No approved primary persistent paper-execution lane has been exited yet under the Stage 2 policy. | Existing local `scripts/paper_lane.py` + `scripts/paper_lane_daily_ops.py` remain useful groundwork and retained-evidence infrastructure; tastytrade sandbox remains secondary regression coverage only. | Add the first row here only after the approved paper lane is operating cleanly with reviewable forward evidence. |
 
 ## Live / Promoted Strategies
 
@@ -47,9 +48,9 @@ Promote a strategy from shadow to paper only when all of the following are true:
 - the strategy thesis, universe, cadence, and constraints are documented in this registry
 - the strategy has a bounded role relative to the first-live program
 - shadow evidence is clean enough that the strategy is worth spending paper-lane attention on
-- promoting it will not delay the current primary live candidate without evidence
+- promoting it will not delay the primary live candidate without evidence
 - one real persistent paper-execution lane exists for that specific strategy and is operationally reviewable enough to accumulate forward paper evidence over time
-- for the current Stage 2 path, that primary lane is IBKR PaperTrader unless the control plane is explicitly changed
+- for the approved Stage 2 policy, that primary lane is IBKR PaperTrader unless the control plane is explicitly changed
 
 ### Paper -> Live
 

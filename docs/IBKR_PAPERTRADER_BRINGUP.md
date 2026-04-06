@@ -1,9 +1,10 @@
 # IBKR PaperTrader Bring-Up
 
-Last updated: 2026-03-30
+Last updated: 2026-04-06
 
-This is the narrow Stage 2 bring-up / acceptance path for `primary_live_candidate_v1`.
-It exists to prove the preferred IBKR PaperTrader lane is reachable, explicitly paper-verified, and operationally reviewable without opening Stage 3, daily scheduler work, or broad broker abstraction.
+This is the Stage 2 bring-up and acceptance reference for `primary_live_candidate_v1`.
+Use `docs/PROJECT_STATE.md` for current stage status, blockers, and expected next move.
+This doc exists to prove the approved IBKR PaperTrader lane is reachable, explicitly paper-verified, and operationally reviewable without opening Stage 3, daily scheduler work, or broad broker abstraction.
 
 It reuses the existing `scripts/ibkr_paper_lane.py` status/apply machinery.
 By default it is fail-closed and no-write at the broker.
@@ -18,7 +19,7 @@ Use `scripts/ibkr_paper_bringup.py` to:
 - optionally attempt a real IBKR PaperTrader apply only behind an unmistakable opt-in flag
 - retain machine-readable evidence plus a short human-readable summary outside the repo tree
 
-For the current promoted Stage 2 acceptance path, use the `dual_mom_vol10_cash_core` preset unless you are intentionally validating a different preset.
+For the approved Stage 2 acceptance path, use the `dual_mom_vol10_cash_core` preset unless you are intentionally validating a different preset.
 
 ## Prerequisites / External Blockers
 
@@ -139,7 +140,7 @@ Stop and HOLD for operations instead of opening more repo work when:
 
 ## Boundaries
 
-- No scheduler or Windows task work in this slice
+- No scheduler or Windows task work in this bring-up workflow
 - No broad broker abstraction
 - No Stage 3 bench expansion
 - No live-account promotion
