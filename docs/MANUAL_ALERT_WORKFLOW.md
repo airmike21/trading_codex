@@ -75,4 +75,3 @@ The correct no-op behavior is zero bytes, not a blank line.
 - CSV logging appends only on emit.
 - Do not change repo-tracked signal logic casually.
   Preserve the one-line stdout contracts and the exact `event_id` composition.
-- Preserve uncommitted local Windows launcher work in `scripts/windows/trading_codex_next_action_alert.ps1`.
