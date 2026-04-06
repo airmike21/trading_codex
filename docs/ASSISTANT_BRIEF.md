@@ -27,7 +27,7 @@ Use `docs/PROJECT_STATE.md` for live state.
 ## Standing Program Rules
 
 - Do not commit directly to `master` unless explicitly instructed.
-- Preserve intentional uncommitted Windows PS1 work in `scripts/windows/trading_codex_next_action_alert.ps1`.
+- Do not overwrite user-local edits in `scripts/windows/trading_codex_next_action_alert.ps1` without explicit instruction.
 - Keep `configs/presets.json` local-only, ignored, and uncommitted.
 - Tastytrade remains the intended live target unless evidence clearly justifies change.
 - IBKR PaperTrader is the approved primary persistent paper-execution lane for Stage 2.
