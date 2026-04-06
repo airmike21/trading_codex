@@ -3,10 +3,11 @@
 Create or print a weekday Task Scheduler entry for the Stage 2 IBKR paper daily ops lane.
 
 .DESCRIPTION
-Creates one weekday background task in Windows Task Scheduler that launches
+Creates one weekday Task Scheduler task that launches
 `trading_codex_stage2_ibkr_paper_daily_ops.ps1` from a staged local Windows
 path as the single scheduled entrypoint for the Stage 2 IBKR PaperTrader daily
-ops lane. This avoids relying on Task Scheduler launching a PowerShell script
+ops lane. The default install mode uses the current logged-on interactive user
+session. This avoids relying on Task Scheduler launching a PowerShell script
 directly from `\\wsl$\...`.
 
 .PARAMETER FolderName
@@ -55,6 +56,13 @@ Enable TLS verification for the IBKR base URL.
 .PARAMETER LogDir
 Optional Windows log directory override.
 
+.PARAMETER InstallMode
+Task registration mode:
+- `Interactive`: register with the current logged-on user session. This is the
+  default Stage 2 acceptance path for this machine/context.
+- `Background`: register with non-interactive S4U. This preserves the prior
+  background-only behavior.
+
 .PARAMETER PrintOnly
 Print the install plan without executing it.
 
@@ -62,10 +70,10 @@ Print the install plan without executing it.
 After creating the task, run it once immediately.
 
 .EXAMPLE
-./install_stage2_ibkr_paper_daily_ops_task.ps1 -PrintOnly -IbkrAccountId DUPXXXXXXX
+./install_stage2_ibkr_paper_daily_ops_task.ps1 -InstallMode Interactive -PrintOnly -IbkrAccountId DUPXXXXXXX
 
 .EXAMPLE
-./install_stage2_ibkr_paper_daily_ops_task.ps1 -StartTime 16:10 -RunNow -IbkrAccountId DUPXXXXXXX
+./install_stage2_ibkr_paper_daily_ops_task.ps1 -InstallMode Background -StartTime 16:10 -RunNow -IbkrAccountId DUPXXXXXXX
 #>
 [CmdletBinding()]
 param(
@@ -85,6 +93,8 @@ param(
   [double]$IbkrTimeoutSeconds = 15.0,
   [switch]$VerifyIbkrSsl,
   [string]$LogDir,
+  [ValidateSet("Interactive", "Background")]
+  [string]$InstallMode = "Interactive",
   [switch]$PrintOnly,
   [switch]$RunNow
 )
@@ -107,6 +117,34 @@ if (-not (Test-Path -LiteralPath $wrapperPath)) {
 
 $currentUserName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+
+function Get-InstallModeSpec {
+  param(
+    [string]$ModeName
+  )
+
+  switch ($ModeName) {
+    "Interactive" {
+      return [pscustomobject]@{
+        ModeName = "Interactive"
+        LogonType = "InteractiveToken"
+        PrincipalPreview = "$currentUserName (InteractiveToken logged-on session; runs only while signed in)"
+        XmlFileName = "stage2_ibkr_paper_daily_ops_interactive.xml"
+      }
+    }
+    "Background" {
+      return [pscustomobject]@{
+        ModeName = "Background"
+        LogonType = "S4U"
+        PrincipalPreview = "$currentUserName (S4U non-interactive; local resources only)"
+        XmlFileName = "stage2_ibkr_paper_daily_ops_background.xml"
+      }
+    }
+    default {
+      throw "Unsupported InstallMode: $ModeName"
+    }
+  }
+}
 
 function Quote-WindowsArg {
   param(
@@ -154,6 +192,7 @@ function Get-StagedWrapperPath {
 }
 
 function New-TaskSpec {
+  $installModeSpec = Get-InstallModeSpec -ModeName $InstallMode
   $taskName = "{0}\stage2_ibkr_paper_daily_ops" -f $FolderName
   $scheduledWrapperPath = Get-StagedWrapperPath
   $argList = @(
@@ -202,10 +241,14 @@ function New-TaskSpec {
   return [pscustomobject]@{
     TaskName = $taskName
     StartTime = $StartTime
+    InstallMode = $installModeSpec.ModeName
+    PrincipalPreview = $installModeSpec.PrincipalPreview
+    TaskLogonType = $installModeSpec.LogonType
+    XmlFileName = $installModeSpec.XmlFileName
     ActionExecute = "powershell.exe"
     ActionArguments = $arguments
     ScheduledWrapperPath = $scheduledWrapperPath
-    PrintableCreate = "schtasks.exe /Create /TN `"$taskName`" /XML `"%TEMP%\stage2_ibkr_paper_daily_ops.xml`" /F"
+    PrintableCreate = "schtasks.exe /Create /TN `"$taskName`" /XML `"%TEMP%\$($installModeSpec.XmlFileName)`" /F"
   }
 }
 
@@ -213,8 +256,8 @@ function Write-TaskPreview {
   param(
     [pscustomobject]$Task
   )
-  Write-Output "# mode=Background"
-  Write-Output "# principal=$currentUserName (S4U non-interactive; local resources only)"
+  Write-Output "# mode=$($Task.InstallMode)"
+  Write-Output "# principal=$($Task.PrincipalPreview)"
   Write-Output "# schedule=Mon-Fri $($Task.StartTime)"
   Write-Output "# action=$($Task.ActionExecute) $($Task.ActionArguments)"
   Write-Output $Task.PrintableCreate
@@ -223,7 +266,7 @@ function Write-TaskPreview {
   }
 }
 
-function New-BackgroundTaskXml {
+function New-TaskXml {
   param(
     [pscustomobject]$Task
   )
@@ -234,6 +277,7 @@ function New-BackgroundTaskXml {
   $escapedAuthor = ConvertTo-XmlText -Value $currentUserName
   $escapedUri = ConvertTo-XmlText -Value $taskUri
   $escapedSid = ConvertTo-XmlText -Value $currentUserSid
+  $escapedLogonType = ConvertTo-XmlText -Value $Task.TaskLogonType
   $escapedExecute = ConvertTo-XmlText -Value $Task.ActionExecute
   $escapedArguments = ConvertTo-XmlText -Value $Task.ActionArguments
   $escapedStartBoundary = ConvertTo-XmlText -Value $startBoundary
@@ -249,7 +293,7 @@ function New-BackgroundTaskXml {
   <Principals>
     <Principal id="Author">
       <UserId>$escapedSid</UserId>
-      <LogonType>S4U</LogonType>
+      <LogonType>$escapedLogonType</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
@@ -284,18 +328,18 @@ function New-BackgroundTaskXml {
 "@
 }
 
-function Install-BackgroundTask {
+function Install-Task {
   param(
     [pscustomobject]$Task
   )
 
-  $xmlPath = Join-Path $env:TEMP "stage2_ibkr_paper_daily_ops.xml"
+  $xmlPath = Join-Path $env:TEMP $Task.XmlFileName
   try {
     $launcherDir = Split-Path -Parent $Task.ScheduledWrapperPath
     New-Item -ItemType Directory -Force -Path $launcherDir | Out-Null
     Copy-Item -LiteralPath $wrapperPath -Destination $Task.ScheduledWrapperPath -Force
 
-    $xml = New-BackgroundTaskXml -Task $Task
+    $xml = New-TaskXml -Task $Task
     Set-Content -LiteralPath $xmlPath -Value $xml -Encoding Unicode
     & schtasks.exe /Create /TN $Task.TaskName /XML $xmlPath /F
     if ($LASTEXITCODE -ne 0) {
@@ -325,9 +369,9 @@ if ($PrintOnly) {
   exit 0
 }
 
-Install-BackgroundTask -Task $task
+Install-Task -Task $task
 if ($RunNow) {
   Run-TaskNow -Task $task
 }
 
-Write-Output "Installed Stage 2 IBKR paper daily ops task: $($task.TaskName)"
+Write-Output "Installed Stage 2 IBKR paper daily ops task in $($task.InstallMode) mode: $($task.TaskName)"
