@@ -57,6 +57,8 @@ Scheduler-visible wrapper logs default to:
 
 - `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log`
 
+That wrapper log now records the resolved commands plus the final launcher result, so a failed scheduled run shows whether the failure happened in wrapper setup, preflight command launch, preflight non-zero return, daily-run command launch, daily-run non-zero return, or an unexpected PowerShell exception path.
+
 ## Review Command
 
 Text summary:
