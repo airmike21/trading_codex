@@ -1,6 +1,9 @@
 # Manual Alert Workflow
 
+Last updated: 2026-04-06
+
 This guide explains how to interpret and use the verified preset alerts without breaking the underlying contracts.
+Use `docs/PROJECT_STATE.md` for current project state. This file is an operator reference, not startup truth.
 
 ## What The Alert Line Means
 
@@ -20,7 +23,7 @@ Interpret it as a manual trading prompt, not an auto-execution order.
 - `HOLD`: no manual trade; keep the current target
 - `RESIZE`: keep the same symbol but change position size
 
-Important note for the current presets:
+Important note for the documented presets:
 
 - Because `BIL` is the configured cash-like defensive, a defensive move is usually a `ROTATE` into `BIL`, not an `EXIT` to literal cash.
 

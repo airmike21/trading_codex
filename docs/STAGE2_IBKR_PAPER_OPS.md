@@ -1,10 +1,11 @@
 # Stage 2 IBKR Paper Ops
 
-Last updated: 2026-04-03
+Last updated: 2026-04-06
 
-This is the narrow daily operations routine for the clarified Stage 2 IBKR PaperTrader lane.
-It exists so `primary_live_candidate_v1` can keep running through the real IBKR PaperTrader control plane with retained forward evidence, while keeping scope limited to one strategy, long-only ETFs, whole shares, and daily/weekly execution.
-This slice advances Stage 2, but it does not claim Stage 2 is complete.
+This is the reference runbook for the Stage 2 IBKR PaperTrader daily operations lane.
+Use `docs/PROJECT_STATE.md` for current stage status, blockers, and expected next move.
+This doc covers the lane commands, retained artifacts, and review workflow only.
+This runbook supports Stage 2, but it does not by itself establish Stage 2 exit.
 
 ## Daily Command
 

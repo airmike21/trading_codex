@@ -1,13 +1,16 @@
 # Daily Trading Runbook
 
-This runbook turns the current verified preset behavior into a repeatable manual trading routine.
-It is grounded in the audited runtime behavior from 2026-03-06 and the current local preset layer.
+Last updated: 2026-04-06
+
+This runbook turns the documented preset behavior into a repeatable manual trading routine.
+It is grounded in the audited runtime behavior from 2026-03-06 and the local preset layer captured during that audit.
+Use `docs/PROJECT_STATE.md` for current project state. This file is a trading reference, not startup truth.
 
 ## Before You Start
 
 - Use the repo venv path for commands: `~/trading_codex/.venv/bin/python`
 - Treat `configs/presets.json` as local-only configuration. Do not commit it.
-- Current defensive asset across the verified presets is `BIL`.
+- The documented defensive asset across the verified presets in this runbook is `BIL`.
 - In this sandboxed WSL environment, preset state and CSV logging currently point at `/tmp/trading_codex/...`.
 - `daily_signal.py` prints exactly one line when it emits and prints nothing at all when there is no emit.
 
@@ -18,7 +21,7 @@ It is grounded in the audited runtime behavior from 2026-03-06 and the current l
 2. Choose the preset you want to trade manually.
    Use `vm_core` for change-only value+momentum checks.
    Use `vm_core_due` when you want the same signal plus one due-date reminder.
-   Use `dual_mom_core` for the current dual momentum preset.
+   Use `dual_mom_core` for the documented dual momentum preset.
    An opt-in `dual_mom_core_vt` variant is available in `configs/presets.example.json` if you want the evaluated `0.12 / 21` vol-target overlay without changing the existing preset.
 3. Run `daily_signal.py` for that preset once.
 4. If stdout is empty, stop.

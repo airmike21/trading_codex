@@ -1,7 +1,9 @@
 # Preset Behavior Reference
 
-This reference documents the verified production-style presets currently defined in local `configs/presets.json`.
-It is based on the audited behavior from 2026-03-06 and the current preset arguments.
+Last updated: 2026-04-06
+
+This reference documents the verified production-style presets captured from local `configs/presets.json` during the 2026-03-06 audit.
+Use it as behavior reference, not as live project state or startup truth.
 
 ## Ground Rules
 

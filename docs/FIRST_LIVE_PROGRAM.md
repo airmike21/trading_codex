@@ -1,30 +1,10 @@
 # First Live Program
 
-Last updated: 2026-03-27
+Last updated: 2026-04-06
 
 This document is the durable control-plane for the first-live program.
 It exists so future chats and future Builder slices ground on the same staged plan instead of recreating it from conversation.
-
-## Grounding
-
-- Promoted baseline: `origin/master` at `3a705dd8c3df5f064fa99df398cfdfd296c19de9`
-- Most recent promoted purpose: `docs: reopen stage2 around real paper execution lane`
-- Prior promoted docs sync: `95cf8e5095c8ea4deafb9793de14016a340a76b5` (`docs: sync control plane after stage2 paper lane`)
-- Stage 1 bounded tastytrade sandbox work is complete at `ed91cb19f64f132a16a6c7ecf03a4c5323cee53f`.
-- Promoted master contains useful local Stage 2 groundwork: `scripts/paper_lane.py`, `scripts/paper_lane_daily_ops.py`, and retained local paper-lane artifacts.
-- Under the clarified program definition, Stage 2 is reopened and not yet exited. The existing local persistent paper lane is useful groundwork, but Stage 2 now requires one real persistent paper-execution lane, with IBKR PaperTrader approved as the preferred primary lane.
-- After this control-plane alignment, the meaningful next implementation move is a minimal IBKR PaperTrader operational acceptance path for the primary live candidate. That does not open Stage 3 or require generalized broker abstraction first.
-
-## Current Program Status
-
-- Current stage status: Stage 1 complete; Stage 2 reopened/in progress; Stage 3 not started as a default coding priority.
-- IBKR PaperTrader is the preferred primary persistent paper-execution lane for clarified Stage 2.
-- tastytrade sandbox remains relevant as secondary regression coverage for tastytrade-specific auth/account/order-flow behavior on the intended live path.
-- The primary live candidate has useful local persistent paper-lane groundwork and daily ops evidence infrastructure.
-- That groundwork is not, by itself, enough to satisfy the clarified Stage 2 definition.
-- Stage 2 does not authorize broad bench expansion by default.
-- Stage 2 does not authorize live promotion.
-- Stage 2 does not require generalized broker abstraction before the approved primary paper lane proves useful.
+Use `docs/PROJECT_STATE.md` for current stage status, active objective, and expected next move.
 
 ## Staged Program
 
@@ -43,7 +23,7 @@ This stage is intentionally bounded. The goal is not to build every tastytrade c
 
 Build one serious paper-trading lane that is deep enough for multi-month forward testing, while keeping the initial scope narrow.
 
-For clarified Stage 2, the preferred primary persistent paper-execution lane is IBKR PaperTrader. The purpose of this stage is not just local mock bookkeeping. The purpose is to run one strategy through IBKR PaperTrader so we can observe paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety in a way that is operationally real enough to judge Stage 2.
+For Stage 2, the approved primary persistent paper-execution lane is IBKR PaperTrader. The purpose of this stage is not just local mock bookkeeping. The purpose is to run one strategy through IBKR PaperTrader so we can observe paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety in a way that is operationally real enough to judge Stage 2.
 
 Keep the scope narrow:
 
@@ -91,7 +71,7 @@ The first live deployment is intentionally narrow:
 ## Durable Policies
 
 - Tastytrade remains the live target unless evidence clearly justifies change.
-- For clarified Stage 2, IBKR PaperTrader is the preferred primary persistent paper-execution lane.
+- For Stage 2, IBKR PaperTrader is the approved primary persistent paper-execution lane.
 - tastytrade sandbox remains secondary regression coverage for tastytrade-specific auth/account/order-flow behavior on the intended live path, not the main Stage 2 paper lane.
 - The program is one live strategy and many shadow/paper strategies.
 - The first live account must be clean and separate from discretionary/manual positions.
@@ -104,8 +84,8 @@ The first live deployment is intentionally narrow:
 
 ## How Future Chats Should Use This Doc
 
-1. Start by identifying the current stage.
+1. Read `docs/PROJECT_STATE.md` to identify the current stage and active objective.
 2. Read the matching exit criteria in `docs/FIRST_LIVE_EXIT_CRITERIA.md`.
-3. Pick the meaningful next move that closes the current stage or removes a real blocker for it.
+3. Use this document to judge whether proposed work closes the current stage or removes a real blocker for it.
 4. Use `docs/STRATEGY_REGISTRY.md` to see which strategy is primary, which ones are shadow-only, which ones are paper-enabled, and which ones are live-promoted.
 5. If proposing a stage change or broker change, cite the evidence that justifies the deviation.

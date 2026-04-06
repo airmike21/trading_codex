@@ -1,17 +1,11 @@
 # Promotion Runbook
 
-Last updated: 2026-04-01
+Last updated: 2026-04-06
 
 This runbook defines the only approved promotion path.
 Use it after Builder has delivered an exact diff and exact file list.
-
-## Architecture
-
-- Brain defines the commands and verifies the output.
-- Builder edits repo files and supplies the exact diff plus exact file list.
-- Reviewer validates the exact Builder commit when review is required.
-- Human runs every terminal command.
-- Human never patches repo files by hand.
+Role architecture lives in `docs/WORKFLOW.md`.
+Current branch and slice state should be taken from `docs/PROJECT_STATE.md` plus the exact Builder output under review.
 
 ## Preflight Checklist
 

@@ -1,9 +1,10 @@
 # Workflow
 
-Last updated: 2026-04-01
+Last updated: 2026-04-06
 
 This document defines the strict four-role workflow for Trading Codex changes and promotions.
 Use it with `docs/PROMOTION_RUNBOOK.md`.
+Current project state lives in `docs/PROJECT_STATE.md`.
 
 ## Architecture
 
