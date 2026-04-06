@@ -61,7 +61,7 @@ Windows wrapper notes:
 - the installer defaults to `-InstallMode Interactive`, which registers the task with `InteractiveToken` for the current logged-on user session; `-InstallMode Background` preserves the older S4U non-interactive principal if you explicitly need it
 - it defaults to the repo-managed `configs/presets.example.json` path instead of silently switching between preset files
 - before daily ops it runs a fail-closed preflight that verifies the configured paper account id, the expected preset file, and a reachable IBKR Client Portal Gateway session explicitly marked as paper
-- wrapper, preflight, and daily-ops output is appended to `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log` unless `-LogDir` overrides it
+- wrapper, preflight, and daily-ops output is appended to `%LOCALAPPDATA%\TradingCodex\stage2_ibkr_paper_ops\logs\stage2_ibkr_paper_daily_ops-YYYYMMDD.log` unless `-LogDir` overrides it, including a final `launcher_result=...` summary that distinguishes wrapper setup failures, preflight launch failures, preflight non-zero returns, daily-run launch failures, daily-run non-zero returns, and unexpected PowerShell exceptions
 - if the gateway is down, unauthenticated, not marked as paper, or missing the configured account, the wrapper exits non-zero before calling `scripts/ibkr_paper_lane_daily_ops.py`
 
 Read-only ops review for the retained forward-evidence lane:

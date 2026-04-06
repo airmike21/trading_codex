@@ -97,6 +97,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:LauncherLogPath = $null
+$script:LauncherStage = "wrapper_startup"
 
 function ConvertTo-BashArg {
   param(
@@ -274,6 +276,51 @@ function New-DefaultLogDir {
   return (Join-Path $env:TEMP "TradingCodex\stage2_ibkr_paper_ops\logs")
 }
 
+function ConvertTo-LauncherText {
+  param(
+    [AllowNull()]
+    [object]$Value
+  )
+
+  if ($null -eq $Value) {
+    return ""
+  }
+
+  $text = [string]$Value
+  $text = $text -replace '\s+', ' '
+  return $text.Trim()
+}
+
+function Get-LauncherExceptionDetail {
+  param(
+    [System.Management.Automation.ErrorRecord]$ErrorRecord
+  )
+
+  if ($null -eq $ErrorRecord) {
+    return ""
+  }
+
+  $parts = @()
+  $exceptionType = ConvertTo-LauncherText -Value $ErrorRecord.Exception.GetType().FullName
+  $exceptionMessage = ConvertTo-LauncherText -Value $ErrorRecord.Exception.Message
+  $fullyQualifiedErrorId = ConvertTo-LauncherText -Value $ErrorRecord.FullyQualifiedErrorId
+  $scriptStack = ConvertTo-LauncherText -Value $ErrorRecord.ScriptStackTrace
+  if (-not [string]::IsNullOrWhiteSpace($exceptionType)) {
+    $parts += "exception_type=$exceptionType"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($exceptionMessage)) {
+    $parts += "message=$exceptionMessage"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($fullyQualifiedErrorId)) {
+    $parts += "error_id=$fullyQualifiedErrorId"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($scriptStack)) {
+    $parts += "script_stack=$scriptStack"
+  }
+
+  return [string]::Join(" ", $parts)
+}
+
 function Write-LauncherLog {
   param(
     [string]$Message,
@@ -281,10 +328,44 @@ function Write-LauncherLog {
   )
   $timestampIso = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
   $line = "[$timestampIso] [$Level] $Message"
-  Write-Output $line
+  [Console]::Out.WriteLine($line)
   if (-not [string]::IsNullOrWhiteSpace($script:LauncherLogPath)) {
-    Add-Content -LiteralPath $script:LauncherLogPath -Value $line
+    try {
+      Add-Content -LiteralPath $script:LauncherLogPath -Value $line
+    }
+    catch {
+      $appendDetail = Get-LauncherExceptionDetail -ErrorRecord $_
+      $warnLine = "[$timestampIso] [WARN] launcher_log_append_failed path=$script:LauncherLogPath $appendDetail"
+      [Console]::Out.WriteLine($warnLine)
+    }
   }
+}
+
+function Write-LauncherResult {
+  param(
+    [string]$Status,
+    [string]$Stage,
+    [int]$ExitCode,
+    [string]$Detail = "",
+    [string]$Level
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Level)) {
+    if ($ExitCode -eq 0) {
+      $Level = "INFO"
+    }
+    else {
+      $Level = "ERROR"
+    }
+  }
+
+  $message = "launcher_result=$Status stage=$Stage exit_code=$ExitCode"
+  if (-not [string]::IsNullOrWhiteSpace($Detail)) {
+    $message = "$message $Detail"
+  }
+
+  Write-LauncherLog -Level $Level -Message $message
+  return $ExitCode
 }
 
 function Invoke-WslLoggedCommand {
@@ -295,15 +376,35 @@ function Invoke-WslLoggedCommand {
   )
 
   Write-LauncherLog -Message "starting $Description"
-  & wsl.exe -d $Distro -- bash -lc $BashCommand 2>&1 | Tee-Object -FilePath $script:LauncherLogPath -Append
-  $exitCode = $LASTEXITCODE
+  try {
+    & wsl.exe -d $Distro -- bash -lc $BashCommand 2>&1 |
+      Tee-Object -FilePath $script:LauncherLogPath -Append |
+      ForEach-Object { [Console]::Out.WriteLine([string]$_) }
+    $exitCode = $LASTEXITCODE
+  }
+  catch {
+    $exceptionDetail = Get-LauncherExceptionDetail -ErrorRecord $_
+    Write-LauncherLog -Level "ERROR" -Message "$Description launch_failed=true exit_code=1 $exceptionDetail"
+    return [pscustomobject]@{
+      Description = $Description
+      ExitCode = 1
+      LaunchFailed = $true
+      ExceptionDetail = $exceptionDetail
+    }
+  }
+
   if ($exitCode -ne 0) {
     Write-LauncherLog -Level "ERROR" -Message "$Description failed exit_code=$exitCode"
   }
   else {
     Write-LauncherLog -Message "$Description completed exit_code=0"
   }
-  return $exitCode
+  return [pscustomobject]@{
+    Description = $Description
+    ExitCode = $exitCode
+    LaunchFailed = $false
+    ExceptionDetail = ""
+  }
 }
 
 if ($Help) {
@@ -318,118 +419,142 @@ if ([string]::IsNullOrWhiteSpace($LogDir)) {
   $LogDir = New-DefaultLogDir
 }
 
-$resolvedLogDir = Resolve-LocalPath -PathValue $LogDir
-$logDate = (Get-Date).ToString("yyyyMMdd")
-$script:LauncherLogPath = Join-Path $resolvedLogDir "stage2_ibkr_paper_daily_ops-$logDate.log"
-$resolvedPresetsFile = Resolve-ExpectedPresetsFileArg -Distro $WslDistro -RepoPath $WslRepoPath -ExplicitPresetsFile $PresetsFile
-$resolvedAccountIdInfo = Resolve-IbkrAccountIdValue -ExplicitValue $IbkrAccountId -Distro $WslDistro
-$resolvedAccountId = $resolvedAccountIdInfo.Value
+try {
+  $script:LauncherStage = "wrapper_setup"
+  $resolvedLogDir = Resolve-LocalPath -PathValue $LogDir
+  $logDate = (Get-Date).ToString("yyyyMMdd")
+  $script:LauncherLogPath = Join-Path $resolvedLogDir "stage2_ibkr_paper_daily_ops-$logDate.log"
+  if (-not $PrintOnly) {
+    New-Item -ItemType Directory -Force -Path $resolvedLogDir | Out-Null
+  }
 
-$preflightArgs = @(
-  "--preset",
-  $Preset,
-  "--presets-file",
-  $resolvedPresetsFile,
-  "--ibkr-base-url",
-  $IbkrBaseUrl,
-  "--ibkr-timeout-seconds",
-  $IbkrTimeoutSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
-)
-if (-not [string]::IsNullOrWhiteSpace($resolvedAccountId)) {
-  $preflightArgs += @("--ibkr-account-id", $resolvedAccountId)
-}
-if ($VerifyIbkrSsl) {
-  $preflightArgs += "--ibkr-verify-ssl"
-}
-else {
-  $preflightArgs += "--no-ibkr-verify-ssl"
-}
+  $resolvedPresetsFile = Resolve-ExpectedPresetsFileArg -Distro $WslDistro -RepoPath $WslRepoPath -ExplicitPresetsFile $PresetsFile
+  $resolvedAccountIdInfo = Resolve-IbkrAccountIdValue -ExplicitValue $IbkrAccountId -Distro $WslDistro
+  $resolvedAccountId = $resolvedAccountIdInfo.Value
 
-$dailyOpsArgs = @(
-  "--preset",
-  $Preset,
-  "--provider",
-  $Provider,
-  "--presets-file",
-  $resolvedPresetsFile,
-  "--ibkr-base-url",
-  $IbkrBaseUrl,
-  "--ibkr-timeout-seconds",
-  $IbkrTimeoutSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
-)
-if (-not [string]::IsNullOrWhiteSpace($resolvedAccountId)) {
-  $dailyOpsArgs += @("--ibkr-account-id", $resolvedAccountId)
-}
-if ($VerifyIbkrSsl) {
-  $dailyOpsArgs += "--ibkr-verify-ssl"
-}
-else {
-  $dailyOpsArgs += "--no-ibkr-verify-ssl"
-}
-if (-not [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
-  $dailyOpsArgs += @("--archive-root", (Resolve-WslPath -PathValue $ArchiveRoot -Distro $WslDistro))
-}
-if (-not [string]::IsNullOrWhiteSpace($IbkrBaseDir)) {
-  $dailyOpsArgs += @("--ibkr-base-dir", (Resolve-WslPath -PathValue $IbkrBaseDir -Distro $WslDistro))
-}
-if (-not [string]::IsNullOrWhiteSpace($Timestamp)) {
-  $dailyOpsArgs += @("--timestamp", $Timestamp)
-}
+  $preflightArgs = @(
+    "--preset",
+    $Preset,
+    "--presets-file",
+    $resolvedPresetsFile,
+    "--ibkr-base-url",
+    $IbkrBaseUrl,
+    "--ibkr-timeout-seconds",
+    $IbkrTimeoutSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+  )
+  if (-not [string]::IsNullOrWhiteSpace($resolvedAccountId)) {
+    $preflightArgs += @("--ibkr-account-id", $resolvedAccountId)
+  }
+  if ($VerifyIbkrSsl) {
+    $preflightArgs += "--ibkr-verify-ssl"
+  }
+  else {
+    $preflightArgs += "--no-ibkr-verify-ssl"
+  }
 
-$preflightCommand = Build-BashCommand `
-  -RepoPath $WslRepoPath `
-  -PythonCmd $WslPython `
-  -ScriptPath "scripts/ibkr_paper_lane_daily_ops_preflight.py" `
-  -ScriptArgs $preflightArgs
-$dailyOpsCommand = Build-BashCommand `
-  -RepoPath $WslRepoPath `
-  -PythonCmd $WslPython `
-  -ScriptPath "scripts/ibkr_paper_lane_daily_ops.py" `
-  -ScriptArgs $dailyOpsArgs
+  $dailyOpsArgs = @(
+    "--preset",
+    $Preset,
+    "--provider",
+    $Provider,
+    "--presets-file",
+    $resolvedPresetsFile,
+    "--ibkr-base-url",
+    $IbkrBaseUrl,
+    "--ibkr-timeout-seconds",
+    $IbkrTimeoutSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+  )
+  if (-not [string]::IsNullOrWhiteSpace($resolvedAccountId)) {
+    $dailyOpsArgs += @("--ibkr-account-id", $resolvedAccountId)
+  }
+  if ($VerifyIbkrSsl) {
+    $dailyOpsArgs += "--ibkr-verify-ssl"
+  }
+  else {
+    $dailyOpsArgs += "--no-ibkr-verify-ssl"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
+    $dailyOpsArgs += @("--archive-root", (Resolve-WslPath -PathValue $ArchiveRoot -Distro $WslDistro))
+  }
+  if (-not [string]::IsNullOrWhiteSpace($IbkrBaseDir)) {
+    $dailyOpsArgs += @("--ibkr-base-dir", (Resolve-WslPath -PathValue $IbkrBaseDir -Distro $WslDistro))
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Timestamp)) {
+    $dailyOpsArgs += @("--timestamp", $Timestamp)
+  }
 
-if ($PrintOnly) {
-  Write-Output "repo_path=$WslRepoPath"
-  Write-Output "python_path=$WslPython"
-  Write-Output "presets_file=$resolvedPresetsFile"
-  Write-Output "log_path=$script:LauncherLogPath"
-  Write-Output "ibkr_account_id_source=$($resolvedAccountIdInfo.Source)"
-  Write-Output "preflight_command=$preflightCommand"
-  Write-Output "command=$dailyOpsCommand"
-  exit 0
-}
+  $preflightCommand = Build-BashCommand `
+    -RepoPath $WslRepoPath `
+    -PythonCmd $WslPython `
+    -ScriptPath "scripts/ibkr_paper_lane_daily_ops_preflight.py" `
+    -ScriptArgs $preflightArgs
+  $dailyOpsCommand = Build-BashCommand `
+    -RepoPath $WslRepoPath `
+    -PythonCmd $WslPython `
+    -ScriptPath "scripts/ibkr_paper_lane_daily_ops.py" `
+    -ScriptArgs $dailyOpsArgs
 
-New-Item -ItemType Directory -Force -Path $resolvedLogDir | Out-Null
+  if ($PrintOnly) {
+    Write-Output "repo_path=$WslRepoPath"
+    Write-Output "python_path=$WslPython"
+    Write-Output "presets_file=$resolvedPresetsFile"
+    Write-Output "log_path=$script:LauncherLogPath"
+    Write-Output "ibkr_account_id_source=$($resolvedAccountIdInfo.Source)"
+    Write-Output "preflight_command=$preflightCommand"
+    Write-Output "command=$dailyOpsCommand"
+    exit 0
+  }
 
-if ([string]::IsNullOrWhiteSpace($resolvedAccountId)) {
-  Write-LauncherLog -Level "ERROR" -Message "IBKR PaperTrader account id is required. Pass -IbkrAccountId or set IBKR_PAPER_ACCOUNT_ID."
-  exit 2
-}
-if (-not (Test-WslDirectoryExists -Distro $WslDistro -PathValue $WslRepoPath)) {
-  Write-LauncherLog -Level "ERROR" -Message "WSL repo path not found: $WslRepoPath"
-  exit 2
-}
-if (-not (Test-WslFileExists -Distro $WslDistro -PathValue $WslPython)) {
-  Write-LauncherLog -Level "ERROR" -Message "WSL Python not found: $WslPython"
-  exit 2
-}
-if (-not (Test-WslFileExists -Distro $WslDistro -PathValue $resolvedPresetsFile)) {
-  Write-LauncherLog -Level "ERROR" -Message "Expected presets file not found: $resolvedPresetsFile"
-  exit 2
-}
+  if ([string]::IsNullOrWhiteSpace($resolvedAccountId)) {
+    Write-LauncherLog -Level "ERROR" -Message "IBKR PaperTrader account id is required. Pass -IbkrAccountId or set IBKR_PAPER_ACCOUNT_ID."
+    exit (Write-LauncherResult -Status "failed" -Stage "wrapper_setup" -ExitCode 2 -Detail "reason=missing_ibkr_account_id")
+  }
+  if (-not (Test-WslDirectoryExists -Distro $WslDistro -PathValue $WslRepoPath)) {
+    Write-LauncherLog -Level "ERROR" -Message "WSL repo path not found: $WslRepoPath"
+    exit (Write-LauncherResult -Status "failed" -Stage "wrapper_setup" -ExitCode 2 -Detail "reason=wsl_repo_path_not_found")
+  }
+  if (-not (Test-WslFileExists -Distro $WslDistro -PathValue $WslPython)) {
+    Write-LauncherLog -Level "ERROR" -Message "WSL Python not found: $WslPython"
+    exit (Write-LauncherResult -Status "failed" -Stage "wrapper_setup" -ExitCode 2 -Detail "reason=wsl_python_not_found")
+  }
+  if (-not (Test-WslFileExists -Distro $WslDistro -PathValue $resolvedPresetsFile)) {
+    Write-LauncherLog -Level "ERROR" -Message "Expected presets file not found: $resolvedPresetsFile"
+    exit (Write-LauncherResult -Status "failed" -Stage "wrapper_setup" -ExitCode 2 -Detail "reason=expected_presets_file_not_found")
+  }
 
-Write-LauncherLog -Message "log_path=$script:LauncherLogPath"
-Write-LauncherLog -Message "preset=$Preset provider=$Provider presets_file=$resolvedPresetsFile account_id_source=$($resolvedAccountIdInfo.Source)"
-Write-LauncherLog -Message "ibkr_account_id=$resolvedAccountId base_url=$IbkrBaseUrl verify_ssl=$($VerifyIbkrSsl.IsPresent) timeout_seconds=$IbkrTimeoutSeconds"
+  Write-LauncherLog -Message "log_path=$script:LauncherLogPath"
+  Write-LauncherLog -Message "preset=$Preset provider=$Provider presets_file=$resolvedPresetsFile account_id_source=$($resolvedAccountIdInfo.Source)"
+  Write-LauncherLog -Message "ibkr_account_id=$resolvedAccountId base_url=$IbkrBaseUrl verify_ssl=$($VerifyIbkrSsl.IsPresent) timeout_seconds=$IbkrTimeoutSeconds"
+  Write-LauncherLog -Message "preflight_command=$preflightCommand"
+  Write-LauncherLog -Message "daily_ops_command=$dailyOpsCommand"
 
-$preflightExit = Invoke-WslLoggedCommand -Description "stage2_ibkr_paper_preflight" -Distro $WslDistro -BashCommand $preflightCommand
-if ($preflightExit -ne 0) {
-  exit $preflightExit
+  $script:LauncherStage = "preflight"
+  $preflightResult = Invoke-WslLoggedCommand -Description "stage2_ibkr_paper_preflight" -Distro $WslDistro -BashCommand $preflightCommand
+  if ($preflightResult.LaunchFailed) {
+    exit (Write-LauncherResult -Status "failed" -Stage "preflight_launch_failure" -ExitCode $preflightResult.ExitCode -Detail "child_command=stage2_ibkr_paper_preflight $($preflightResult.ExceptionDetail)")
+  }
+  if ($preflightResult.ExitCode -ne 0) {
+    exit (Write-LauncherResult -Status "failed" -Stage "preflight_returned_nonzero" -ExitCode $preflightResult.ExitCode -Detail "child_command=stage2_ibkr_paper_preflight child_exit_code=$($preflightResult.ExitCode)")
+  }
+
+  if ($PreflightOnly) {
+    Write-LauncherLog -Message "preflight_only=true daily_ops_skipped=true"
+    exit (Write-LauncherResult -Status "success" -Stage "preflight_only" -ExitCode 0 -Detail "preflight_exit_code=0 daily_ops_skipped=true")
+  }
+
+  $script:LauncherStage = "daily_ops"
+  $dailyOpsResult = Invoke-WslLoggedCommand -Description "stage2_ibkr_paper_daily_ops" -Distro $WslDistro -BashCommand $dailyOpsCommand
+  if ($dailyOpsResult.LaunchFailed) {
+    exit (Write-LauncherResult -Status "failed" -Stage "daily_ops_launch_failure" -ExitCode $dailyOpsResult.ExitCode -Detail "child_command=stage2_ibkr_paper_daily_ops $($dailyOpsResult.ExceptionDetail)")
+  }
+  if ($dailyOpsResult.ExitCode -ne 0) {
+    exit (Write-LauncherResult -Status "failed" -Stage "daily_ops_returned_nonzero" -ExitCode $dailyOpsResult.ExitCode -Detail "child_command=stage2_ibkr_paper_daily_ops child_exit_code=$($dailyOpsResult.ExitCode)")
+  }
+
+  exit (Write-LauncherResult -Status "success" -Stage "complete" -ExitCode 0 -Detail "preflight_exit_code=0 daily_ops_exit_code=0")
 }
-
-if ($PreflightOnly) {
-  Write-LauncherLog -Message "preflight_only=true daily_ops_skipped=true"
-  exit 0
+catch {
+  $unexpectedDetail = Get-LauncherExceptionDetail -ErrorRecord $_
+  Write-LauncherLog -Level "ERROR" -Message "unexpected_powershell_exception current_stage=$script:LauncherStage $unexpectedDetail"
+  exit (Write-LauncherResult -Status "failed" -Stage "unexpected_powershell_exception" -ExitCode 1 -Detail "current_stage=$script:LauncherStage $unexpectedDetail")
 }
-
-$dailyOpsExit = Invoke-WslLoggedCommand -Description "stage2_ibkr_paper_daily_ops" -Distro $WslDistro -BashCommand $dailyOpsCommand
-exit $dailyOpsExit

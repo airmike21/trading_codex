@@ -28,6 +28,23 @@ def _run_wrapper(*extra_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
 
 
+def _run_wrapper_live(*extra_args: str) -> subprocess.CompletedProcess[str]:
+    if POWERSHELL_EXE is None:
+        pytest.skip("powershell.exe is required for Stage 2 IBKR paper daily ops wrapper tests")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cmd = [
+        POWERSHELL_EXE,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(repo_root / "scripts" / "windows" / "trading_codex_stage2_ibkr_paper_daily_ops.ps1"),
+        *extra_args,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
+
+
 def test_print_only_renders_preflight_and_daily_ops_commands() -> None:
     proc = _run_wrapper(
         "-WslRepoPath",
@@ -100,3 +117,22 @@ def test_print_only_defaults_to_runtime_checkout_path() -> None:
     assert "presets_file=/home/aarondaugherty/trading_codex/configs/presets.example.json" in stdout
     assert "preflight_command=cd ~/trading_codex && ~/trading_codex/.venv/bin/python scripts/ibkr_paper_lane_daily_ops_preflight.py" in stdout
     assert "command=cd ~/trading_codex && ~/trading_codex/.venv/bin/python scripts/ibkr_paper_lane_daily_ops.py" in stdout
+
+
+def test_wrapper_setup_failure_logs_final_result_to_scheduler_visible_log(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    proc = _run_wrapper_live(
+        "-IbkrAccountId",
+        "DUP652353",
+        "-WslRepoPath",
+        "/__missing_stage2_repo__",
+        "-LogDir",
+        str(log_dir),
+    )
+
+    assert proc.returncode == 2, proc.stderr
+    log_files = sorted(log_dir.glob("stage2_ibkr_paper_daily_ops-*.log"))
+    assert len(log_files) == 1
+    log_text = log_files[0].read_text(encoding="utf-8")
+    assert "WSL repo path not found: /__missing_stage2_repo__" in log_text
+    assert "launcher_result=failed stage=wrapper_setup exit_code=2 reason=wsl_repo_path_not_found" in log_text
