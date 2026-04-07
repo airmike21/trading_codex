@@ -1,6 +1,6 @@
 # First Live Program
 
-Last updated: 2026-04-06
+Last updated: 2026-04-07
 
 This document is the durable control-plane for the first-live program.
 It exists so future chats and future Builder slices ground on the same staged plan instead of recreating it from conversation.
@@ -21,11 +21,11 @@ This stage is intentionally bounded. The goal is not to build every tastytrade c
 
 ### Stage 2: Build one real persistent paper-execution lane
 
-Build one serious paper-trading lane that is deep enough for multi-month forward testing, while keeping the initial scope narrow.
+Build one serious paper-trading lane that is deep enough for multi-month forward testing.
 
 For Stage 2, the approved primary persistent paper-execution lane is IBKR PaperTrader. The purpose of this stage is not just local mock bookkeeping. The purpose is to run one strategy through IBKR PaperTrader so we can observe paper order handling, paper fills, scheduling behavior, reconciliation, and restart safety in a way that is operationally real enough to judge Stage 2.
 
-Keep the scope narrow:
+Keep the scope bounded:
 
 - one strategy only
 - long-only ETFs only
@@ -35,13 +35,15 @@ Keep the scope narrow:
 
 Retain the existing local paper lane and daily ops routine as supporting groundwork and retained evidence. Use tastytrade sandbox as secondary integration/regression coverage for tastytrade-specific auth/account/order-flow behavior relevant to the intended live path. Tastytrade remains the intended live target unless evidence clearly justifies change.
 
+While the primary IBKR PaperTrader lane is in forward-evidence hold, Stage 2 may include bounded shadow work as defined in `docs/FIRST_LIVE_EXIT_CRITERIA.md`. That allowance is for shadow-only support work around the first-live path. It does not broaden the approved Stage 2 IBKR PaperTrader lane, does not create a second Stage 2 paper lane, and does not auto-open Stage 3.
+
 This decision does not open Stage 3, does not promote any strategy live, and does not require a generalized broker abstraction before Stage 2 proves useful.
 
 Stage 2 is complete only when one strategy can keep running persistently in the IBKR PaperTrader lane with forward-testing evidence accumulating over time, and the lane is operationally reviewable enough to detect drift, execution mistakes, scheduling problems, reconciliation issues, or restart problems without ad hoc repo surgery.
 
 ### Stage 3: Expand the strategy bench one strategy at a time
 
-Only after the first paper lane is operating cleanly enough and evidence justifies more bench work, additional strategies may be added to shadow or paper one at a time.
+Only after the first paper lane is operating cleanly enough and evidence justifies more bench work, additional strategies may be added to shadow or paper one at a time. The bounded Stage 2 shadow-work allowance is not Stage 3.
 
 This stage exists to widen the bench without destabilizing the first-live path. New strategy work is allowed only after the primary lane is operating cleanly enough that it no longer needs to monopolize attention.
 
@@ -59,7 +61,7 @@ This account must stay clean:
 
 Deploy exactly one strategy live into the clean account with tight limits and close review.
 
-The first live deployment is intentionally narrow:
+The first live deployment is intentionally bounded:
 
 - one strategy only
 - long-only ETF exposure only
@@ -72,6 +74,8 @@ The first live deployment is intentionally narrow:
 
 - Tastytrade remains the live target unless evidence clearly justifies change.
 - For Stage 2, IBKR PaperTrader is the approved primary persistent paper-execution lane.
+- During a Stage 2 forward-evidence hold, bounded shadow work may proceed only under the Stage 2 shadow-only rules in `docs/FIRST_LIVE_EXIT_CRITERIA.md`.
+- That shadow work stays outside the approved IBKR PaperTrader lane and does not auto-open Stage 3.
 - tastytrade sandbox remains secondary regression coverage for tastytrade-specific auth/account/order-flow behavior on the intended live path, not the main Stage 2 paper lane.
 - The program is one live strategy and many shadow/paper strategies.
 - The first live account must be clean and separate from discretionary/manual positions.
