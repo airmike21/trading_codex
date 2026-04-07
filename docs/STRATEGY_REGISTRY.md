@@ -22,13 +22,13 @@ Use this file to keep the primary live candidate distinct from the wider researc
 
 | Strategy ID | Role | Status | Summary | Cadence | Instruments | Sizing | Initial constraints | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1` | Primary live candidate | Not paper-enabled | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Approved Stage 2 primary lane is IBKR PaperTrader. Existing local paper lane and daily ops routine are supporting groundwork, not paper promotion by themselves. |
+| `primary_live_candidate_v1` | Primary live candidate | Not paper-enabled | Simple long-only ETF trend/momentum with cash fallback | Daily/weekly | ETFs only | Whole shares | No options, no shorting, no leverage initially | Approved Stage 2 primary lane is IBKR PaperTrader. Concrete runtime mapping remains explicit but unchanged: the current approved runtime path uses preset `dual_mom_vol10_cash_core`, which runs `--strategy dual_mom_vol10_cash`, while the durable paper/ops state key remains `primary_live_candidate_v1`. Existing local paper lane and daily ops routine are supporting groundwork, not paper promotion by themselves. |
 
 ## Shadow Bench
 
 | Strategy ID | Status | Summary | Why it is not paper-enabled yet | Notes |
 | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1_vol_managed` | Registered; shadow-only; not yet coded | Preferred first near-path shadow candidate: a volatility-managed version of the current long-only ETF trend/momentum primary candidate that stays close to the first-live path. | Stage 2 remains focused on forward evidence for `primary_live_candidate_v1` in the approved IBKR PaperTrader lane, and this newly registered candidate has not yet completed the code, backtest/walk-forward, compare, or decision-gate work required before any later paper-promotion decision. | Optional replay remains local-only during Stage 2. Current decision: `remain shadow-only`. |
+| `primary_live_candidate_v1_vol_managed` | Coded; shadow-only; local-only; compare/decision pending | Preferred first near-path shadow candidate: a volatility-managed version of the current long-only ETF trend/momentum primary candidate that stays close to the first-live path. | Stage 2 remains focused on forward evidence for `primary_live_candidate_v1` in the approved IBKR PaperTrader lane, and this candidate still must complete comparison/reporting, robustness, and the later decision gate before any paper-promotion discussion. | Concrete local-only mapping is now explicit: `scripts/run_backtest.py --strategy primary_live_candidate_v1_vol_managed` resolves to a `dual_mom_v1`-based shadow implementation with the promoted shadow template and risk-invariants layer. Optional replay remains local-only during Stage 2. Current decision: `remain shadow-only`. |
 
 ### Shadow Bench Rules
 
