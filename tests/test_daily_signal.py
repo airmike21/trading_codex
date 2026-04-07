@@ -163,6 +163,7 @@ def test_presets_example_includes_dual_mom_vol10_cash_core() -> None:
     assert args[args.index("--dmv-rebalance") + 1] == "21"
     assert args[args.index("--dmv-vol-lookback") + 1] == "20"
     assert args[args.index("--dmv-target-vol") + 1] == "0.10"
+    assert "--end" not in args
     assert "--vol-target" not in args
     assert "--ivol" not in args
 

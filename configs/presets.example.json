@@ -112,8 +112,6 @@
         "0.10",
         "--start",
         "2015-01-02",
-        "--end",
-        "2026-01-01",
         "--data-dir",
         "~/trading_codex/data",
         "--no-plot"

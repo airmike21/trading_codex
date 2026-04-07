@@ -210,6 +210,79 @@ def _read_jsonl_records(path: Path) -> list[dict[str, object]]:
     ]
 
 
+def test_load_signal_from_preset_uses_latest_operational_data_args(tmp_path: Path, monkeypatch) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    presets_path = tmp_path / "presets.json"
+    stale_data_dir = tmp_path / "stale_data"
+    fresh_data_dir = tmp_path / "fresh_data"
+    fresh_data_dir.mkdir()
+    presets_path.write_text(
+        json.dumps(
+            {
+                "presets": {
+                    "dual_mom_vol10_cash_core": {
+                        "description": "ibkr preset smoke",
+                        "run_backtest_args": [
+                            "--strategy",
+                            "dual_mom_vol10_cash",
+                            "--symbols",
+                            "SPY",
+                            "QQQ",
+                            "IWM",
+                            "EFA",
+                            "--dmv-defensive-symbol",
+                            "BIL",
+                            "--start",
+                            "2015-01-02",
+                            "--end",
+                            "2026-01-01",
+                            "--data-dir",
+                            str(stale_data_dir),
+                            "--no-plot",
+                        ],
+                    }
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    seen: dict[str, object] = {}
+    expected_payload = {"schema_name": "next_action", "event_id": "evt-1"}
+
+    def fake_run(cmd: list[str], *, capture_output: bool, text: bool, cwd: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        seen["cwd"] = cwd
+        seen["env"] = env
+        assert capture_output is True
+        assert text is True
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(expected_payload) + "\n", stderr="")
+
+    monkeypatch.setattr(ibkr_paper_lane.subprocess, "run", fake_run)
+
+    payload, preset, resolved_path = ibkr_paper_lane._load_signal_from_preset(
+        repo_root=repo_root,
+        preset_name="dual_mom_vol10_cash_core",
+        presets_path=presets_path,
+        data_dir_override=fresh_data_dir,
+    )
+
+    assert payload == expected_payload
+    assert preset.name == "dual_mom_vol10_cash_core"
+    assert resolved_path == presets_path
+
+    cmd = seen["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[:2] == [sys.executable, str(repo_root / "scripts" / "run_backtest.py")]
+    assert "--next-action-json" in cmd
+    assert "--end" not in cmd
+    assert not any(str(token).startswith("--end=") for token in cmd)
+    assert cmd.count("--data-dir") == 1
+    assert cmd[cmd.index("--data-dir") + 1] == str(fresh_data_dir.resolve())
+
+
 def test_ibkr_paper_status_reconciles_latest_signal_and_persists_state(tmp_path: Path) -> None:
     base_dir = tmp_path / "ibkr_paper"
     client = FakeIbkrClient(
