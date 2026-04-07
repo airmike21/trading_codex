@@ -340,6 +340,29 @@ def test_dual_mom_vol10_cash_rejects_vol_update_daily(monkeypatch, capsys):
     assert "--vol-update" in msg
 
 
+def test_primary_live_candidate_vol_managed_cli_defaults_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "primary_live_candidate_v1_vol_managed",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "primary_live_candidate_v1_vol_managed"
+    assert args.symbols == ["SPY", "QQQ", "IWM", "EFA"]
+    assert args.dm_lookback == 63
+    assert args.dm_top_n == 1
+    assert args.dm_rebalance == 21
+    assert args.dm_defensive_symbol == "BIL"
+    assert args.vol_target == 0.10
+    assert args.vol_lookback == 20
+    assert args.vol_update == "rebalance"
+
+
 def test_valmom_v1_cli_args_parse(monkeypatch):
     monkeypatch.setattr(
         sys,

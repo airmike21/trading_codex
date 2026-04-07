@@ -17,7 +17,11 @@ from trading_codex.backtest.engine import BacktestResult, run_backtest
 from trading_codex.backtest.next_rebalance import compute_next_rebalance_date
 from trading_codex.backtest.shadow_artifacts import write_shadow_review_artifacts
 from trading_codex.data import LocalStore
-from trading_codex.shadow.template import build_local_shadow_template
+from trading_codex.shadow import (
+    PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
+    build_shadow_template_for_strategy,
+    primary_live_candidate_v1_vol_managed_shadow_config,
+)
 from trading_codex.strategies.dual_mom_vol10_cash import DualMomentumVol10CashStrategy
 from trading_codex.strategies.dual_mom_v1 import DualMomentumV1Strategy
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
@@ -46,6 +50,10 @@ TRACKER_COLUMNS = [
 @dataclass(frozen=True)
 class RunBacktestConfig:
     rebalance_anchor_date: str | None = None
+
+
+def _cli_flag_provided(raw_argv: list[str], flag: str) -> bool:
+    return any(token == flag or token.startswith(f"{flag}=") for token in raw_argv)
 
 
 def _load_toml_dict(path: Path) -> dict[str, object]:
@@ -93,6 +101,7 @@ def parse_args() -> argparse.Namespace:
             "xsmom_v1",
             "dual_mom_v1",
             "dual_mom_vol10_cash",
+            PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
             "valmom_v1",
         ],
         default="tsmom",
@@ -456,6 +465,18 @@ def parse_args() -> argparse.Namespace:
         token == "--vol-update" or token.startswith("--vol-update=")
         for token in raw_argv
     )
+    if args.strategy == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID:
+        shadow_defaults = primary_live_candidate_v1_vol_managed_shadow_config()
+        if not _cli_flag_provided(raw_argv, "--dm-lookback"):
+            args.dm_lookback = shadow_defaults.momentum_lookback
+        if not _cli_flag_provided(raw_argv, "--dm-defensive-symbol"):
+            args.dm_defensive_symbol = shadow_defaults.defensive_symbol
+        if not _cli_flag_provided(raw_argv, "--vol-target"):
+            args.vol_target = shadow_defaults.vol_target
+        if not _cli_flag_provided(raw_argv, "--vol-lookback"):
+            args.vol_lookback = shadow_defaults.vol_lookback
+        if not _cli_flag_provided(raw_argv, "--vol-update"):
+            args.vol_update = shadow_defaults.vol_update
     if args.strategy == "dual_mom_vol10_cash":
         if vol_update_requested:
             parser.error(
@@ -688,6 +709,7 @@ def maybe_write_shadow_artifacts(
     actions_weights: pd.Series | pd.DataFrame | None = None,
     turnover: pd.Series | None = None,
     equity: pd.Series | None = None,
+    defensive_symbol: str | None = None,
     leverage: float | None = None,
     vol_target: float | None = None,
     realized_vol: float | None = None,
@@ -714,7 +736,10 @@ def maybe_write_shadow_artifacts(
         except KeyError:
             actual_symbol_count = 0
 
-    shadow_outputs = build_local_shadow_template(strategy).build_outputs(
+    shadow_outputs = build_shadow_template_for_strategy(
+        strategy,
+        defensive_symbol=defensive_symbol,
+    ).build_outputs(
         bars=actions_bars,
         weights=actions_weights,
         turnover=turnover,
@@ -1156,6 +1181,7 @@ def maybe_write_trades(
         "tsmom_v1",
         "xsmom_v1",
         "dual_mom_v1",
+        PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
         "dual_mom_vol10_cash",
         "valmom_v1",
     }:
@@ -2096,6 +2122,31 @@ def main() -> None:
         )
         plot_label = "dual_mom_v1"
         rebalance_cadence = args.dm_rebalance
+    elif args.strategy == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID:
+        shadow_config = primary_live_candidate_v1_vol_managed_shadow_config(
+            symbols=args.symbols,
+            defensive_symbol=args.dm_defensive_symbol,
+            momentum_lookback=args.dm_lookback,
+            top_n=args.dm_top_n,
+            rebalance=args.dm_rebalance,
+            vol_target=float(args.vol_target) if args.vol_target is not None else 0.0,
+            vol_lookback=args.vol_lookback,
+            vol_min=args.min_leverage,
+            vol_max=args.max_leverage,
+            vol_update=args.vol_update,
+        )
+        risk_symbols = list(shadow_config.risk_symbols)
+        defensive_symbol = shadow_config.defensive_symbol
+        symbols_to_load = list(dict.fromkeys(risk_symbols + [defensive_symbol]))
+        bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
+        strategy = shadow_config.build_strategy()
+        args.vol_target = shadow_config.vol_target
+        args.vol_lookback = shadow_config.vol_lookback
+        args.min_leverage = shadow_config.vol_min
+        args.max_leverage = shadow_config.vol_max
+        args.vol_update = shadow_config.vol_update
+        plot_label = PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID
+        rebalance_cadence = shadow_config.rebalance
     elif args.strategy == "dual_mom_vol10_cash":
         risk_symbols = list(dict.fromkeys(args.symbols))
         defensive_symbol = args.dmv_defensive_symbol.strip()
@@ -2183,6 +2234,7 @@ def main() -> None:
         "tsmom_v1",
         "xsmom_v1",
         "dual_mom_v1",
+        PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
         "dual_mom_vol10_cash",
         "valmom_v1",
     }:
@@ -2240,6 +2292,8 @@ def main() -> None:
             next_rebalance = args.xs_rebalance
         elif args.strategy == "dual_mom_v1":
             next_rebalance = args.dm_rebalance
+        elif args.strategy == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID:
+            next_rebalance = args.dm_rebalance
         elif args.strategy == "dual_mom_vol10_cash":
             next_rebalance = args.dmv_rebalance
         elif args.strategy == "valmom_v1":
@@ -2274,6 +2328,11 @@ def main() -> None:
             actions_weights=actions_weights,
             turnover=result.turnover,
             equity=result.equity,
+            defensive_symbol=(
+                args.dm_defensive_symbol
+                if args.strategy == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID
+                else None
+            ),
             leverage=latest_leverage,
             vol_target=args.vol_target,
             realized_vol=latest_realized_vol,
@@ -2465,6 +2524,31 @@ def main() -> None:
             realized_vol_at_last_update=realized_vol_at_last_update,
         )
     elif args.strategy == "dual_mom_v1":
+        maybe_print_latest_dual(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            rebalance_cadence,
+            print_latest_enabled,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
+        )
+    elif args.strategy == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID:
+        checklist_path = args.checklist_out or "outputs/primary_live_candidate_v1_vol_managed_checklist.md"
+        defensive_symbol = args.dm_defensive_symbol.strip()
+        maybe_write_dual_checklist(
+            checklist_path,
+            rebalance_cadence,
+            args.symbols,
+            defensive_symbol,
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+        )
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]
