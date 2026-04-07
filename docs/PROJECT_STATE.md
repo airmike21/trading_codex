@@ -7,7 +7,7 @@ Use it for current project state, active slice status, blockers, warnings, and e
 
 ## Resume Snapshot
 
-- Current promoted SHA: promoted `origin/master` tip represented by this checkpoint
+- Current promoted SHA: `2db6b44c6bb777d65010288d0bfd207d17df0fbd` (`origin/master` and runtime SHA represented by this checkpoint)
 - Active Builder branch: none recorded on promoted `master`
 - Active slice base SHA: n/a on promoted `master`
 - Reviewer aligned to Builder: yes for promoted content
@@ -16,7 +16,7 @@ Use it for current project state, active slice status, blockers, warnings, and e
 
 - Current stage: Stage 2 in progress; Stage 1 complete; live not authorized
 - Current objective: stay in Stage 2 forward-evidence accumulation / hold for the approved IBKR PaperTrader lane for `primary_live_candidate_v1` while using bounded shadow work as the approved parallel repo activity
-- Last completed milestone: the IBKR PaperTrader operational acceptance path is in place, the preferred first shadow candidate is now registered in `docs/STRATEGY_REGISTRY.md`, and the repo control-plane now needs forward evidence plus bounded shadow-only follow-through, not a Stage 2 lane redesign
+- Last completed milestone: the IBKR PaperTrader operational acceptance path is in place, the preferred first shadow candidate is registered in `docs/STRATEGY_REGISTRY.md`, and the common shadow-strategy template plus risk-invariants layer are now promoted for bounded Stage 2 shadow-only follow-through while the primary lane remains in forward-evidence accumulation / hold
 - Runtime / lane status:
   - the approved primary IBKR PaperTrader operational acceptance path is in place and remains the only approved Stage 2 persistent paper-execution lane
   - Stage 2 is not exited because forward evidence is still accumulating over time
@@ -35,16 +35,15 @@ Use it for current project state, active slice status, blockers, warnings, and e
 ### Expected Next Move
 
 - keep the approved primary IBKR PaperTrader lane running under forward-evidence accumulation / hold for `primary_live_candidate_v1`
-- build the common shadow-strategy template and risk-invariants layer for the registered `primary_live_candidate_v1_vol_managed` shadow candidate as bounded Stage 2 shadow-only work that remains local-only for shadow strategies and does not broaden the approved IBKR PaperTrader lane or open Stage 3
+- next bounded shadow-only repo work is to build the primary-vs-shadow comparison/reporting layer, robustness harness, and shadow review scoreboard for the registered `primary_live_candidate_v1_vol_managed` shadow candidate while keeping shadow strategies local-only and without broadening the approved IBKR PaperTrader lane or opening Stage 3
 
 ### Approved Shadow-Work Queue
 
 - Only one active next shadow candidate is approved unless evidence clearly justifies more.
 - Registered current next shadow candidate: `primary_live_candidate_v1_vol_managed`, the preferred first volatility-managed variant tied to the current ETF trend/momentum primary candidate; the fallback next candidate, only if needed later, remains a closely related ETF rotation variant.
-- Priority 1: build the common shadow-strategy template and risk-invariants layer for the registered shadow candidate.
-- Priority 2: build the primary-vs-shadow comparison/reporting layer, robustness harness, and shadow review scoreboard.
-- Priority 3: implement the registered shadow candidate with the standard shadow template outputs and bounded Stage 2 shadow-only discipline.
-- Priority 4: run backtest/walk-forward, then optional local-only paper replay, then a shadow decision gate while keeping shadow strategies local-only during Stage 2 and outside the approved IBKR PaperTrader lane.
+- Priority 1: build the primary-vs-shadow comparison/reporting layer, robustness harness, and shadow review scoreboard.
+- Priority 2: implement the registered shadow candidate with the standard shadow template outputs and bounded Stage 2 shadow-only discipline.
+- Priority 3: run backtest/walk-forward, then optional local-only paper replay, then a shadow decision gate while keeping shadow strategies local-only during Stage 2 and outside the approved IBKR PaperTrader lane.
 
 ## State Rules
 
