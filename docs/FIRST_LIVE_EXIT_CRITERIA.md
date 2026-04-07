@@ -1,6 +1,6 @@
 # First Live Exit Criteria
 
-Last updated: 2026-03-27
+Last updated: 2026-04-07
 
 This document defines when each first-live stage is complete, when future chats should continue coding, when they should hold for operational work, when they should stay shadow-only, and when live is allowed.
 
@@ -28,7 +28,7 @@ Exit criteria:
 - The sandbox auth path is understood end to end well enough that future chats are not guessing about login, challenge handling, account lookup, positions, or order API paths relevant to the first live lane.
 - Repo documentation or repo-adjacent operational notes make the tastytrade API-path understanding reusable.
 - Known remaining blockers are clearly identified as operational/external limits or deliberately deferred scope, not unresolved repo ambiguity.
-- The output of this stage is narrow and handoff-ready for paper-lane work.
+- The output of this stage is bounded and handoff-ready for paper-lane work.
 
 Continue coding when:
 
@@ -60,7 +60,7 @@ Exit criteria:
 
 Continue coding when:
 
-- the minimal IBKR PaperTrader operational acceptance path is not built yet or is not yet operationally reviewable
+- the IBKR PaperTrader operational acceptance path is not built yet or is not yet operationally reviewable
 - the lane cannot yet accumulate forward evidence cleanly over time
 - paper order, fill, scheduling, reconciliation, or restart behavior in IBKR PaperTrader is not reviewable enough
 - the primary strategy still cannot operate end to end through IBKR PaperTrader
@@ -72,8 +72,35 @@ Hold when:
 
 Shadow-only when:
 
-- strategy logic can still be validated safely while the IBKR PaperTrader lane is being stabilized
-- local paper-lane groundwork, retained evidence infrastructure, or tastytrade sandbox regression coverage can keep running, but IBKR PaperTrader is not yet trustworthy enough to serve as the main decision surface
+- the repo is in a Stage 2 forward-evidence accumulation hold for the primary IBKR PaperTrader lane and the next useful repo work is bounded shadow work rather than primary-lane expansion
+- local retained-evidence groundwork, tastytrade sandbox regression coverage, or strategy validation can still advance safely without broadening the approved Stage 2 IBKR PaperTrader lane
+- the work remains shadow-only, stays outside the approved primary IBKR PaperTrader lane, and does not auto-open Stage 3
+
+Approved shadow-work categories:
+
+- build one shadow strategy at a time that stays close to the first-live path; near-path examples include a volatility-managed version of the current ETF trend/momentum candidate or a closely related ETF rotation variant, while the currently preferred next candidate remains live state in `docs/PROJECT_STATE.md`
+- run shadow strategy replays only in the existing local paper lane when replay adds value; do not use IBKR PaperTrader for shadow strategies during Stage 2
+- build primary-vs-shadow comparison and reporting
+- build a robustness harness covering parameter stability checks, subperiod tests, cost sensitivity, benchmark comparison, and drawdown clustering review
+- build a standard shadow-strategy template with a common interface and the same outputs for signal, target weights, diagnostics, and reports
+- build a shadow review scoreboard covering CAGR, Sharpe, max drawdown, turnover, percent time in cash, action frequency, walk-forward quality, and current decision
+- build a risk-invariants layer covering position caps, turnover caps, liquidity checks, drawdown kill-switches, and regime guardrails
+- keep only a short ordered shadow candidate queue instead of open-ended strategy exploration
+
+Shadow-work lifecycle:
+
+1. register: add a shadow-bench entry in `docs/STRATEGY_REGISTRY.md` before opening a serious shadow strategy slice
+2. code: implement the shadow strategy using the standard template and risk-invariants layer
+3. backtest/walk-forward: run the robustness harness and retained report set
+4. optional local paper replay: use the existing local paper lane only, never IBKR PaperTrader
+5. compare: update the primary-vs-shadow reporting and shadow review scoreboard
+6. decision gate: record one outcome only: `not advancing`, `remain shadow-only`, or `candidate for later paper promotion after Stage 2 exit`
+
+Queue discipline:
+
+- keep the short ordered queue in `docs/PROJECT_STATE.md`
+- prefer at most one active next shadow candidate at a time unless evidence clearly justifies otherwise
+- do not use Stage 2 shadow work as permission to widen into open-ended Stage 3 bench building
 
 Anti-goals and out of scope:
 
@@ -82,8 +109,11 @@ Anti-goals and out of scope:
 - generalized broker abstraction work before the approved Stage 2 lane proves operationally useful
 - expanding into options, shorting, leverage, or intraday complexity
 - treating tastytrade sandbox or local mock bookkeeping alone as proof that Stage 2 is complete
+- treating the bounded Stage 2 shadow-work allowance as Stage 3 authorization
 
 ## Stage 3: Strategy Bench Expansion
+
+Stage 3 begins only after Stage 2 is exited. The bounded Stage 2 shadow-work path above does not by itself open Stage 3.
 
 Exit criteria:
 
@@ -124,7 +154,7 @@ Exit criteria:
 
 Continue coding when:
 
-- the repo still needs narrow live-account readiness support that directly serves the first limited live launch
+- the repo still needs bounded live-account readiness support that directly serves the first limited live launch
 
 Hold when:
 
@@ -144,7 +174,7 @@ Exit criteria:
 - Exactly one strategy is promoted to live in `docs/STRATEGY_REGISTRY.md`.
 - That strategy has completed the shadow and paper gates required by the registry.
 - Live execution, review, and reconciliation are working well enough to explain what happened after each live action.
-- Initial live scope remains narrow: long-only ETFs, whole shares, no options, no shorting, and no leverage.
+- Initial live scope remains bounded: long-only ETFs, whole shares, no options, no shorting, and no leverage.
 - The first evaluation period shows that live behavior matches expectations closely enough to continue deliberately rather than by inertia.
 
 Continue coding when:
