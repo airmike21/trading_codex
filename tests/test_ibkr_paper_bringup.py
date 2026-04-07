@@ -279,8 +279,15 @@ def test_ibkr_paper_bringup_preflight_from_preset_derives_full_allowed_universe(
         ],
     )
 
-    def fake_load_signal_from_preset(*, repo_root: Path, preset_name: str, presets_path: Path | None):
+    def fake_load_signal_from_preset(
+        *,
+        repo_root: Path,
+        preset_name: str,
+        presets_path: Path | None,
+        data_dir_override: Path | None = None,
+    ):
         assert preset_name == "dual_mom_core"
+        assert data_dir_override is None
         return signal, preset, tmp_path / "presets.json"
 
     monkeypatch.setattr(ibkr_paper_bringup.ibkr_paper_lane, "_load_signal_from_preset", fake_load_signal_from_preset)
