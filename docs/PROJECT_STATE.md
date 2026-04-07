@@ -16,7 +16,7 @@ Use it for current project state, active slice status, blockers, warnings, and e
 
 - Current stage: Stage 2 in progress; Stage 1 complete; live not authorized
 - Current objective: stay in Stage 2 forward-evidence accumulation / hold for the approved IBKR PaperTrader lane for `primary_live_candidate_v1` while using bounded shadow work as the approved parallel repo activity
-- Last completed milestone: the IBKR PaperTrader operational acceptance path is in place and the repo control-plane now needs forward evidence, not a Stage 2 lane redesign
+- Last completed milestone: the IBKR PaperTrader operational acceptance path is in place, the preferred first shadow candidate is now registered in `docs/STRATEGY_REGISTRY.md`, and the repo control-plane now needs forward evidence plus bounded shadow-only follow-through, not a Stage 2 lane redesign
 - Runtime / lane status:
   - the approved primary IBKR PaperTrader operational acceptance path is in place and remains the only approved Stage 2 persistent paper-execution lane
   - Stage 2 is not exited because forward evidence is still accumulating over time
@@ -35,16 +35,16 @@ Use it for current project state, active slice status, blockers, warnings, and e
 ### Expected Next Move
 
 - keep the approved primary IBKR PaperTrader lane running under forward-evidence accumulation / hold for `primary_live_candidate_v1`
-- execute the approved bounded shadow-work path in parallel without broadening the Stage 2 lane
+- build the common shadow-strategy template and risk-invariants layer for the registered `primary_live_candidate_v1_vol_managed` shadow candidate as bounded Stage 2 shadow-only work that remains local-only for shadow strategies and does not broaden the approved IBKR PaperTrader lane or open Stage 3
 
 ### Approved Shadow-Work Queue
 
 - Only one active next shadow candidate is approved unless evidence clearly justifies more.
-- Priority 1: register one shadow-bench entry in `docs/STRATEGY_REGISTRY.md` before opening a serious shadow slice.
-- Priority 2: preferred first shadow candidate is a volatility-managed version of the current ETF trend/momentum candidate; the fallback next candidate, only if needed, is a closely related ETF rotation variant.
-- Priority 3: build the common shadow-strategy template and risk-invariants layer.
-- Priority 4: build the primary-vs-shadow comparison/reporting layer, robustness harness, and shadow review scoreboard.
-- Priority 5: run backtest/walk-forward, then optional local-only paper replay, then a shadow decision gate.
+- Registered current next shadow candidate: `primary_live_candidate_v1_vol_managed`, the preferred first volatility-managed variant tied to the current ETF trend/momentum primary candidate; the fallback next candidate, only if needed later, remains a closely related ETF rotation variant.
+- Priority 1: build the common shadow-strategy template and risk-invariants layer for the registered shadow candidate.
+- Priority 2: build the primary-vs-shadow comparison/reporting layer, robustness harness, and shadow review scoreboard.
+- Priority 3: implement the registered shadow candidate with the standard shadow template outputs and bounded Stage 2 shadow-only discipline.
+- Priority 4: run backtest/walk-forward, then optional local-only paper replay, then a shadow decision gate while keeping shadow strategies local-only during Stage 2 and outside the approved IBKR PaperTrader lane.
 
 ## State Rules
 
