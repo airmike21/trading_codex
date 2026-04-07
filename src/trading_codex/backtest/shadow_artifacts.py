@@ -334,6 +334,8 @@ def build_shadow_review_bundle(
     actual_symbol_count: int | None = None,
     extra_warning_reasons: Iterable[object] | None = None,
     extra_blocking_reasons: Iterable[object] | None = None,
+    risk_invariants: Mapping[str, Any] | None = None,
+    shadow_strategy_id: str | None = None,
 ) -> dict[str, Any]:
     warnings_list = list(warnings or [])
     blockers_list = list(blockers or [])
@@ -366,6 +368,7 @@ def build_shadow_review_bundle(
         "artifact_type": "shadow_review",
         "artifact_version": SHADOW_ARTIFACT_VERSION,
         "strategy": strategy,
+        "shadow_strategy_id": shadow_strategy_id if shadow_strategy_id is not None else strategy,
         # Keep bundle content deterministic from the signal date for easy local diffs/review.
         "generated_at": pd.Timestamp(as_of_date).isoformat(),
         "as_of_date": as_of_date,
@@ -390,6 +393,7 @@ def build_shadow_review_bundle(
         "warning_reasons": warning_reasons,
         "blocking_reasons": blocking_reasons,
         "shadow_review_state": shadow_review_state,
+        "risk_invariants": None if risk_invariants is None else dict(risk_invariants),
     }
     review_summary = derive_shadow_review_summary(bundle)
     bundle["review_summary"] = {
@@ -437,6 +441,7 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
     command = bundle.get("command")
     run_backtest_command = bundle.get("run_backtest_command")
     next_action_summary = bundle.get("next_action_summary")
+    risk_invariants = bundle.get("risk_invariants")
     history_rows = bundle.get("history_rows")
     minimum_history_rows = bundle.get("minimum_history_rows")
     expected_symbol_count = bundle.get("expected_symbol_count")
@@ -464,6 +469,7 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         f"- Artifact version: `{bundle.get('artifact_version', SHADOW_ARTIFACT_VERSION)}`",
         f"- Shadow status: `{bundle.get('shadow_status', '-')}`",
         f"- Strategy: `{bundle.get('strategy', '-')}`",
+        f"- Shadow strategy ID: `{bundle.get('shadow_strategy_id', bundle.get('strategy', '-'))}`",
         f"- As-of date: `{bundle.get('as_of_date', '-')}`",
         f"- Next rebalance: `{bundle.get('next_rebalance') or '-'}`",
         f"- Number of actions: `{len(actions)}`",
@@ -518,6 +524,21 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         lines.append(f"- Loaded symbol as-ofs: `{loaded_symbol_latest_dates_text}`")
     if next_action_summary is not None:
         lines.append(f"- Next action summary: `{next_action_summary}`")
+    if isinstance(risk_invariants, Mapping):
+        invariant_summary = risk_invariants.get("summary")
+        invariant_warning_reasons = risk_invariants.get("warning_reasons") or []
+        invariant_blocking_reasons = risk_invariants.get("blocking_reasons") or []
+        lines.append(
+            "- Risk invariant warning reasons: "
+            f"`{', '.join(str(item) for item in invariant_warning_reasons) if invariant_warning_reasons else '-'}`"
+        )
+        lines.append(
+            "- Risk invariant blocking reasons: "
+            f"`{', '.join(str(item) for item in invariant_blocking_reasons) if invariant_blocking_reasons else '-'}`"
+        )
+        if isinstance(invariant_summary, Mapping):
+            lines.append(f"- Risk invariant checks: `{invariant_summary.get('check_count', '-')}`")
+            lines.append(f"- Risk invariant blocks: `{invariant_summary.get('block_count', '-')}`")
     if target_shares is not None:
         lines.append(f"- Target shares: `{target_shares}`")
     if resize_text != "-":
@@ -540,6 +561,18 @@ def render_shadow_review_markdown(bundle: dict[str, Any]) -> str:
         for reason in blocking_reasons:
             lines.append(f"- {reason}")
         lines.append("")
+
+    if isinstance(risk_invariants, Mapping):
+        checks = risk_invariants.get("checks")
+        if isinstance(checks, Mapping) and checks:
+            lines += ["## Risk Invariants", ""]
+            for name, payload in checks.items():
+                if not isinstance(payload, Mapping):
+                    continue
+                lines.append(
+                    f"- {name}: `{payload.get('status', '-')}` {payload.get('summary', '-')}"
+                )
+            lines.append("")
 
     lines += [
         "## Actions",
