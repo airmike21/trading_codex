@@ -15,8 +15,9 @@ import pandas as pd
 from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult, run_backtest
 from trading_codex.backtest.next_rebalance import compute_next_rebalance_date
-from trading_codex.backtest.shadow_artifacts import build_shadow_review_bundle, write_shadow_review_artifacts
+from trading_codex.backtest.shadow_artifacts import write_shadow_review_artifacts
 from trading_codex.data import LocalStore
+from trading_codex.shadow.template import build_local_shadow_template
 from trading_codex.strategies.dual_mom_vol10_cash import DualMomentumVol10CashStrategy
 from trading_codex.strategies.dual_mom_v1 import DualMomentumV1Strategy
 from trading_codex.strategies.dual_momentum import DualMomentumStrategy
@@ -684,13 +685,26 @@ def maybe_write_shadow_artifacts(
     metrics_summary: dict[str, float],
     cost_assumptions: dict[str, float],
     actions_bars: pd.DataFrame | None = None,
+    actions_weights: pd.Series | pd.DataFrame | None = None,
+    turnover: pd.Series | None = None,
+    equity: pd.Series | None = None,
+    leverage: float | None = None,
+    vol_target: float | None = None,
+    realized_vol: float | None = None,
 ) -> None:
-    if not base_dir or next_action_payload is None:
+    if (
+        not base_dir
+        or next_action_payload is None
+        or actions_bars is None
+        or actions_weights is None
+        or turnover is None
+        or equity is None
+    ):
         return
 
     expected_symbol_count: int | None = None
     actual_symbol_count: int | None = None
-    if actions_bars is not None and isinstance(actions_bars.columns, pd.MultiIndex):
+    if isinstance(actions_bars.columns, pd.MultiIndex):
         all_symbols = actions_bars.columns.get_level_values(0).unique().tolist()
         expected_symbol_count = len(all_symbols)
         as_of = str(next_action_payload.get("date"))
@@ -700,35 +714,22 @@ def maybe_write_shadow_artifacts(
         except KeyError:
             actual_symbol_count = 0
 
-    bundle = build_shadow_review_bundle(
-        strategy=strategy,
-        as_of_date=str(next_action_payload.get("date")),
-        next_rebalance=(
-            None if next_action_payload.get("next_rebalance") is None else str(next_action_payload.get("next_rebalance"))
-        ),
-        actions=[dict(next_action_payload)],
+    shadow_outputs = build_local_shadow_template(strategy).build_outputs(
+        bars=actions_bars,
+        weights=actions_weights,
+        turnover=turnover,
+        equity=equity,
+        next_action_payload=next_action_payload,
+        metrics_summary=metrics_summary,
         cost_assumptions=cost_assumptions,
-        metrics=metrics_summary,
-        leverage=(
-            float(next_action_payload["leverage"])
-            if next_action_payload.get("leverage") is not None
-            else None
-        ),
-        vol_target=(
-            float(next_action_payload["vol_target"])
-            if next_action_payload.get("vol_target") is not None
-            else None
-        ),
-        realized_vol=(
-            float(next_action_payload["realized_vol"])
-            if next_action_payload.get("realized_vol") is not None
-            else None
-        ),
-        warnings=[],
-        blockers=[],
+        actions=[dict(next_action_payload)],
         expected_symbol_count=expected_symbol_count,
         actual_symbol_count=actual_symbol_count,
+        leverage=leverage,
+        vol_target=vol_target,
+        realized_vol=realized_vol,
     )
+    bundle = shadow_outputs.reports["shadow_review_bundle"]
     write_shadow_review_artifacts(base_dir=Path(base_dir), bundle=bundle)
 
 
@@ -2270,6 +2271,12 @@ def main() -> None:
             metrics_summary=extended,
             cost_assumptions=cost_assumptions,
             actions_bars=actions_bars,
+            actions_weights=actions_weights,
+            turnover=result.turnover,
+            equity=result.equity,
+            leverage=latest_leverage,
+            vol_target=args.vol_target,
+            realized_vol=latest_realized_vol,
         )
 
     if (args.next_action_json or args.next_action) and actions_bars is not None and actions_weights is not None:
