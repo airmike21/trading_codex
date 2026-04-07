@@ -28,7 +28,7 @@ Use this file to keep the primary live candidate distinct from the wider researc
 
 | Strategy ID | Status | Summary | Why it is not paper-enabled yet | Notes |
 | --- | --- | --- | --- | --- |
-| None yet | N/A | No additional shadow-bench entries have been registered yet. | Add a row before opening a new bench strategy slice. | Keep bench work from delaying the primary live candidate without evidence. |
+| `primary_live_candidate_v1_vol_managed` | Registered; shadow-only; not yet coded | Preferred first near-path shadow candidate: a volatility-managed version of the current long-only ETF trend/momentum primary candidate that stays close to the first-live path. | Stage 2 remains focused on forward evidence for `primary_live_candidate_v1` in the approved IBKR PaperTrader lane, and this newly registered candidate has not yet completed the code, backtest/walk-forward, compare, or decision-gate work required before any later paper-promotion decision. | Optional replay remains local-only during Stage 2. Current decision: `remain shadow-only`. |
 
 ### Shadow Bench Rules
 
