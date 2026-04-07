@@ -70,6 +70,48 @@ def _extract_option_values(args: list[str], flag: str) -> list[str]:
     return values
 
 
+def _build_operational_run_backtest_args(
+    *,
+    preset: daily_signal.Preset,
+    data_dir_override: Path | None,
+) -> list[str]:
+    expanded = daily_signal._expand_known_path_args(preset.run_backtest_args)
+    resolved_override = None if data_dir_override is None else str(data_dir_override.resolve())
+    out: list[str] = []
+    index = 0
+    data_dir_written = False
+    while index < len(expanded):
+        token = expanded[index]
+        if token == "--end":
+            index += 2
+            continue
+        if token.startswith("--end="):
+            index += 1
+            continue
+        if token == "--data-dir":
+            if resolved_override is not None:
+                out.extend(["--data-dir", resolved_override])
+                data_dir_written = True
+            else:
+                out.extend(expanded[index : index + 2])
+            index += 2
+            continue
+        if token.startswith("--data-dir="):
+            if resolved_override is not None:
+                out.extend(["--data-dir", resolved_override])
+                data_dir_written = True
+            else:
+                out.append(token)
+            index += 1
+            continue
+        out.append(token)
+        index += 1
+
+    if resolved_override is not None and not data_dir_written:
+        out.extend(["--data-dir", resolved_override])
+    return out
+
+
 def _load_signal_from_file(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -82,6 +124,7 @@ def _load_signal_from_preset(
     repo_root: Path,
     preset_name: str,
     presets_path: Path | None,
+    data_dir_override: Path | None = None,
 ) -> tuple[dict[str, Any], daily_signal.Preset, Path]:
     resolved_presets_path = presets_path or daily_signal._default_presets_path(repo_root)
     presets = daily_signal._load_presets_json(resolved_presets_path)
@@ -90,7 +133,10 @@ def _load_signal_from_preset(
         raise ValueError(f"Unknown preset {preset_name!r}. Known: {known}")
 
     preset = presets[preset_name]
-    expanded_args = daily_signal._expand_known_path_args(preset.run_backtest_args)
+    expanded_args = _build_operational_run_backtest_args(
+        preset=preset,
+        data_dir_override=data_dir_override,
+    )
     cmd = [sys.executable, str(repo_root / "scripts" / "run_backtest.py"), *expanded_args, "--next-action-json"]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root), env=_env_with_src(repo_root))
     if proc.returncode != 0:
@@ -125,6 +171,7 @@ def _resolve_signal_source(
             repo_root=repo_root,
             preset_name=args.preset,
             presets_path=args.presets_file,
+            data_dir_override=args.data_dir,
         )
         data_dir = args.data_dir or _data_dir_for_preset(repo_root=repo_root, preset=preset)
         return payload, "preset", preset.name, str(presets_path), data_dir, preset
