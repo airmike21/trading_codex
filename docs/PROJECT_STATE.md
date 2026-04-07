@@ -28,8 +28,8 @@ Use it for current project state, active slice status, blockers, warnings, and e
 
 ### Blockers / Warnings
 
-- Stage 2 still requires more operationally reviewable forward evidence in the approved IBKR PaperTrader lane
-- IBKR access, authenticated paper session, and time-based forward evidence remain external dependencies
+- the approved IBKR operational acceptance path is working, but Stage 2 still requires more operationally reviewable forward evidence in the approved IBKR PaperTrader lane
+- the remaining dependency is continued forward-evidence accumulation over time with normal operator and broker availability, not unresolved IBKR access or authenticated paper-session setup
 - bounded shadow work is approved in parallel, but it must stay local-only for shadow strategies and must not broaden the Stage 2 IBKR PaperTrader lane or auto-open Stage 3
 
 ### Expected Next Move
