@@ -612,7 +612,14 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Stage 2 shadow-only comparison/reporting flow for "
             "primary_live_candidate_v1 vs primary_live_candidate_v1_vol_managed."
-        )
+        ),
+        epilog=(
+            "Example:\n"
+            "  ./.venv/bin/python scripts/stage2_shadow_compare.py "
+            "--data-dir ./data "
+            "--artifacts-dir ./artifacts/stage2_shadow_compare"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--data-dir",

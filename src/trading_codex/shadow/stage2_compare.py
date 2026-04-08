@@ -15,6 +15,7 @@ from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult
 
 STAGE2_SHADOW_COMPARE_ARTIFACT_VERSION = 1
+_DECISION_TOLERANCE = 1e-12
 SCOREBOARD_COLUMNS = (
     "strategy_id",
     "role",
@@ -148,10 +149,13 @@ def _years_for_index(index: pd.DatetimeIndex) -> float:
     return float(len(index) / 252.0)
 
 
-def _invested_mask(weights: pd.Series | pd.DataFrame) -> pd.Series:
+def _cash_allocation_series(weights: pd.Series | pd.DataFrame) -> pd.Series:
     if isinstance(weights, pd.DataFrame):
-        return weights.abs().sum(axis=1) > 0.0
-    return weights.abs() > 0.0
+        gross_exposure = weights.fillna(0.0).abs().sum(axis=1).astype(float)
+    else:
+        gross_exposure = weights.fillna(0.0).abs().astype(float)
+    invested_fraction = gross_exposure.clip(lower=0.0, upper=1.0)
+    return (1.0 - invested_fraction).clip(lower=0.0, upper=1.0).astype(float)
 
 
 def _action_dates(actions: pd.DataFrame) -> pd.Series:
@@ -266,8 +270,8 @@ def _result_summary(
     end: pd.Timestamp,
 ) -> dict[str, Any]:
     years = _years_for_index(result.returns.index)
-    invested = _invested_mask(result.weights)
-    exposure_pct = float(invested.mean() * 100.0) if len(invested) else 0.0
+    cash_allocation = _cash_allocation_series(result.weights)
+    average_cash_pct = float(cash_allocation.mean() * 100.0) if len(cash_allocation) else 0.0
     action_count = _action_count(actions, start, end)
     action_frequency = float(action_count / years) if years > 0 else 0.0
     total_turnover = float(result.turnover.sum()) if len(result.turnover) else 0.0
@@ -285,7 +289,7 @@ def _result_summary(
         "sharpe": float(metrics.sharpe(result.returns)),
         "max_drawdown": float(metrics.max_drawdown(result.returns)),
         "turnover": annual_turnover,
-        "percent_time_in_cash": float(100.0 - exposure_pct),
+        "percent_time_in_cash": average_cash_pct,
         "action_count": action_count,
         "action_frequency": action_frequency,
         "total_return": float((1.0 + result.returns).prod() - 1.0) if len(result.returns) else 0.0,
@@ -612,6 +616,107 @@ def summarize_parameter_stability(
     }
 
 
+def summarize_benchmark_comparison(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    materialized = [dict(row) for row in rows]
+    if not materialized:
+        return {
+            "period_count": 0,
+            "benchmark_win_fraction": 0.0,
+            "full_period_excess_cagr": None,
+            "full_period_sharpe_delta": None,
+            "label": "unknown",
+            "summary_text": "unknown; benchmark comparison missing",
+        }
+
+    full_period = next(
+        (row for row in materialized if str(row.get("period", "")) == "full"),
+        materialized[0],
+    )
+    win_count = sum(bool(row.get("outperformed_benchmark")) for row in materialized)
+    benchmark_win_fraction = float(win_count / len(materialized))
+    full_period_excess_cagr = float(full_period.get("excess_cagr", 0.0))
+    full_period_sharpe_delta = float(full_period.get("sharpe_delta", 0.0))
+
+    if (
+        benchmark_win_fraction >= 0.75
+        and full_period_excess_cagr >= 0.0
+        and full_period_sharpe_delta >= -0.10
+    ):
+        label = "strong"
+    elif benchmark_win_fraction >= 0.50 and full_period_excess_cagr > -0.03:
+        label = "mixed"
+    else:
+        label = "weak"
+
+    summary_text = (
+        f"{label}; {win_count}/{len(materialized)} benchmark wins; "
+        f"full excess CAGR {full_period_excess_cagr:.4f}"
+    )
+    return {
+        "period_count": len(materialized),
+        "benchmark_win_fraction": benchmark_win_fraction,
+        "full_period_excess_cagr": full_period_excess_cagr,
+        "full_period_sharpe_delta": full_period_sharpe_delta,
+        "label": label,
+        "summary_text": summary_text,
+    }
+
+
+def summarize_cost_sensitivity(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    materialized = [dict(row) for row in rows]
+    if not materialized:
+        return {
+            "scenario_count": 0,
+            "base_cagr": None,
+            "worst_case_cagr": None,
+            "base_sharpe": None,
+            "worst_case_sharpe": None,
+            "label": "unknown",
+            "summary_text": "unknown; cost sensitivity missing",
+        }
+
+    base_row = next(
+        (row for row in materialized if str(row.get("scenario", "")) == "base"),
+        materialized[0],
+    )
+    base_cagr = float(base_row.get("cagr", 0.0))
+    worst_case_cagr = min(float(row.get("cagr", 0.0)) for row in materialized)
+    base_sharpe = float(base_row.get("sharpe", 0.0))
+    worst_case_sharpe = min(float(row.get("sharpe", 0.0)) for row in materialized)
+    cagr_drop = float(base_cagr - worst_case_cagr)
+    sharpe_drop = float(base_sharpe - worst_case_sharpe)
+
+    if (
+        worst_case_cagr > 0.0
+        and worst_case_sharpe > 0.0
+        and cagr_drop <= 0.03
+        and sharpe_drop <= 0.35
+    ):
+        label = "resilient"
+    elif worst_case_cagr > -0.03 and worst_case_sharpe > -0.25 and cagr_drop <= 0.08:
+        label = "mixed"
+    else:
+        label = "fragile"
+
+    summary_text = (
+        f"{label}; worst stress CAGR {worst_case_cagr:.4f}; "
+        f"worst stress Sharpe {worst_case_sharpe:.4f}"
+    )
+    return {
+        "scenario_count": len(materialized),
+        "base_cagr": base_cagr,
+        "worst_case_cagr": worst_case_cagr,
+        "base_sharpe": base_sharpe,
+        "worst_case_sharpe": worst_case_sharpe,
+        "label": label,
+        "summary_text": summary_text,
+    }
+
+
 def _scoreboard_row(
     candidate: Stage2CompareCandidate,
     *,
@@ -656,26 +761,44 @@ def derive_shadow_candidate_decision(
     shadow_review_bundle: Mapping[str, Any],
     shadow_walk_forward_summary: Mapping[str, Any],
     shadow_parameter_summary: Mapping[str, Any],
+    shadow_drawdown_summary: Mapping[str, Any],
+    shadow_benchmark_summary: Mapping[str, Any],
+    shadow_cost_sensitivity_summary: Mapping[str, Any],
 ) -> str:
     review_state = str(shadow_review_bundle.get("shadow_review_state", "-"))
+    review_summary = shadow_review_bundle.get("review_summary")
+    review_summary = review_summary if isinstance(review_summary, Mapping) else {}
+    automation_decision = str(review_summary.get("automation_decision", "review"))
     walk_forward_label = str(shadow_walk_forward_summary.get("label", "weak"))
     parameter_label = str(shadow_parameter_summary.get("label", "fragile"))
+    drawdown_label = str(shadow_drawdown_summary.get("label", "clustered"))
+    benchmark_label = str(shadow_benchmark_summary.get("label", "weak"))
+    cost_label = str(shadow_cost_sensitivity_summary.get("label", "fragile"))
     sharpe_delta = float(shadow_row["sharpe"]) - float(primary_row["sharpe"])
     cagr_delta = float(shadow_row["cagr"]) - float(primary_row["cagr"])
     drawdown_delta = float(shadow_row["max_drawdown"]) - float(primary_row["max_drawdown"])
 
-    if review_state == "blocked":
+    if review_state == "blocked" or automation_decision == "block":
         return "not advancing"
+    if review_state != "clean" or automation_decision != "allow":
+        return "remain shadow-only"
     if parameter_label == "fragile" or walk_forward_label == "weak":
         return "not advancing"
-    if sharpe_delta <= -0.20 or cagr_delta <= -0.03 or drawdown_delta <= -0.05:
+    if (
+        sharpe_delta <= (-0.20 + _DECISION_TOLERANCE)
+        or cagr_delta <= (-0.03 + _DECISION_TOLERANCE)
+        or drawdown_delta <= (-0.05 + _DECISION_TOLERANCE)
+    ):
         return "not advancing"
     if (
-        sharpe_delta >= 0.10
-        and cagr_delta >= 0.0
-        and drawdown_delta >= -0.02
+        sharpe_delta >= (0.10 - _DECISION_TOLERANCE)
+        and cagr_delta >= (0.0 - _DECISION_TOLERANCE)
+        and drawdown_delta >= (-0.02 - _DECISION_TOLERANCE)
         and parameter_label == "stable"
-        and walk_forward_label in {"strong", "mixed"}
+        and walk_forward_label == "strong"
+        and drawdown_label in {"none", "contained"}
+        and benchmark_label == "strong"
+        and cost_label == "resilient"
     ):
         return "candidate for later paper promotion after Stage 2 exit"
     return "remain shadow-only"
@@ -730,6 +853,10 @@ def build_stage2_shadow_compare_report(
     shadow_subperiod_rows = build_subperiod_rows(shadow)
     primary_benchmark_rows = build_benchmark_rows(primary)
     shadow_benchmark_rows = build_benchmark_rows(shadow)
+    primary_benchmark_summary = summarize_benchmark_comparison(primary_benchmark_rows)
+    shadow_benchmark_summary = summarize_benchmark_comparison(shadow_benchmark_rows)
+    primary_cost_sensitivity_summary = summarize_cost_sensitivity(primary.cost_sensitivity_rows)
+    shadow_cost_sensitivity_summary = summarize_cost_sensitivity(shadow.cost_sensitivity_rows)
 
     primary_row = _scoreboard_row(
         primary,
@@ -747,6 +874,9 @@ def build_stage2_shadow_compare_report(
         shadow_review_bundle=shadow.review_bundle,
         shadow_walk_forward_summary=shadow_walk_forward["summary"],
         shadow_parameter_summary=shadow_parameter_summary,
+        shadow_drawdown_summary=shadow_drawdown["summary"],
+        shadow_benchmark_summary=shadow_benchmark_summary,
+        shadow_cost_sensitivity_summary=shadow_cost_sensitivity_summary,
     )
     shadow_row = dict(provisional_shadow_row)
     shadow_row["current_decision"] = shadow_decision
@@ -790,6 +920,8 @@ def build_stage2_shadow_compare_report(
                 "parameter_stability_summary": primary_parameter_summary,
                 "walk_forward_summary": primary_walk_forward["summary"],
                 "drawdown_cluster_summary": primary_drawdown["summary"],
+                "benchmark_comparison_summary": primary_benchmark_summary,
+                "cost_sensitivity_summary": primary_cost_sensitivity_summary,
             },
             shadow.strategy_id: {
                 "role": shadow.role,
@@ -802,6 +934,8 @@ def build_stage2_shadow_compare_report(
                 "parameter_stability_summary": shadow_parameter_summary,
                 "walk_forward_summary": shadow_walk_forward["summary"],
                 "drawdown_cluster_summary": shadow_drawdown["summary"],
+                "benchmark_comparison_summary": shadow_benchmark_summary,
+                "cost_sensitivity_summary": shadow_cost_sensitivity_summary,
             },
         },
         "comparison": {
@@ -949,6 +1083,10 @@ def render_stage2_shadow_compare_markdown(report: Mapping[str, Any]) -> str:
         f"- `{shadow_id}` walk-forward: `{shadow_candidate['walk_forward_summary']['summary_text']}`",
         f"- `{primary_id}` drawdown clustering: `{primary_candidate['drawdown_cluster_summary']['summary_text']}`",
         f"- `{shadow_id}` drawdown clustering: `{shadow_candidate['drawdown_cluster_summary']['summary_text']}`",
+        f"- `{primary_id}` benchmark comparison: `{primary_candidate['benchmark_comparison_summary']['summary_text']}`",
+        f"- `{shadow_id}` benchmark comparison: `{shadow_candidate['benchmark_comparison_summary']['summary_text']}`",
+        f"- `{primary_id}` cost sensitivity: `{primary_candidate['cost_sensitivity_summary']['summary_text']}`",
+        f"- `{shadow_id}` cost sensitivity: `{shadow_candidate['cost_sensitivity_summary']['summary_text']}`",
         "",
         "### Parameter Stability",
         "",

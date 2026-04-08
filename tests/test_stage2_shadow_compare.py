@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from trading_codex.backtest import metrics
 from trading_codex.backtest.engine import BacktestResult
@@ -15,7 +16,11 @@ from trading_codex.data import LocalStore
 from trading_codex.shadow.stage2_compare import (
     Stage2CompareCandidate,
     build_drawdown_cluster_review,
+    build_stage2_shadow_compare_report,
     build_walk_forward_summary,
+    derive_shadow_candidate_decision,
+    summarize_benchmark_comparison,
+    summarize_cost_sensitivity,
     summarize_parameter_stability,
 )
 
@@ -59,19 +64,35 @@ def _candidate_from_returns(
     returns: pd.Series,
     benchmark_returns: pd.Series | None = None,
     strategy_id: str = "candidate",
+    role: str = "shadow",
+    weights: pd.DataFrame | None = None,
+    review_bundle: dict[str, object] | None = None,
+    parameter_stability_rows: list[dict[str, object]] | None = None,
+    cost_sensitivity_rows: list[dict[str, object]] | None = None,
+    turnover: pd.Series | None = None,
+    estimated_costs: pd.Series | None = None,
 ) -> Stage2CompareCandidate:
-    weights = pd.DataFrame({"SPY": 1.0}, index=returns.index, dtype=float)
-    turnover = pd.Series(0.0, index=returns.index, dtype=float)
+    weight_frame = (
+        weights.copy().astype(float)
+        if weights is not None
+        else pd.DataFrame({"SPY": 1.0}, index=returns.index, dtype=float)
+    )
+    turnover_series = (
+        turnover.copy().astype(float)
+        if turnover is not None
+        else pd.Series(0.0, index=returns.index, dtype=float)
+    )
     equity = (1.0 + returns).cumprod()
     result = BacktestResult(
         returns=returns,
-        weights=weights,
-        turnover=turnover,
+        weights=weight_frame,
+        turnover=turnover_series,
         equity=equity,
+        estimated_costs=estimated_costs,
     )
     return Stage2CompareCandidate(
         strategy_id=strategy_id,
-        role="shadow",
+        role=role,
         runtime_strategy="test_strategy",
         implementation_label="test_impl",
         parameters={"risk_symbols": ["SPY"]},
@@ -101,19 +122,74 @@ def _candidate_from_returns(
             "cagr": float(metrics.cagr(returns)),
             "sharpe": float(metrics.sharpe(returns)),
             "max_drawdown": float(metrics.max_drawdown(returns)),
-            "annual_turnover": 0.0,
+            "annual_turnover": float(turnover_series.sum() / (len(returns) / 252.0)) if len(returns) else 0.0,
         },
         benchmark_returns=benchmark_returns,
-        review_bundle={
-            "shadow_review_state": "clean",
-            "review_summary": {
-                "automation_decision": "allow",
-                "automation_status": "automation_ready",
-            },
-        },
-        parameter_stability_rows=[],
-        cost_sensitivity_rows=[],
+        review_bundle=review_bundle or _review_bundle("clean"),
+        parameter_stability_rows=parameter_stability_rows or [],
+        cost_sensitivity_rows=cost_sensitivity_rows or [],
         artifacts={},
+    )
+
+
+def _review_bundle(
+    review_state: str,
+    *,
+    automation_decision: str | None = None,
+) -> dict[str, object]:
+    derived_decision = automation_decision
+    if derived_decision is None:
+        derived_decision = {
+            "clean": "allow",
+            "warning": "review",
+            "blocked": "block",
+        }.get(review_state, "review")
+    automation_status = {
+        "allow": "automation_ready",
+        "review": "review_required",
+        "block": "blocked",
+    }[derived_decision]
+    return {
+        "shadow_review_state": review_state,
+        "review_summary": {
+            "shadow_review_state": review_state,
+            "automation_decision": derived_decision,
+            "automation_status": automation_status,
+            "warning_reasons": [] if review_state != "warning" else ["stale_data"],
+            "blocking_reasons": [] if review_state != "blocked" else ["missing_price"],
+        },
+    }
+
+
+def _shadow_decision(
+    *,
+    review_state: str = "clean",
+    automation_decision: str | None = None,
+    shadow_sharpe: float = 1.10,
+    shadow_cagr: float = 0.12,
+    shadow_max_drawdown: float = -0.16,
+    walk_forward_label: str = "strong",
+    parameter_label: str = "stable",
+    drawdown_label: str = "contained",
+    benchmark_label: str = "strong",
+    cost_label: str = "resilient",
+) -> str:
+    return derive_shadow_candidate_decision(
+        primary_row={"sharpe": 1.0, "cagr": 0.10, "max_drawdown": -0.15},
+        shadow_row={
+            "sharpe": shadow_sharpe,
+            "cagr": shadow_cagr,
+            "max_drawdown": shadow_max_drawdown,
+        },
+        shadow_review_bundle=_review_bundle(
+            review_state,
+            automation_decision=automation_decision,
+        ),
+        shadow_walk_forward_summary={"label": walk_forward_label},
+        shadow_parameter_summary={"label": parameter_label},
+        shadow_drawdown_summary={"label": drawdown_label},
+        shadow_benchmark_summary={"label": benchmark_label},
+        shadow_cost_sensitivity_summary={"label": cost_label},
     )
 
 
@@ -174,6 +250,182 @@ def test_summarize_parameter_stability_marks_consistent_neighborhood_stable() ->
     assert summary["positive_sharpe_fraction"] == 1.0
     assert summary["baseline_variant"] == "baseline"
     assert "positive-Sharpe variants" in summary["summary_text"]
+
+
+def test_summarize_benchmark_comparison_distinguishes_strong_mixed_and_weak() -> None:
+    strong = summarize_benchmark_comparison(
+        [
+            {"period": "full", "excess_cagr": 0.01, "sharpe_delta": 0.02, "outperformed_benchmark": True},
+            {"period": "first_half", "excess_cagr": 0.02, "sharpe_delta": 0.04, "outperformed_benchmark": True},
+            {"period": "second_half", "excess_cagr": -0.01, "sharpe_delta": -0.02, "outperformed_benchmark": True},
+            {"period": "recent_1y", "excess_cagr": 0.00, "sharpe_delta": -0.08, "outperformed_benchmark": False},
+        ]
+    )
+    mixed = summarize_benchmark_comparison(
+        [
+            {"period": "full", "excess_cagr": -0.02, "sharpe_delta": -0.12, "outperformed_benchmark": True},
+            {"period": "first_half", "excess_cagr": 0.01, "sharpe_delta": 0.01, "outperformed_benchmark": True},
+            {"period": "second_half", "excess_cagr": -0.03, "sharpe_delta": -0.15, "outperformed_benchmark": False},
+            {"period": "recent_1y", "excess_cagr": -0.01, "sharpe_delta": -0.05, "outperformed_benchmark": False},
+        ]
+    )
+    weak = summarize_benchmark_comparison(
+        [
+            {"period": "full", "excess_cagr": -0.04, "sharpe_delta": -0.20, "outperformed_benchmark": False},
+            {"period": "first_half", "excess_cagr": -0.02, "sharpe_delta": -0.10, "outperformed_benchmark": True},
+            {"period": "second_half", "excess_cagr": -0.05, "sharpe_delta": -0.12, "outperformed_benchmark": False},
+            {"period": "recent_1y", "excess_cagr": -0.01, "sharpe_delta": -0.04, "outperformed_benchmark": False},
+        ]
+    )
+
+    assert strong["label"] == "strong"
+    assert strong["benchmark_win_fraction"] == pytest.approx(0.75)
+    assert mixed["label"] == "mixed"
+    assert mixed["benchmark_win_fraction"] == pytest.approx(0.50)
+    assert weak["label"] == "weak"
+    assert weak["benchmark_win_fraction"] == pytest.approx(0.25)
+
+
+def test_summarize_cost_sensitivity_distinguishes_resilient_mixed_and_fragile() -> None:
+    resilient = summarize_cost_sensitivity(
+        [
+            {"scenario": "base", "cagr": 0.10, "sharpe": 1.00},
+            {"scenario": "stress_mid", "cagr": 0.09, "sharpe": 0.88},
+            {"scenario": "stress_high", "cagr": 0.07, "sharpe": 0.70},
+        ]
+    )
+    mixed = summarize_cost_sensitivity(
+        [
+            {"scenario": "base", "cagr": 0.06, "sharpe": 0.30},
+            {"scenario": "stress_mid", "cagr": 0.03, "sharpe": 0.05},
+            {"scenario": "stress_high", "cagr": -0.02, "sharpe": -0.20},
+        ]
+    )
+    fragile = summarize_cost_sensitivity(
+        [
+            {"scenario": "base", "cagr": 0.08, "sharpe": 0.90},
+            {"scenario": "stress_mid", "cagr": 0.00, "sharpe": 0.10},
+            {"scenario": "stress_high", "cagr": -0.05, "sharpe": -0.35},
+        ]
+    )
+
+    assert resilient["label"] == "resilient"
+    assert mixed["label"] == "mixed"
+    assert fragile["label"] == "fragile"
+
+
+def test_stage2_shadow_compare_report_uses_average_cash_allocation_for_partial_exposure() -> None:
+    index = pd.bdate_range("2020-01-01", periods=4)
+    primary_returns = pd.Series(0.0010, index=index)
+    shadow_returns = pd.Series(0.0005, index=index)
+
+    primary_candidate = _candidate_from_returns(
+        returns=primary_returns,
+        strategy_id="primary_live_candidate_v1",
+        role="primary",
+    )
+    shadow_candidate = _candidate_from_returns(
+        returns=shadow_returns,
+        strategy_id="primary_live_candidate_v1_vol_managed",
+        weights=pd.DataFrame({"SPY": 0.5}, index=index, dtype=float),
+    )
+
+    report = build_stage2_shadow_compare_report(
+        pair_id="primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed",
+        as_of_date=index[-1].date().isoformat(),
+        generated_at="2026-04-08T12:00:00",
+        command="pytest",
+        data_dir="/tmp/data",
+        primary=primary_candidate,
+        shadow=shadow_candidate,
+        primary_mapping={"strategy_id": "primary_live_candidate_v1"},
+        shadow_runtime={"strategy_id": "primary_live_candidate_v1_vol_managed"},
+    )
+
+    rows = {
+        row["strategy_id"]: row
+        for row in report["scoreboard"]["rows"]
+    }
+    assert rows["primary_live_candidate_v1"]["percent_time_in_cash"] == pytest.approx(0.0)
+    assert rows["primary_live_candidate_v1_vol_managed"]["percent_time_in_cash"] == pytest.approx(50.0)
+
+
+def test_derive_shadow_candidate_decision_returns_not_advancing_when_review_is_blocked() -> None:
+    assert _shadow_decision(review_state="blocked") == "not advancing"
+
+
+def test_derive_shadow_candidate_decision_keeps_warning_state_shadow_only() -> None:
+    assert _shadow_decision(review_state="warning") == "remain shadow-only"
+
+
+@pytest.mark.parametrize(
+    ("parameter_label", "walk_forward_label"),
+    [
+        ("fragile", "strong"),
+        ("stable", "weak"),
+    ],
+)
+def test_derive_shadow_candidate_decision_rejects_fragile_parameters_and_weak_walk_forward(
+    parameter_label: str,
+    walk_forward_label: str,
+) -> None:
+    assert (
+        _shadow_decision(
+            parameter_label=parameter_label,
+            walk_forward_label=walk_forward_label,
+        )
+        == "not advancing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("shadow_sharpe", "shadow_cagr", "shadow_max_drawdown"),
+    [
+        (0.80, 0.12, -0.16),
+        (1.10, 0.07, -0.16),
+        (1.10, 0.12, -0.20),
+    ],
+)
+def test_derive_shadow_candidate_decision_rejects_large_relative_regressions(
+    shadow_sharpe: float,
+    shadow_cagr: float,
+    shadow_max_drawdown: float,
+) -> None:
+    assert (
+        _shadow_decision(
+            shadow_sharpe=shadow_sharpe,
+            shadow_cagr=shadow_cagr,
+            shadow_max_drawdown=shadow_max_drawdown,
+        )
+        == "not advancing"
+    )
+
+
+def test_derive_shadow_candidate_decision_requires_clean_strong_surfaces_for_candidate_branch() -> None:
+    assert _shadow_decision() == "candidate for later paper promotion after Stage 2 exit"
+
+
+@pytest.mark.parametrize(
+    ("benchmark_label", "cost_label", "drawdown_label"),
+    [
+        ("mixed", "resilient", "contained"),
+        ("strong", "mixed", "contained"),
+        ("strong", "resilient", "clustered"),
+    ],
+)
+def test_derive_shadow_candidate_decision_downgrades_to_shadow_only_when_supporting_surfaces_are_not_strong(
+    benchmark_label: str,
+    cost_label: str,
+    drawdown_label: str,
+) -> None:
+    assert (
+        _shadow_decision(
+            benchmark_label=benchmark_label,
+            cost_label=cost_label,
+            drawdown_label=drawdown_label,
+        )
+        == "remain shadow-only"
+    )
 
 
 def test_walk_forward_and_drawdown_cluster_helpers_return_expected_shapes() -> None:
