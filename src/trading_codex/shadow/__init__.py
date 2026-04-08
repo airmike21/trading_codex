@@ -10,6 +10,15 @@ from trading_codex.shadow.risk_invariants import (
     TurnoverCapConfig,
     evaluate_risk_invariants,
 )
+from trading_codex.shadow.stage2_compare import (
+    Stage2CompareCandidate,
+    build_drawdown_cluster_review,
+    build_stage2_shadow_compare_report,
+    build_walk_forward_summary,
+    render_stage2_shadow_compare_markdown,
+    summarize_parameter_stability,
+    write_stage2_shadow_compare_artifacts,
+)
 from trading_codex.shadow.stage2_candidates import (
     PRIMARY_LIVE_CANDIDATE_V1_DEFAULT_DEFENSIVE_SYMBOL,
     PRIMARY_LIVE_CANDIDATE_V1_DEFAULT_MOMENTUM_LOOKBACK,
@@ -53,15 +62,22 @@ __all__ = [
     "RegimeGuardrailConfig",
     "RiskInvariantConfig",
     "RiskInvariantReport",
+    "Stage2CompareCandidate",
     "TurnoverCapConfig",
     "ControlPlaneStrategyMapping",
     "ShadowStrategyRuntimeConfig",
     "ShadowStrategyOutputs",
     "ShadowStrategyTemplate",
+    "build_drawdown_cluster_review",
     "build_shadow_template_for_strategy",
+    "build_stage2_shadow_compare_report",
+    "build_walk_forward_summary",
     "build_local_shadow_template",
     "build_primary_live_candidate_v1_vol_managed_shadow_template",
     "primary_live_candidate_v1_runtime_mapping",
     "primary_live_candidate_v1_vol_managed_shadow_config",
     "evaluate_risk_invariants",
+    "render_stage2_shadow_compare_markdown",
+    "summarize_parameter_stability",
+    "write_stage2_shadow_compare_artifacts",
 ]
