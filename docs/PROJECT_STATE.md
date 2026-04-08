@@ -1,13 +1,13 @@
 # Project State
 
-Last updated: 2026-04-07
+Last updated: 2026-04-08
 
 This is the single live checkpoint for Trading Codex.
 Use it for current project state, active slice status, blockers, warnings, and expected next move.
 
 ## Resume Snapshot
 
-- Current promoted SHA: `f282de9f3935882fd7dfadd7b11903e826c8010b` (`origin/master` and runtime SHA represented by this checkpoint)
+- Current promoted SHA: `ed57381ea0204b8f781de7801245a61d4e68c894` (`origin/master` and runtime SHA represented by this checkpoint)
 - Active Builder branch: none recorded on promoted `master`
 - Active slice base SHA: n/a on promoted `master`
 - Reviewer aligned to Builder: yes for promoted content
@@ -16,12 +16,12 @@ Use it for current project state, active slice status, blockers, warnings, and e
 
 - Current stage: Stage 2 in progress; Stage 1 complete; live not authorized
 - Current objective: stay in Stage 2 forward-evidence accumulation / hold for the approved IBKR PaperTrader lane for `primary_live_candidate_v1` while using bounded shadow work as the approved parallel repo activity
-- Last completed milestone: the IBKR PaperTrader operational acceptance path is in place, the preferred first shadow candidate is registered in `docs/STRATEGY_REGISTRY.md`, the common shadow-strategy template plus risk-invariants layer are promoted, and the registered `primary_live_candidate_v1_vol_managed` shadow candidate now has a runnable local-only executable mapping so the next repo slice can compare the correct primary-vs-shadow pair
+- Last completed milestone: the promoted Stage 2 shadow-candidate mapping slice made the runtime mapping explicit for `primary_live_candidate_v1` and made the registered `primary_live_candidate_v1_vol_managed` shadow candidate runnable locally through `scripts/run_backtest.py --strategy primary_live_candidate_v1_vol_managed`, so the next repo slice can compare the correct primary-vs-shadow pair without broadening the approved IBKR PaperTrader lane
 - Runtime / lane status:
   - the approved primary IBKR PaperTrader operational acceptance path is in place and remains the only approved Stage 2 persistent paper-execution lane
   - Stage 2 is not exited because forward evidence is still accumulating over time
   - the existing local Stage 2 paper lane remains supporting groundwork, retained-evidence infrastructure, and the only approved replay lane for shadow work
-  - concrete primary runtime mapping is now explicit in repo truth: control-plane `primary_live_candidate_v1` currently maps to preset `dual_mom_vol10_cash_core`, which runs `dual_mom_vol10_cash`, while the paper/ops state key remains `primary_live_candidate_v1`
+  - concrete primary runtime mapping is now explicit in repo truth: control-plane `primary_live_candidate_v1` currently maps to preset `dual_mom_vol10_cash_core`, which runs `--strategy dual_mom_vol10_cash`, while the paper/ops state key remains `primary_live_candidate_v1`
   - the registered `primary_live_candidate_v1_vol_managed` shadow candidate is now runnable locally through `scripts/run_backtest.py --strategy primary_live_candidate_v1_vol_managed` and remains outside the approved IBKR PaperTrader lane
   - IBKR PaperTrader bring-up, lane, review, and scheduled-run docs exist
   - no repo doc says Stage 2 is exited
