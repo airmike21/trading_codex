@@ -1,6 +1,6 @@
 # Strategy Registry
 
-Last updated: 2026-04-07
+Last updated: 2026-04-08
 
 This registry is the durable control-plane for strategy status in the first-live program.
 Use `docs/PROJECT_STATE.md` for current stage, active slice, blockers, and expected next move.
@@ -28,7 +28,7 @@ Use this file to keep the primary live candidate distinct from the wider researc
 
 | Strategy ID | Status | Summary | Why it is not paper-enabled yet | Notes |
 | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1_vol_managed` | Coded; shadow-only; local-only; compare/decision pending | Preferred first near-path shadow candidate: a volatility-managed version of the current long-only ETF trend/momentum primary candidate that stays close to the first-live path. | Stage 2 remains focused on forward evidence for `primary_live_candidate_v1` in the approved IBKR PaperTrader lane, and this candidate still must complete comparison/reporting, robustness, and the later decision gate before any paper-promotion discussion. | Concrete local-only mapping is now explicit: `scripts/run_backtest.py --strategy primary_live_candidate_v1_vol_managed` resolves to a `dual_mom_v1`-based shadow implementation with the promoted shadow template and risk-invariants layer. Optional replay remains local-only during Stage 2. Current decision: `remain shadow-only`. |
+| `primary_live_candidate_v1_vol_managed` | Coded; shadow-only; local-only; retained comparison package pending | Preferred first near-path shadow candidate: a volatility-managed version of the current long-only ETF trend/momentum primary candidate that stays close to the first-live path. | Stage 2 remains focused on forward evidence for `primary_live_candidate_v1` in the approved IBKR PaperTrader lane, and this candidate still must run the retained primary-vs-shadow backtest/walk-forward comparison package, optional local-only replay if it adds value, and the shadow decision gate before any paper-promotion discussion. | Concrete local-only mapping is now explicit: `scripts/run_backtest.py --strategy primary_live_candidate_v1_vol_managed` resolves to a `dual_mom_v1`-based shadow implementation with the promoted shadow template and risk-invariants layer. Optional replay remains local-only during Stage 2. Current decision: `remain shadow-only`. |
 
 ### Shadow Bench Rules
 
