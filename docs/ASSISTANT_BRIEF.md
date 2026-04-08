@@ -45,7 +45,7 @@ Use `docs/PROJECT_STATE.md` for live state.
 - `docs/STRATEGY_REGISTRY.md`: durable strategy inventory and promotion state.
 - `docs/WORKFLOW.md`: durable four-role operating model.
 - `docs/PROMOTION_RUNBOOK.md`: exact approved promotion procedure.
-- `docs/STAGE2_PAPER_OPS.md`, `docs/STAGE2_IBKR_PAPER_OPS.md`, `docs/IBKR_PAPERTRADER_BRINGUP.md`, `docs/IBKR_PAPER_LANE.md`: lane-specific runbooks and references.
+- `docs/STAGE2_PAPER_OPS.md`, `docs/STAGE2_SHADOW_OPS.md`, `docs/STAGE2_IBKR_PAPER_OPS.md`, `docs/IBKR_PAPERTRADER_BRINGUP.md`, `docs/IBKR_PAPER_LANE.md`: lane-specific runbooks and references.
 - `docs/DAILY_TRADING_RUNBOOK.md`, `docs/PRESET_BEHAVIOR_REFERENCE.md`, `docs/MANUAL_ALERT_WORKFLOW.md`: operator references, not startup truth.
 
 ## Standing Workflow Rule
