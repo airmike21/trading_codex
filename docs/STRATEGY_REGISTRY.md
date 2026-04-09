@@ -1,6 +1,6 @@
 # Strategy Registry
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 This registry is the durable control-plane for strategy status in the first-live program.
 Use `docs/PROJECT_STATE.md` for current stage, active slice, blockers, and expected next move.
@@ -28,7 +28,7 @@ Use this file to keep the primary live candidate distinct from the wider researc
 
 | Strategy ID | Status | Summary | Why it is not paper-enabled yet | Notes |
 | --- | --- | --- | --- | --- |
-| `primary_live_candidate_v1_vol_managed` | Coded; shadow-only; local-only; retained comparison package completed; not advancing | Near-path volatility-managed version of the current long-only ETF trend/momentum primary candidate that stays close to the first-live path. | The retained primary-vs-shadow comparison package and shadow decision gate are complete for the explicit pair against `primary_live_candidate_v1`, and the current decision is `not advancing`; Stage 2 remains focused on forward evidence for `primary_live_candidate_v1` in the approved IBKR PaperTrader lane. | Concrete local-only mapping is now explicit: `scripts/run_backtest.py --strategy primary_live_candidate_v1_vol_managed` resolves to a `dual_mom_v1`-based shadow implementation with the promoted shadow template and risk-invariants layer. The completed retained comparison run for the explicit pair reported `as_of_date: 2026-04-07` and `current_decision: not advancing`. |
+| `primary_live_candidate_v1_vol_managed` | Coded; shadow-only; local-only; reopened for automated retained-evidence refresh | Near-path volatility-managed version of the current long-only ETF trend/momentum primary candidate that stays close to the first-live path. | The most recent retained primary-vs-shadow comparison package and manual shadow decision gate for the explicit pair against `primary_live_candidate_v1` reported `current_decision: not advancing` as of `2026-04-07`; reopening the pair is for ongoing retained-evidence refresh only, and Stage 2 remains focused on forward evidence for `primary_live_candidate_v1` in the approved IBKR PaperTrader lane. | Concrete local-only mapping is now explicit: `scripts/run_backtest.py --strategy primary_live_candidate_v1_vol_managed` resolves to a `dual_mom_v1`-based shadow implementation with the promoted shadow template and risk-invariants layer. The explicit pair against `primary_live_candidate_v1` is reopened as the sole active Stage 2 shadow pair for automated daily retained-evidence refresh through `configs/stage2_shadow_ops.json`; that automation keeps the official `current_decision` manual and does not broaden the approved IBKR PaperTrader lane. |
 
 ### Shadow Bench Rules
 

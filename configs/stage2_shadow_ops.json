@@ -1,5 +1,14 @@
 {
   "schema_name": "stage2_shadow_ops_config",
   "schema_version": 1,
-  "active_pair": null
+  "active_pair": {
+    "pair_id": "primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed",
+    "primary_strategy_id": "primary_live_candidate_v1",
+    "shadow_strategy_id": "primary_live_candidate_v1_vol_managed",
+    "local_replay": {
+      "enabled": true,
+      "state_key": "primary_live_candidate_v1_vol_managed_shadow_replay",
+      "starting_cash": 100000.0
+    }
+  }
 }
