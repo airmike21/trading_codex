@@ -15,22 +15,13 @@ WSL / Linux:
 .venv/bin/python scripts/stage2_shadow_daily_ops.py --provider stooq
 ```
 
-This runner fails closed by default.
-The tracked repo config `configs/stage2_shadow_ops.json` currently ships with `active_pair: null`, so the command exits `0` with an explicit retained no-op result until a bounded shadow pair is manually opened and configured.
+This runner stays fail-closed around pair selection and replay eligibility.
+The runner still requires an explicit pair config and never guesses from docs.
+The tracked repo config `configs/stage2_shadow_ops.json` is now intentionally armed to the sole reopened bounded pair `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed`, so the command refreshes retained evidence for that local-only pair instead of producing an explicit retained no-op.
 
 ## Explicit Config Surface
 
 Tracked default:
-
-```json
-{
-  "schema_name": "stage2_shadow_ops_config",
-  "schema_version": 1,
-  "active_pair": null
-}
-```
-
-To explicitly enable the current bounded Stage 2 shadow pair and allow local-only replay in a separate local paper state:
 
 ```json
 {
@@ -49,10 +40,21 @@ To explicitly enable the current bounded Stage 2 shadow pair and allow local-onl
 }
 ```
 
+To return the runner to explicit fail-closed no-op behavior after a future manual control-plane change or in a local override:
+
+```json
+{
+  "schema_name": "stage2_shadow_ops_config",
+  "schema_version": 1,
+  "active_pair": null
+}
+```
+
 Boundaries for this config:
 
 - It is the only automation input. The runner does not infer an active shadow pair from `docs/PROJECT_STATE.md` or `docs/STRATEGY_REGISTRY.md`.
 - It currently supports exactly one bounded Stage 2 pair: `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed`.
+- The tracked repo config currently arms that sole reopened bounded pair; changing or clearing it remains a manual control-plane action.
 - Local replay stays separate from the primary local paper lane by requiring its own `state_key`.
 - If replay is enabled, the runner still fails closed unless the refreshed shadow review bundle reports `automation_decision: allow`.
 
