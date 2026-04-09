@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+POWERSHELL_EXE = shutil.which("powershell.exe")
+
+
+def _run_print_only(*extra_args: str) -> subprocess.CompletedProcess[str]:
+    if POWERSHELL_EXE is None:
+        pytest.skip("powershell.exe is required for Windows task installer tests")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cmd = [
+        POWERSHELL_EXE,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(repo_root / "scripts" / "windows" / "install_stage2_shadow_daily_ops_task.ps1"),
+        "-PrintOnly",
+        *extra_args,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
+
+
+def _copy_installer_fixture(tmp_path: Path) -> Path:
+    repo_root = Path(__file__).resolve().parents[1]
+    fixture_root = tmp_path / "scripts" / "windows"
+    fixture_root.mkdir(parents=True)
+    for name in (
+        "install_stage2_shadow_daily_ops_task.ps1",
+        "trading_codex_stage2_shadow_daily_ops.ps1",
+    ):
+        shutil.copy2(repo_root / "scripts" / "windows" / name, fixture_root / name)
+    return fixture_root / "install_stage2_shadow_daily_ops_task.ps1"
+
+
+def test_print_only_defaults_to_interactive_scheduler_install() -> None:
+    proc = _run_print_only(
+        "-StartTime",
+        "16:10",
+        "-WslRepoPath",
+        "/__trading_codex_stage2_shadow__",
+        "-WslPython",
+        "/__trading_codex_stage2_shadow__/.venv/bin/python",
+        "-ShadowOpsConfig",
+        "C:\\stage2\\shadow_ops.json",
+        "-DataDir",
+        "C:\\stage2\\data",
+        "-ArchiveRoot",
+        "C:\\stage2\\archive",
+        "-PaperBaseDir",
+        "C:\\stage2\\shadow_paper",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "# mode=Interactive" in stdout
+    assert "InteractiveToken logged-on session; runs only while signed in" in stdout
+    assert "# schedule=Mon-Fri 16:10" in stdout
+    assert "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File" in stdout
+    assert "TradingCodex\\stage2_shadow_ops\\launcher\\trading_codex_stage2_shadow_daily_ops.ps1" in stdout
+    assert "trading_codex_stage2_shadow_daily_ops.ps1" in stdout
+    assert "-WslRepoPath /__trading_codex_stage2_shadow__" in stdout
+    assert "-WslPython /__trading_codex_stage2_shadow__/.venv/bin/python" in stdout
+    assert "-ShadowOpsConfig C:\\stage2\\shadow_ops.json" in stdout
+    assert "-DataDir C:\\stage2\\data" in stdout
+    assert "-ArchiveRoot C:\\stage2\\archive" in stdout
+    assert "-PaperBaseDir C:\\stage2\\shadow_paper" in stdout
+    assert "schtasks.exe /Create /TN \"TradingCodex\\stage2_shadow_daily_ops\" /XML" in stdout
+
+
+def test_print_only_background_mode_preserves_s4u_scheduler_install() -> None:
+    proc = _run_print_only("-InstallMode", "Background")
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "# mode=Background" in stdout
+    assert "S4U non-interactive; local resources only" in stdout
+    assert "stage2_shadow_daily_ops_background.xml" in stdout
+
+
+def test_print_only_uses_staged_local_launcher_instead_of_wsl_wrapper_path(tmp_path: Path) -> None:
+    if POWERSHELL_EXE is None:
+        pytest.skip("powershell.exe is required for Windows task installer tests")
+
+    installer = _copy_installer_fixture(tmp_path)
+    wrapper = installer.parent / "trading_codex_stage2_shadow_daily_ops.ps1"
+
+    cmd = [
+        POWERSHELL_EXE,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(installer),
+        "-PrintOnly",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(tmp_path))
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "TradingCodex\\stage2_shadow_ops\\launcher\\trading_codex_stage2_shadow_daily_ops.ps1" in stdout
+    assert "\\\\wsl." not in stdout.lower()
+    assert str(wrapper) not in stdout
+
+
+def test_print_only_includes_optional_overrides_and_run_now_command() -> None:
+    proc = _run_print_only(
+        "-RunNow",
+        "-Provider",
+        "tiingo",
+        "-ShadowOpsConfig",
+        "C:\\stage2\\shadow_ops.json",
+        "-ArchiveRoot",
+        "C:\\stage2\\archive",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "-Provider tiingo" in stdout
+    assert "-ShadowOpsConfig C:\\stage2\\shadow_ops.json" in stdout
+    assert "-ArchiveRoot C:\\stage2\\archive" in stdout
+    assert "schtasks.exe /Run /TN \"TradingCodex\\stage2_shadow_daily_ops\"" in stdout
+
+
+def test_print_only_defaults_to_runtime_checkout_path() -> None:
+    proc = _run_print_only()
+
+    assert proc.returncode == 0, proc.stderr
+    stdout = proc.stdout
+    assert "# mode=Interactive" in stdout
+    assert "-WslRepoPath ~/trading_codex" in stdout
+    assert "-WslPython ~/trading_codex/.venv/bin/python" in stdout
+    assert "schtasks.exe /Create /TN \"TradingCodex\\stage2_shadow_daily_ops\" /XML" in stdout
