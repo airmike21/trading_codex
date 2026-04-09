@@ -32,12 +32,13 @@ from trading_codex.shadow import (
     PRIMARY_LIVE_CANDIDATE_V1_DEFAULT_REBALANCE,
     PRIMARY_LIVE_CANDIDATE_V1_ID,
     PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STRATEGY,
+    PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_DEFAULT_TARGET_VOL,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_DEFAULT_VOL_LOOKBACK,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
     build_shadow_template_for_strategy,
     primary_live_candidate_v1_runtime_mapping,
-    primary_live_candidate_v1_vol_managed_shadow_config,
+    resolve_shadow_runtime_config,
 )
 from trading_codex.shadow.stage2_compare import (
     Stage2CompareCandidate,
@@ -61,6 +62,7 @@ class CandidateSpec:
     role: str
     runtime_strategy: str
     implementation_label: str
+    template_family_id: str | None
     risk_symbols: tuple[str, ...]
     defensive_symbol: str
     momentum_lookback: int
@@ -89,8 +91,8 @@ class CandidateSpec:
         }
 
 
-def _default_artifacts_dir() -> Path:
-    return resolve_archive_root(create=True) / "stage2_shadow_compare" / DEFAULT_PAIR_ID
+def _default_artifacts_dir(pair_id: str) -> Path:
+    return resolve_archive_root(create=True) / "stage2_shadow_compare" / str(pair_id).strip()
 
 
 def _default_data_dir() -> Path:
@@ -103,6 +105,7 @@ def _primary_spec() -> CandidateSpec:
         role="primary",
         runtime_strategy=PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STRATEGY,
         implementation_label=PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STRATEGY,
+        template_family_id=None,
         risk_symbols=tuple(PRIMARY_LIVE_CANDIDATE_V1_DEFAULT_RISK_SYMBOLS),
         defensive_symbol=PRIMARY_LIVE_CANDIDATE_V1_DEFAULT_DEFENSIVE_SYMBOL,
         momentum_lookback=PRIMARY_LIVE_CANDIDATE_V1_DEFAULT_MOMENTUM_LOOKBACK,
@@ -113,13 +116,27 @@ def _primary_spec() -> CandidateSpec:
     )
 
 
-def _shadow_spec() -> CandidateSpec:
-    shadow_config = primary_live_candidate_v1_vol_managed_shadow_config()
+def _shadow_spec(args: argparse.Namespace) -> CandidateSpec:
+    shadow_config = resolve_shadow_runtime_config(
+        args.shadow_strategy_family,
+        strategy_id=args.shadow_strategy_id,
+        symbols=_parse_symbol_list(args.shadow_risk_symbols),
+        defensive_symbol=args.shadow_defensive_symbol,
+        momentum_lookback=args.shadow_momentum_lookback,
+        top_n=args.shadow_top_n,
+        rebalance=args.shadow_rebalance,
+        vol_target=args.shadow_vol_target,
+        vol_lookback=args.shadow_vol_lookback,
+        vol_min=args.shadow_vol_min,
+        vol_max=args.shadow_vol_max,
+        vol_update=args.shadow_vol_update,
+    )
     return CandidateSpec(
         strategy_id=shadow_config.strategy_id,
         role="shadow",
         runtime_strategy=shadow_config.implementation_strategy,
         implementation_label=shadow_config.implementation_label,
+        template_family_id=shadow_config.template_family_id,
         risk_symbols=tuple(shadow_config.risk_symbols),
         defensive_symbol=shadow_config.defensive_symbol,
         momentum_lookback=shadow_config.momentum_lookback,
@@ -132,6 +149,22 @@ def _shadow_spec() -> CandidateSpec:
         vol_update=shadow_config.vol_update,
         uses_internal_vol_sizing=False,
     )
+
+
+def _parse_symbol_list(value: str | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for item in value.split(","):
+        rendered = str(item).strip().upper()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        symbols.append(rendered)
+    if not symbols:
+        raise ValueError("shadow risk symbol override must contain at least one symbol.")
+    return tuple(symbols)
 
 
 def _latest_series_value(series: pd.Series | None) -> float | None:
@@ -453,6 +486,7 @@ def _run_candidate_core(
     )
     shadow_outputs = build_shadow_template_for_strategy(
         spec.strategy_id,
+        template_family_id=spec.template_family_id,
         defensive_symbol=spec.defensive_symbol,
     ).build_outputs(
         bars=bars,
@@ -610,16 +644,22 @@ def _build_candidate(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 2 shadow-only comparison/reporting flow for "
-            "primary_live_candidate_v1 vs primary_live_candidate_v1_vol_managed."
+            "Stage 2 shadow-only comparison/reporting flow for the approved primary "
+            "candidate versus one explicitly configured local-only shadow target."
         ),
         epilog=(
             "Example:\n"
             "  ./.venv/bin/python scripts/stage2_shadow_compare.py "
             "--data-dir ./data "
-            "--artifacts-dir ./artifacts/stage2_shadow_compare"
+            "--artifacts-dir ./artifacts/stage2_shadow_compare "
+            "--pair-id primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--pair-id",
+        default=DEFAULT_PAIR_ID,
+        help=f"Explicit control-plane pair/target id for retained artifacts (default: {DEFAULT_PAIR_ID}).",
     )
     parser.add_argument(
         "--data-dir",
@@ -631,7 +671,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--artifacts-dir",
         type=Path,
         default=None,
-        help="Optional base directory for deterministic comparison artifacts.",
+        help="Optional base directory for deterministic comparison artifacts. Defaults to archive_root/stage2_shadow_compare/<pair_id>.",
     )
     parser.add_argument("--start", default=None, help="Optional inclusive start date (YYYY-MM-DD).")
     parser.add_argument("--end", default=None, help="Optional inclusive end date (YYYY-MM-DD).")
@@ -664,20 +704,98 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_COST_ASSUMPTIONS["commission_bps"],
         help="Legacy commission in basis points per unit turnover (default: 0.0).",
     )
+    parser.add_argument(
+        "--shadow-strategy-family",
+        default=PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID,
+        help=(
+            "Supported shadow runtime family id. "
+            f"Default: {PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID}"
+        ),
+    )
+    parser.add_argument(
+        "--shadow-strategy-id",
+        default=PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
+        help=f"Explicit shadow strategy id for the configured target. Default: {PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID}",
+    )
+    parser.add_argument(
+        "--shadow-risk-symbols",
+        default=None,
+        help="Optional comma-separated shadow risk symbol override.",
+    )
+    parser.add_argument(
+        "--shadow-defensive-symbol",
+        default=None,
+        help="Optional shadow defensive symbol override.",
+    )
+    parser.add_argument(
+        "--shadow-momentum-lookback",
+        type=int,
+        default=None,
+        help="Optional shadow momentum lookback override.",
+    )
+    parser.add_argument(
+        "--shadow-top-n",
+        type=int,
+        default=None,
+        help="Optional shadow top_n override.",
+    )
+    parser.add_argument(
+        "--shadow-rebalance",
+        type=int,
+        default=None,
+        help="Optional shadow rebalance override.",
+    )
+    parser.add_argument(
+        "--shadow-vol-target",
+        type=float,
+        default=None,
+        help="Optional shadow vol target override.",
+    )
+    parser.add_argument(
+        "--shadow-vol-lookback",
+        type=int,
+        default=None,
+        help="Optional shadow vol lookback override.",
+    )
+    parser.add_argument(
+        "--shadow-vol-min",
+        type=float,
+        default=None,
+        help="Optional shadow vol floor override.",
+    )
+    parser.add_argument(
+        "--shadow-vol-max",
+        type=float,
+        default=None,
+        help="Optional shadow vol cap override.",
+    )
+    parser.add_argument(
+        "--shadow-vol-update",
+        default=None,
+        help="Optional shadow vol update mode override.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    args.pair_id = str(args.pair_id).strip()
+    if not args.pair_id:
+        print("[stage2_shadow_compare] ERROR: --pair-id must not be empty.", file=sys.stderr)
+        return 2
     if args.artifacts_dir is None:
-        args.artifacts_dir = _default_artifacts_dir()
+        args.artifacts_dir = _default_artifacts_dir(args.pair_id)
     if args.config is not None:
         cfg = run_backtest_script.load_run_backtest_config(args.config)
         if args.rebalance_anchor_date is None and cfg.rebalance_anchor_date is not None:
             args.rebalance_anchor_date = cfg.rebalance_anchor_date
 
     primary_spec = _primary_spec()
-    shadow_spec = _shadow_spec()
+    try:
+        shadow_spec = _shadow_spec(args)
+    except ValueError as exc:
+        print(f"[stage2_shadow_compare] ERROR: {exc}", file=sys.stderr)
+        return 2
     symbols_to_load = list(
         dict.fromkeys(
             list(primary_spec.risk_symbols)
@@ -716,9 +834,22 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     primary_mapping = primary_live_candidate_v1_runtime_mapping()
-    shadow_runtime = primary_live_candidate_v1_vol_managed_shadow_config()
+    shadow_runtime = resolve_shadow_runtime_config(
+        args.shadow_strategy_family,
+        strategy_id=args.shadow_strategy_id,
+        symbols=_parse_symbol_list(args.shadow_risk_symbols),
+        defensive_symbol=args.shadow_defensive_symbol,
+        momentum_lookback=args.shadow_momentum_lookback,
+        top_n=args.shadow_top_n,
+        rebalance=args.shadow_rebalance,
+        vol_target=args.shadow_vol_target,
+        vol_lookback=args.shadow_vol_lookback,
+        vol_min=args.shadow_vol_min,
+        vol_max=args.shadow_vol_max,
+        vol_update=args.shadow_vol_update,
+    )
     report = build_stage2_shadow_compare_report(
-        pair_id=DEFAULT_PAIR_ID,
+        pair_id=args.pair_id,
         as_of_date=as_of_date,
         generated_at=pd.Timestamp.now().isoformat(),
         command=shlex.join([sys.executable, *sys.argv]),
@@ -749,7 +880,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     report_paths = write_stage2_shadow_compare_artifacts(report_dir=report_dir, report=report)
     summary = {
-        "pair_id": DEFAULT_PAIR_ID,
+        "pair_id": args.pair_id,
         "as_of_date": as_of_date,
         "current_decision": report["current_decision"],
         **report_paths,

@@ -11,9 +11,9 @@ session. This avoids relying on Task Scheduler launching a PowerShell script
 directly from `\\wsl$\...`.
 
 This installer only schedules the existing runner. It does not mutate
-`configs/stage2_shadow_ops.json`; `active_pair` must already be intentionally
-configured if unattended refresh should do real work instead of the fail-closed
-no-op path.
+`configs/stage2_shadow_ops.json`; one or more explicit `targets` must already be
+intentionally configured if unattended refresh should do real work instead of
+the fail-closed no-op path.
 
 .PARAMETER FolderName
 Task Scheduler folder prefix. Default: `TradingCodex`.

@@ -12,32 +12,55 @@ import pytest
 from scripts import paper_lane_daily_ops, stage2_shadow_daily_ops
 
 
-def _write_config(path: Path, *, active_pair: dict[str, object] | None) -> None:
+def _write_config(
+    path: Path,
+    *,
+    targets: list[dict[str, object]] | None = None,
+    schema_version: int | None = None,
+    active_pair: dict[str, object] | None = None,
+) -> None:
+    version = stage2_shadow_daily_ops.CONFIG_SCHEMA_VERSION if schema_version is None else schema_version
     payload = {
         "schema_name": stage2_shadow_daily_ops.CONFIG_SCHEMA_NAME,
-        "schema_version": stage2_shadow_daily_ops.CONFIG_SCHEMA_VERSION,
-        "active_pair": active_pair,
+        "schema_version": version,
     }
+    if version == stage2_shadow_daily_ops.LEGACY_CONFIG_SCHEMA_VERSION:
+        payload["active_pair"] = active_pair
+    else:
+        payload["targets"] = [] if targets is None else targets
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _active_pair_config(*, replay_enabled: bool) -> dict[str, object]:
+def _target_config(
+    *,
+    pair_id: str = stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+    shadow_strategy_id: str = stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
+    replay_enabled: bool,
+    target_id: str | None = None,
+    shadow_parameters: dict[str, object] | None = None,
+) -> dict[str, object]:
     local_replay: dict[str, object] = {
         "enabled": replay_enabled,
     }
     if replay_enabled:
         local_replay.update(
             {
-                "state_key": "primary_live_candidate_v1_vol_managed_shadow_replay",
+                "state_key": f"{shadow_strategy_id}_shadow_replay",
                 "starting_cash": 100000.0,
             }
         )
-    return {
-        "pair_id": stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+    payload: dict[str, object] = {
+        "pair_id": pair_id,
         "primary_strategy_id": stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_ID,
-        "shadow_strategy_id": stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
+        "shadow_strategy_family": stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID,
+        "shadow_strategy_id": shadow_strategy_id,
         "local_replay": local_replay,
     }
+    if target_id is not None:
+        payload["target_id"] = target_id
+    if shadow_parameters is not None:
+        payload["shadow_parameters"] = shadow_parameters
+    return payload
 
 
 def _summary_row(*, ops_paths: dict[str, Path]) -> dict[str, object]:
@@ -50,7 +73,7 @@ def _summary_row(*, ops_paths: dict[str, Path]) -> dict[str, object]:
             "timestamp_chicago": "2026-04-08T16:10:00-05:00",
             "ops_date": "2026-04-08",
             "overall_result": "noop",
-            "no_op_reason": "no_active_pair_configured",
+            "no_op_reason": stage2_shadow_daily_ops.NO_TARGETS_CONFIGURED_REASON,
             "daily_ops_jsonl_path": str(ops_paths["jsonl_path"]),
             "daily_ops_csv_path": str(ops_paths["csv_path"]),
             "daily_ops_xlsx_path": str(ops_paths["xlsx_path"]),
@@ -59,7 +82,13 @@ def _summary_row(*, ops_paths: dict[str, Path]) -> dict[str, object]:
     return row
 
 
-def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
+def _write_compare_artifacts(
+    compare_root: Path,
+    *,
+    pair_id: str,
+    shadow_strategy_id: str,
+    shadow_symbol: str = "SPY",
+) -> dict[str, str]:
     report_dir = compare_root / "2026-04-07"
     candidate_outputs_dir = report_dir / "candidate_outputs"
     candidate_reviews_dir = report_dir / "candidate_reviews"
@@ -69,21 +98,21 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
     report_json = report_dir / "comparison_report.json"
     report_markdown = report_dir / "comparison_report.md"
     scoreboard_csv = report_dir / "scoreboard.csv"
-    shadow_output_json = candidate_outputs_dir / f"{stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID}.json"
+    shadow_output_json = candidate_outputs_dir / f"{shadow_strategy_id}.json"
     primary_output_json = candidate_outputs_dir / f"{stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_ID}.json"
-    shadow_review_json = candidate_reviews_dir / "shadow_review.json"
-    shadow_review_markdown = candidate_reviews_dir / "shadow_review.md"
+    shadow_review_json = candidate_reviews_dir / f"{shadow_strategy_id}_review.json"
+    shadow_review_markdown = candidate_reviews_dir / f"{shadow_strategy_id}_review.md"
     primary_review_json = candidate_reviews_dir / "primary_review.json"
     primary_review_markdown = candidate_reviews_dir / "primary_review.md"
 
     shadow_signal = {
         "action": "ENTER",
         "date": "2026-04-07",
-        "event_id": "2026-04-07:primary_live_candidate_v1_vol_managed:ENTER:SPY:150::2026-05-01",
+        "event_id": f"2026-04-07:{shadow_strategy_id}:ENTER:{shadow_symbol}:150::2026-05-01",
         "next_rebalance": "2026-05-01",
         "price": 500.0,
-        "strategy": stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
-        "symbol": "SPY",
+        "strategy": shadow_strategy_id,
+        "symbol": shadow_symbol,
         "target_shares": 150,
     }
     shadow_output_json.write_text(
@@ -91,7 +120,7 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
             {
                 "artifact_type": "stage2_shadow_candidate_output",
                 "artifact_version": 1,
-                "strategy_id": stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
+                "strategy_id": shadow_strategy_id,
                 "template_output": {
                     "signal": shadow_signal,
                     "target_weights": {},
@@ -137,7 +166,7 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
             {
                 "artifact_type": "stage2_shadow_compare",
                 "artifact_version": 1,
-                "pair_id": stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+                "pair_id": pair_id,
                 "as_of_date": "2026-04-07",
                 "current_decision": "remain shadow-only",
                 "candidates": {
@@ -152,7 +181,7 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
                             "review_markdown": str(primary_review_markdown),
                         },
                     },
-                    stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID: {
+                    shadow_strategy_id: {
                         "review_summary": {
                             "shadow_review_state": "clean",
                             "automation_decision": "allow",
@@ -169,7 +198,7 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
                         "primary_action": "HOLD",
                         "primary_symbol": "BIL",
                         "shadow_action": "ENTER",
-                        "shadow_symbol": "SPY",
+                        "shadow_symbol": shadow_symbol,
                         "shadow_next_rebalance": "2026-05-01",
                     }
                 },
@@ -180,7 +209,7 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
         encoding="utf-8",
     )
     return {
-        "pair_id": stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+        "pair_id": pair_id,
         "as_of_date": "2026-04-07",
         "current_decision": "remain shadow-only",
         "report_json": str(report_json),
@@ -192,22 +221,32 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
     }
 
 
-def test_load_shadow_ops_config_defaults_missing_local_replay_enabled_to_false(
+def _arg_value(cmd: list[str], flag: str) -> str:
+    index = cmd.index(flag)
+    return str(cmd[index + 1])
+
+
+def test_load_shadow_ops_config_legacy_active_pair_defaults_missing_local_replay_enabled_to_false(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "shadow_ops.json"
-    active_pair = _active_pair_config(replay_enabled=False)
+    active_pair = _target_config(replay_enabled=False)
     local_replay = active_pair["local_replay"]
     assert isinstance(local_replay, dict)
     del local_replay["enabled"]
-    _write_config(config_path, active_pair=active_pair)
+    _write_config(
+        config_path,
+        schema_version=stage2_shadow_daily_ops.LEGACY_CONFIG_SCHEMA_VERSION,
+        active_pair=active_pair,
+    )
 
     config = stage2_shadow_daily_ops.load_shadow_ops_config(config_path)
 
-    assert config.active_pair is not None
-    assert config.active_pair.local_replay.enabled is False
-    assert config.active_pair.local_replay.state_key is None
-    assert config.active_pair.local_replay.starting_cash is None
+    assert len(config.targets) == 1
+    assert config.targets[0].pair_id == stage2_shadow_daily_ops.SUPPORTED_PAIR_ID
+    assert config.targets[0].local_replay.enabled is False
+    assert config.targets[0].local_replay.state_key is None
+    assert config.targets[0].local_replay.starting_cash is None
 
 
 def test_main_rejects_non_boolean_local_replay_enabled(
@@ -216,11 +255,11 @@ def test_main_rejects_non_boolean_local_replay_enabled(
     capsys,
 ) -> None:
     config_path = tmp_path / "shadow_ops.json"
-    active_pair = _active_pair_config(replay_enabled=False)
-    local_replay = active_pair["local_replay"]
+    target = _target_config(replay_enabled=False)
+    local_replay = target["local_replay"]
     assert isinstance(local_replay, dict)
     local_replay["enabled"] = "false"
-    _write_config(config_path, active_pair=active_pair)
+    _write_config(config_path, targets=[target])
 
     def fail_run_process(cmd: list[str], *, repo_root: Path) -> subprocess.CompletedProcess[str]:
         raise AssertionError(f"invalid config should fail before launching subprocesses: {cmd}")
@@ -240,17 +279,17 @@ def test_main_rejects_non_boolean_local_replay_enabled(
     captured = capsys.readouterr()
 
     assert rc == 2
-    assert "active_pair.local_replay.enabled must be a boolean." in captured.err
+    assert "targets[0].local_replay.enabled must be a boolean." in captured.err
 
 
-def test_main_noops_when_no_active_pair_is_configured(
+def test_main_noops_when_no_targets_are_configured(
     tmp_path: Path,
     monkeypatch,
     capsys,
 ) -> None:
     config_path = tmp_path / "shadow_ops.json"
     archive_root = tmp_path / "archive"
-    _write_config(config_path, active_pair=None)
+    _write_config(config_path, targets=[])
 
     def fail_run_process(cmd: list[str], *, repo_root: Path) -> subprocess.CompletedProcess[str]:
         raise AssertionError(f"no-op run should not launch subprocesses: {cmd}")
@@ -274,7 +313,9 @@ def test_main_noops_when_no_active_pair_is_configured(
     assert rc == 0, captured.err
     payload = json.loads(captured.out.strip())
     assert payload["summary"]["overall_result"] == "noop"
-    assert payload["summary"]["no_op_reason"] == "no_active_pair_configured"
+    assert payload["summary"]["no_op_reason"] == stage2_shadow_daily_ops.NO_TARGETS_CONFIGURED_REASON
+    assert payload["run_summary"]["configured_target_count"] == 0
+    assert payload["target_summaries"] == []
 
     ops_paths = stage2_shadow_daily_ops.resolve_ops_paths(
         scope_key=stage2_shadow_daily_ops.UNCONFIGURED_SCOPE_KEY,
@@ -289,35 +330,35 @@ def test_main_noops_when_no_active_pair_is_configured(
     with ops_paths["csv_path"].open("r", encoding="utf-8", newline="") as fh:
         csv_rows = list(csv.DictReader(fh))
     assert len(csv_rows) == 1
-    assert csv_rows[0]["no_op_reason"] == "no_active_pair_configured"
+    assert csv_rows[0]["no_op_reason"] == stage2_shadow_daily_ops.NO_TARGETS_CONFIGURED_REASON
 
     with zipfile.ZipFile(ops_paths["xlsx_path"], "r") as zf:
         sheet_xml = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
-    assert "no_active_pair_configured" in sheet_xml
+    assert stage2_shadow_daily_ops.NO_TARGETS_CONFIGURED_REASON in sheet_xml
 
     manifest_path = Path(payload["archive_manifest_path"])
     assert manifest_path.exists()
 
 
-def test_main_runs_compare_and_shadow_replay_when_configured(
+def test_main_runs_compare_and_shadow_replay_when_one_target_is_configured(
     tmp_path: Path,
     monkeypatch,
     capsys,
 ) -> None:
     config_path = tmp_path / "shadow_ops.json"
     archive_root = tmp_path / "archive"
-    compare_root = (
-        archive_root
-        / "stage2_shadow_compare"
-        / stage2_shadow_daily_ops.SUPPORTED_PAIR_ID
-    )
+    compare_root = archive_root / "stage2_shadow_compare" / stage2_shadow_daily_ops.SUPPORTED_PAIR_ID
     paper_state_key = "primary_live_candidate_v1_vol_managed_shadow_replay"
     paper_base_dir = archive_root / "paper_lane" / paper_state_key
     manifests_dir = tmp_path / "manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
-    _write_config(config_path, active_pair=_active_pair_config(replay_enabled=True))
+    _write_config(config_path, targets=[_target_config(replay_enabled=True)])
 
-    compare_summary = _write_compare_artifacts(compare_root)
+    compare_summary = _write_compare_artifacts(
+        compare_root,
+        pair_id=stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+        shadow_strategy_id=stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
+    )
     init_manifest = manifests_dir / "shadow-paper-init.json"
     status_manifest = manifests_dir / "shadow-paper-status.json"
     apply_manifest = manifests_dir / "shadow-paper-apply.json"
@@ -411,6 +452,8 @@ def test_main_runs_compare_and_shadow_replay_when_configured(
     assert summary["local_replay_enabled"] is True
     assert summary["local_replay_auto_initialized"] is True
     assert summary["replay_apply_result"] == "applied"
+    assert payload["run_summary"]["configured_target_count"] == 1
+    assert len(payload["target_summaries"]) == 1
 
     ops_paths = stage2_shadow_daily_ops.resolve_ops_paths(
         scope_key=stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
@@ -436,6 +479,11 @@ def test_main_runs_compare_and_shadow_replay_when_configured(
         "paper_lane.py",
         "paper_lane.py",
     ]
+    compare_cmd = seen_commands[1]
+    assert _arg_value(compare_cmd, "--pair-id") == stage2_shadow_daily_ops.SUPPORTED_PAIR_ID
+    assert _arg_value(compare_cmd, "--shadow-strategy-family") == stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID
+    assert _arg_value(compare_cmd, "--shadow-strategy-id") == stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID
+
     init_cmd = seen_commands[2]
     status_cmd = seen_commands[3]
     apply_cmd = seen_commands[4]
@@ -450,6 +498,129 @@ def test_main_runs_compare_and_shadow_replay_when_configured(
     assert str(paper_base_dir) in apply_cmd
 
 
+def test_main_runs_multiple_targets_separately(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "shadow_ops.json"
+    archive_root = tmp_path / "archive"
+    second_pair_id = "primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed_alt"
+    second_shadow_strategy_id = "primary_live_candidate_v1_vol_managed_alt"
+    targets = [
+        _target_config(replay_enabled=False),
+        _target_config(
+            pair_id=second_pair_id,
+            target_id="alt-shadow-target",
+            shadow_strategy_id=second_shadow_strategy_id,
+            replay_enabled=False,
+            shadow_parameters={
+                "rebalance": 10,
+                "vol_target": 0.12,
+                "vol_lookback": 15,
+            },
+        ),
+    ]
+    _write_config(config_path, targets=targets)
+
+    compare_summaries = {
+        stage2_shadow_daily_ops.SUPPORTED_PAIR_ID: _write_compare_artifacts(
+            archive_root / "stage2_shadow_compare" / stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+            pair_id=stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+            shadow_strategy_id=stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
+            shadow_symbol="SPY",
+        ),
+        second_pair_id: _write_compare_artifacts(
+            archive_root / "stage2_shadow_compare" / second_pair_id,
+            pair_id=second_pair_id,
+            shadow_strategy_id=second_shadow_strategy_id,
+            shadow_symbol="QQQ",
+        ),
+    }
+    seen_commands: list[list[str]] = []
+
+    def fake_run_process(cmd: list[str], *, repo_root: Path) -> subprocess.CompletedProcess[str]:
+        seen_commands.append(cmd)
+        script_name = Path(cmd[1]).name
+        if script_name == "update_data_eod.py":
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="",
+                stderr="[update_data_eod] updated_symbols=7\n",
+            )
+        if script_name == "stage2_shadow_compare.py":
+            pair_id = _arg_value(cmd, "--pair-id")
+            assert pair_id in compare_summaries
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(compare_summaries[pair_id]), stderr="")
+        if script_name == "paper_lane.py":
+            raise AssertionError(f"local replay should stay disabled in this multi-target test: {cmd}")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(stage2_shadow_daily_ops, "_run_process", fake_run_process)
+
+    rc = stage2_shadow_daily_ops.main(
+        [
+            "--shadow-ops-config",
+            str(config_path),
+            "--archive-root",
+            str(archive_root),
+            "--timestamp",
+            "2026-04-08T16:10:00-05:00",
+            "--emit",
+            "json",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 0, captured.err
+    payload = json.loads(captured.out.strip())
+    assert payload["summary"]["configured_target_count"] == 2
+    assert payload["summary"]["completed_target_count"] == 2
+    assert payload["run_summary"]["configured_target_count"] == 2
+    assert len(payload["target_summaries"]) == 2
+    assert {row["pair_id"] for row in payload["target_summaries"]} == {
+        stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+        second_pair_id,
+    }
+
+    command_names = [Path(cmd[1]).name for cmd in seen_commands]
+    assert command_names == [
+        "update_data_eod.py",
+        "stage2_shadow_compare.py",
+        "stage2_shadow_compare.py",
+    ]
+    first_compare_cmd = seen_commands[1]
+    second_compare_cmd = seen_commands[2]
+    assert _arg_value(first_compare_cmd, "--pair-id") == stage2_shadow_daily_ops.SUPPORTED_PAIR_ID
+    assert _arg_value(second_compare_cmd, "--pair-id") == second_pair_id
+    assert _arg_value(second_compare_cmd, "--shadow-strategy-id") == second_shadow_strategy_id
+    assert _arg_value(second_compare_cmd, "--shadow-rebalance") == "10"
+    assert _arg_value(second_compare_cmd, "--shadow-vol-target") == "0.12"
+    assert _arg_value(second_compare_cmd, "--shadow-vol-lookback") == "15"
+
+    first_ops_paths = stage2_shadow_daily_ops.resolve_ops_paths(
+        scope_key=stage2_shadow_daily_ops.SUPPORTED_PAIR_ID,
+        archive_root=archive_root,
+        create=False,
+    )
+    second_ops_paths = stage2_shadow_daily_ops.resolve_ops_paths(
+        scope_key=second_pair_id,
+        archive_root=archive_root,
+        create=False,
+    )
+    first_rows = paper_lane_daily_ops._load_jsonl_records(first_ops_paths["jsonl_path"])
+    second_rows = paper_lane_daily_ops._load_jsonl_records(second_ops_paths["jsonl_path"])
+    assert len(first_rows) == 1
+    assert len(second_rows) == 1
+    assert first_rows[0]["pair_id"] == stage2_shadow_daily_ops.SUPPORTED_PAIR_ID
+    assert second_rows[0]["pair_id"] == second_pair_id
+    assert first_rows[0]["shadow_strategy_id"] == stage2_shadow_daily_ops.PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID
+    assert second_rows[0]["shadow_strategy_id"] == second_shadow_strategy_id
+    assert second_rows[0]["compare_shadow_symbol"] == "QQQ"
+    assert second_rows[0]["local_replay_enabled"] is False
+
+
 def test_main_refuses_overlapping_run_before_rewriting_logs(
     tmp_path: Path,
     monkeypatch,
@@ -460,7 +631,7 @@ def test_main_refuses_overlapping_run_before_rewriting_logs(
 
     config_path = tmp_path / "shadow_ops.json"
     archive_root = tmp_path / "archive"
-    _write_config(config_path, active_pair=None)
+    _write_config(config_path, targets=[])
 
     ops_paths = stage2_shadow_daily_ops.resolve_ops_paths(
         scope_key=stage2_shadow_daily_ops.UNCONFIGURED_SCOPE_KEY,

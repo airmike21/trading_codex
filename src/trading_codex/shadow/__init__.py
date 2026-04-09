@@ -28,6 +28,7 @@ from trading_codex.shadow.stage2_candidates import (
     PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_PRESET,
     PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STATE_KEY,
     PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STRATEGY,
+    PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_DEFAULT_TARGET_VOL,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_DEFAULT_VOL_LOOKBACK,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
@@ -36,6 +37,7 @@ from trading_codex.shadow.stage2_candidates import (
     build_shadow_template_for_strategy,
     primary_live_candidate_v1_runtime_mapping,
     primary_live_candidate_v1_vol_managed_shadow_config,
+    resolve_shadow_runtime_config,
 )
 from trading_codex.shadow.template import (
     ShadowStrategyOutputs,
@@ -56,6 +58,7 @@ __all__ = [
     "PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_PRESET",
     "PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STATE_KEY",
     "PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STRATEGY",
+    "PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID",
     "PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_DEFAULT_TARGET_VOL",
     "PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_DEFAULT_VOL_LOOKBACK",
     "PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID",
@@ -76,6 +79,7 @@ __all__ = [
     "build_primary_live_candidate_v1_vol_managed_shadow_template",
     "primary_live_candidate_v1_runtime_mapping",
     "primary_live_candidate_v1_vol_managed_shadow_config",
+    "resolve_shadow_runtime_config",
     "evaluate_risk_invariants",
     "render_stage2_shadow_compare_markdown",
     "summarize_parameter_stability",

@@ -557,3 +557,63 @@ def test_stage2_shadow_compare_cli_writes_expected_artifacts(tmp_path: Path) -> 
     assert "## Scoreboard" in markdown
     assert "### Cost Sensitivity" in markdown
     assert "### Walk-Forward Windows" in markdown
+
+
+def test_stage2_shadow_compare_cli_accepts_explicit_target_overrides(tmp_path: Path) -> None:
+    repo_root, env = _repo_root_and_env()
+    end = pd.Timestamp.now().normalize()
+    index = pd.bdate_range(end=end, periods=520)
+    alt = np.arange(len(index))
+
+    data_dir = tmp_path / "data"
+    artifacts_dir = tmp_path / "artifacts"
+    store = LocalStore(base_dir=data_dir)
+    close_map = {
+        "SPY": _price_series(index, np.full(len(index), 0.0007), 100.0),
+        "QQQ": _price_series(index, np.where(alt % 2 == 0, 0.0016, -0.0008), 105.0),
+        "IWM": _price_series(index, np.full(len(index), -0.0001), 95.0),
+        "EFA": _price_series(index, np.where(alt % 3 == 0, 0.0190, -0.0075), 98.0),
+        "BIL": _price_series(index, np.full(len(index), 0.0001), 100.0),
+    }
+    for symbol, close in close_map.items():
+        _write_symbol_bars(store, symbol, close)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "stage2_shadow_compare.py"),
+            "--pair-id",
+            "primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed_alt",
+            "--shadow-strategy-id",
+            "primary_live_candidate_v1_vol_managed_alt",
+            "--shadow-rebalance",
+            "10",
+            "--shadow-vol-target",
+            "0.12",
+            "--shadow-vol-lookback",
+            "15",
+            "--data-dir",
+            str(data_dir),
+            "--artifacts-dir",
+            str(artifacts_dir),
+            "--start",
+            index[0].date().isoformat(),
+            "--end",
+            index[-1].date().isoformat(),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(repo_root),
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+
+    summary = json.loads(proc.stdout.strip())
+    assert summary["pair_id"] == "primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed_alt"
+
+    report = json.loads(Path(summary["report_json"]).read_text(encoding="utf-8"))
+    assert report["pair_id"] == "primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed_alt"
+    assert "primary_live_candidate_v1_vol_managed_alt" in report["candidates"]
+    assert report["candidates"]["primary_live_candidate_v1_vol_managed_alt"]["parameters"]["rebalance"] == 10
+    assert report["candidates"]["primary_live_candidate_v1_vol_managed_alt"]["parameters"]["vol_target"] == pytest.approx(0.12)
+    assert report["candidates"]["primary_live_candidate_v1_vol_managed_alt"]["parameters"]["vol_lookback"] == 15
