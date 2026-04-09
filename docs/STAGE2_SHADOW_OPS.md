@@ -1,10 +1,10 @@
 # Stage 2 Shadow Ops
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 This is the reference runbook for the bounded local-only Stage 2 shadow daily-ops lane.
 Use `docs/PROJECT_STATE.md` for current stage status, blockers, and expected next move.
-This doc covers the explicit config surface, retained artifacts, and automation/manual boundary only.
+This doc covers the explicit config surface, retained artifacts, daily EOD scheduler surface, and automation/manual boundary only.
 It does not open Stage 3, does not broaden the approved IBKR PaperTrader lane, and does not auto-write control-plane docs.
 
 ## Daily Command
@@ -82,6 +82,20 @@ What this does not do:
 - replace the primary live candidate
 - touch IBKR or tastytrade order paths
 
+## Automation Boundary
+
+Once a bounded shadow pair has been opened manually in the control plane and intentionally configured in `configs/stage2_shadow_ops.json` or a local override, the repeatable daily EOD evidence-refresh chores are already repo-automated in this lane:
+
+- retained backtest / walk-forward / robustness refresh through `scripts/stage2_shadow_compare.py`
+- primary-vs-shadow comparison refresh
+- shadow scoreboard refresh
+- optional local-only shadow replay through the separate shadow replay paper state when `local_replay.enabled` is `true` and the refreshed bundle reports `automation_decision: allow`
+- cumulative retained manifests, JSON artifacts, JSONL/CSV/XLSX logs, and summary output
+- fail-closed locking, first-failure stop behavior, and explicit no-op behavior when no active pair is configured
+
+Daily EOD automation in this lane means scheduled invocation of the existing local-only runner only.
+It does not mean automatic control-plane changes.
+
 ## Artifact Locations
 
 Trading Codex local state paths prefer:
@@ -136,31 +150,42 @@ The runner never guesses a shadow target from docs or from the last completed sh
 
 ## Manual Boundary
 
-Automation is intentionally narrow.
-Once a bounded shadow candidate/pair is explicitly opened and configured, the repeatable retained-evidence refresh may run automatically in this local-only lane.
-
-These remain manual:
+These remain manual even when the daily EOD runner is scheduled:
 
 - `docs/STRATEGY_REGISTRY.md`
 - `docs/PROJECT_STATE.md`
+- opening or reopening a shadow pair in the control plane
+- queue ordering in `docs/PROJECT_STATE.md`
 - the official `current_decision` decision gate
 - any shadow -> paper promotion
 - any primary-live-candidate replacement
 
 The runner may compute and retain a suggested status in artifacts, but the official control plane stays manual.
 
-## Windows Wrapper
+## Windows Scheduler Surface
 
-Use the repo-managed PowerShell wrapper if you want a narrow Windows scheduled-entrypoint:
+Schedule this only from a promoted checkout that includes the required shadow runner, wrapper, installer, and locking behavior.
+Do not point the scheduled job at a Builder worktree.
+Point it at a separate promoted checkout that is synced to the promoted `origin/master` state you intend to operate.
+
+Use the repo-managed Windows entrypoints:
 
 - Wrapper path: `scripts/windows/trading_codex_stage2_shadow_daily_ops.ps1`
+- Task installer path: `scripts/windows/install_stage2_shadow_daily_ops_task.ps1`
 - The wrapper launches WSL and runs `scripts/stage2_shadow_daily_ops.py`.
-- The repo does not auto-register a Task Scheduler job for you.
+- The installer creates one weekday Task Scheduler job that invokes the staged local wrapper once per EOD window.
+- The installer does not arm a pair, does not edit `configs/stage2_shadow_ops.json`, and does not change control-plane docs.
 
 Inspect the exact WSL command before scheduling it:
 
 ```powershell
 .\scripts\windows\trading_codex_stage2_shadow_daily_ops.ps1 -PrintOnly -WslRepoPath /home/aarondaugherty/trading_codex
+```
+
+Inspect the exact Task Scheduler install plan before registering it:
+
+```powershell
+.\scripts\windows\install_stage2_shadow_daily_ops_task.ps1 -PrintOnly -WslRepoPath /home/aarondaugherty/trading_codex
 ```
 
 ## Control-Plane Boundary
