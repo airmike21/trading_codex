@@ -96,6 +96,9 @@ Shadow-work lifecycle:
 5. compare: update the primary-vs-shadow reporting and shadow review scoreboard
 6. decision gate: record one outcome only: `not advancing`, `remain shadow-only`, or `candidate for later paper promotion after Stage 2 exit`
 
+After a shadow candidate/pair is explicitly opened in the manual control plane and explicitly configured for the repo-managed Stage 2 shadow ops lane, repeatable retained-evidence refresh may run automatically in that local-only lane.
+That automation does not auto-write `docs/STRATEGY_REGISTRY.md`, does not auto-write `docs/PROJECT_STATE.md`, does not auto-change `current_decision`, and does not authorize promotion by itself.
+
 Queue discipline:
 
 - keep the short ordered queue in `docs/PROJECT_STATE.md`
