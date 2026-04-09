@@ -1,6 +1,6 @@
 # First Live Program
 
-Last updated: 2026-04-07
+Last updated: 2026-04-09
 
 This document is the durable control-plane for the first-live program.
 It exists so future chats and future Builder slices ground on the same staged plan instead of recreating it from conversation.
@@ -35,7 +35,7 @@ Keep the scope bounded:
 
 Retain the existing local paper lane and daily ops routine as supporting groundwork and retained evidence. Use tastytrade sandbox as secondary integration/regression coverage for tastytrade-specific auth/account/order-flow behavior relevant to the intended live path. Tastytrade remains the intended live target unless evidence clearly justifies change.
 
-While the primary IBKR PaperTrader lane is in forward-evidence hold, Stage 2 may include bounded shadow work as defined in `docs/FIRST_LIVE_EXIT_CRITERIA.md`. That allowance is for shadow-only support work around the first-live path. It does not broaden the approved Stage 2 IBKR PaperTrader lane, does not create a second Stage 2 paper lane, and does not auto-open Stage 3.
+While the primary IBKR PaperTrader lane is in forward-evidence hold, Stage 2 may include bounded shadow work as defined in `docs/FIRST_LIVE_EXIT_CRITERIA.md`. That allowance is for shadow-only support work around the first-live path. It does not broaden the approved Stage 2 IBKR PaperTrader lane, does not create a second Stage 2 paper lane, and does not auto-open Stage 3. The same local-only recurring retained-evidence workflow may be used for any Stage 2 shadow strategy or pair that is explicitly opened and configured in the manual control plane, but that workflow is opt-in and does not make control-plane decisions automatic.
 
 This decision does not open Stage 3, does not promote any strategy live, and does not require a generalized broker abstraction before Stage 2 proves useful.
 
@@ -76,6 +76,8 @@ The first live deployment is intentionally bounded:
 - For Stage 2, IBKR PaperTrader is the approved primary persistent paper-execution lane.
 - During a Stage 2 forward-evidence hold, bounded shadow work may proceed only under the Stage 2 shadow-only rules in `docs/FIRST_LIVE_EXIT_CRITERIA.md`.
 - That shadow work stays outside the approved IBKR PaperTrader lane and does not auto-open Stage 3.
+- Do not treat the Stage 2 shadow ops lane as automatically enabled for every bench idea; each shadow strategy or pair must be explicitly opened/configured in the manual control plane.
+- Manual control-plane decisions remain manual: official `current_decision`, `docs/PROJECT_STATE.md` decisions, `docs/STRATEGY_REGISTRY.md` decisions, queue ordering and which candidates are officially opened, any shadow -> paper promotion, any primary-live-candidate replacement, and anything that would broaden Stage 3 or the approved IBKR PaperTrader lane.
 - tastytrade sandbox remains secondary regression coverage for tastytrade-specific auth/account/order-flow behavior on the intended live path, not the main Stage 2 paper lane.
 - The program is one live strategy and many shadow/paper strategies.
 - The first live account must be clean and separate from discretionary/manual positions.
