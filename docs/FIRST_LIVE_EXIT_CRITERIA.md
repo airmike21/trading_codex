@@ -1,6 +1,6 @@
 # First Live Exit Criteria
 
-Last updated: 2026-04-07
+Last updated: 2026-04-09
 
 This document defines when each first-live stage is complete, when future chats should continue coding, when they should hold for operational work, when they should stay shadow-only, and when live is allowed.
 
@@ -96,13 +96,25 @@ Shadow-work lifecycle:
 5. compare: update the primary-vs-shadow reporting and shadow review scoreboard
 6. decision gate: record one outcome only: `not advancing`, `remain shadow-only`, or `candidate for later paper promotion after Stage 2 exit`
 
-After a shadow candidate/pair is explicitly opened in the manual control plane and explicitly configured for the repo-managed Stage 2 shadow ops lane, repeatable retained-evidence refresh may run automatically in that local-only lane.
-That automation does not auto-write `docs/STRATEGY_REGISTRY.md`, does not auto-write `docs/PROJECT_STATE.md`, does not auto-change `current_decision`, and does not authorize promotion by itself.
+After a shadow candidate/pair is explicitly opened in the manual control plane and explicitly configured for the repo-managed Stage 2 shadow ops lane, the same local-only recurring retained-evidence workflow may run automatically for that explicit target.
+
+That recurring workflow may include, when applicable:
+
+- retained backtest refresh
+- retained walk-forward refresh
+- local-only fake-trading replay in the existing local paper lane
+- primary-vs-shadow comparison refresh
+- scoreboard/report refresh
+- cumulative retained logs, artifacts, manifests, and workbooks
+- other recurring information-gathering steps appropriate to the explicitly opened Stage 2 shadow strategy/pair
+
+This automation is opt-in only. It is not automatically enabled for every bench idea and does not infer shadow targets from docs alone.
+Manual control-plane decisions remain manual: official `current_decision`, `docs/PROJECT_STATE.md` decisions, `docs/STRATEGY_REGISTRY.md` decisions, queue ordering, which candidates/pairs are officially opened, any shadow -> paper promotion, any primary-live-candidate replacement, and anything that would broaden Stage 3 or the approved IBKR PaperTrader lane.
 
 Queue discipline:
 
 - keep the short ordered queue in `docs/PROJECT_STATE.md`
-- prefer at most one active next shadow candidate at a time unless evidence clearly justifies otherwise
+- multiple explicitly opened shadow strategies/pairs may exist only when they are explicitly recorded and justified in the control-plane state; prefer at most one active next shadow candidate at a time unless evidence clearly justifies otherwise
 - do not use Stage 2 shadow work as permission to widen into open-ended Stage 3 bench building
 
 Anti-goals and out of scope:
