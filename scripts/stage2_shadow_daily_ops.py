@@ -221,6 +221,12 @@ def _normalize_string(value: object, *, field_name: str) -> str:
     return rendered
 
 
+def _coerce_bool(value: object, *, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean.")
+    return value
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -284,7 +290,13 @@ def load_shadow_ops_config(config_path: Path) -> ShadowOpsConfig:
     if not isinstance(raw_local_replay, dict):
         raise ValueError("active_pair.local_replay must be an object or null.")
 
-    enabled = bool(raw_local_replay.get("enabled", False))
+    if "enabled" in raw_local_replay:
+        enabled = _coerce_bool(
+            raw_local_replay.get("enabled"),
+            field_name="active_pair.local_replay.enabled",
+        )
+    else:
+        enabled = False
     state_key = raw_local_replay.get("state_key")
     starting_cash = raw_local_replay.get("starting_cash")
 

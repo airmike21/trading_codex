@@ -192,6 +192,57 @@ def _write_compare_artifacts(compare_root: Path) -> dict[str, str]:
     }
 
 
+def test_load_shadow_ops_config_defaults_missing_local_replay_enabled_to_false(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "shadow_ops.json"
+    active_pair = _active_pair_config(replay_enabled=False)
+    local_replay = active_pair["local_replay"]
+    assert isinstance(local_replay, dict)
+    del local_replay["enabled"]
+    _write_config(config_path, active_pair=active_pair)
+
+    config = stage2_shadow_daily_ops.load_shadow_ops_config(config_path)
+
+    assert config.active_pair is not None
+    assert config.active_pair.local_replay.enabled is False
+    assert config.active_pair.local_replay.state_key is None
+    assert config.active_pair.local_replay.starting_cash is None
+
+
+def test_main_rejects_non_boolean_local_replay_enabled(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "shadow_ops.json"
+    active_pair = _active_pair_config(replay_enabled=False)
+    local_replay = active_pair["local_replay"]
+    assert isinstance(local_replay, dict)
+    local_replay["enabled"] = "false"
+    _write_config(config_path, active_pair=active_pair)
+
+    def fail_run_process(cmd: list[str], *, repo_root: Path) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"invalid config should fail before launching subprocesses: {cmd}")
+
+    monkeypatch.setattr(stage2_shadow_daily_ops, "_run_process", fail_run_process)
+
+    rc = stage2_shadow_daily_ops.main(
+        [
+            "--shadow-ops-config",
+            str(config_path),
+            "--archive-root",
+            str(tmp_path / "archive"),
+            "--timestamp",
+            "2026-04-08T16:10:00-05:00",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert "active_pair.local_replay.enabled must be a boolean." in captured.err
+
+
 def test_main_noops_when_no_active_pair_is_configured(
     tmp_path: Path,
     monkeypatch,
