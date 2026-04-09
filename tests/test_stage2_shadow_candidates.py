@@ -15,6 +15,7 @@ from trading_codex.shadow import (
     PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_PRESET,
     PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STATE_KEY,
     PRIMARY_LIVE_CANDIDATE_V1_RUNTIME_STRATEGY,
+    PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
     primary_live_candidate_v1_runtime_mapping,
     primary_live_candidate_v1_vol_managed_shadow_config,
@@ -59,6 +60,7 @@ def test_primary_live_candidate_runtime_mapping_is_explicit() -> None:
 
     shadow_config = primary_live_candidate_v1_vol_managed_shadow_config()
     assert shadow_config.strategy_id == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID
+    assert shadow_config.template_family_id == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_FAMILY_ID
     assert shadow_config.primary_candidate_mapping == primary_mapping
     assert shadow_config.implementation_strategy == "dual_mom_v1"
     assert shadow_config.implementation_label == "dual_mom_v1_shadow_impl"

@@ -6,7 +6,7 @@ This is the reference runbook for the bounded local-only Stage 2 shadow daily-op
 Use `docs/PROJECT_STATE.md` for current stage status, blockers, and expected next move.
 This doc covers the explicit config surface, retained artifacts, daily EOD scheduler surface, and automation/manual boundary only.
 It does not open Stage 3, does not broaden the approved IBKR PaperTrader lane, and does not auto-write control-plane docs.
-The control-plane policy for this lane is reusable across any explicitly opened/configured Stage 2 shadow strategy or pair, but the current promoted runtime mapping remains intentionally armed to the reopened `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed` pair until a later manual slice changes that repo truth.
+The control-plane policy for this lane is reusable across any explicitly opened/configured Stage 2 shadow target, but the tracked repo config remains intentionally armed to the reopened `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed` target until a later manual slice changes that repo truth.
 
 ## Daily Command
 
@@ -16,9 +16,9 @@ WSL / Linux:
 .venv/bin/python scripts/stage2_shadow_daily_ops.py --provider stooq
 ```
 
-This runner stays fail-closed around pair selection and replay eligibility.
-The runner still requires an explicit pair config and never guesses from docs.
-The tracked repo config `configs/stage2_shadow_ops.json` is intentionally armed to the currently reopened pair `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed`, so the command refreshes retained evidence for that local-only pair instead of producing an explicit retained no-op.
+This runner stays fail-closed around target selection and replay eligibility.
+The runner still requires explicit target config and never guesses from docs.
+The tracked repo config `configs/stage2_shadow_ops.json` is intentionally armed to one explicitly reopened target, so the command refreshes retained evidence for that local-only target instead of producing an explicit retained no-op.
 
 ## Explicit Config Surface
 
@@ -27,17 +27,20 @@ Tracked default:
 ```json
 {
   "schema_name": "stage2_shadow_ops_config",
-  "schema_version": 1,
-  "active_pair": {
-    "pair_id": "primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed",
-    "primary_strategy_id": "primary_live_candidate_v1",
-    "shadow_strategy_id": "primary_live_candidate_v1_vol_managed",
-    "local_replay": {
-      "enabled": true,
-      "state_key": "primary_live_candidate_v1_vol_managed_shadow_replay",
-      "starting_cash": 100000.0
+  "schema_version": 2,
+  "targets": [
+    {
+      "pair_id": "primary_live_candidate_v1_vs_primary_live_candidate_v1_vol_managed",
+      "primary_strategy_id": "primary_live_candidate_v1",
+      "shadow_strategy_family": "primary_live_candidate_v1_vol_managed",
+      "shadow_strategy_id": "primary_live_candidate_v1_vol_managed",
+      "local_replay": {
+        "enabled": true,
+        "state_key": "primary_live_candidate_v1_vol_managed_shadow_replay",
+        "starting_cash": 100000.0
+      }
     }
-  }
+  ]
 }
 ```
 
@@ -46,35 +49,39 @@ To return the runner to explicit fail-closed no-op behavior after a future manua
 ```json
 {
   "schema_name": "stage2_shadow_ops_config",
-  "schema_version": 1,
-  "active_pair": null
+  "schema_version": 2,
+  "targets": []
 }
 ```
 
+To arm multiple explicitly opened/configured local-only shadow targets in order, add multiple entries to `targets`.
+Each target keeps its own `pair_id`, retained comparison/report directory, and cumulative shadow-ops JSONL/CSV/XLSX logs.
+
 Boundaries for this config:
 
-- It is the only automation input. The runner does not infer an active shadow pair from `docs/PROJECT_STATE.md` or `docs/STRATEGY_REGISTRY.md`.
-- Stage 2 policy allows the same local-only recurring evidence workflow to be reused for any shadow strategy/pair that is explicitly opened and configured in the manual control plane.
-- The current promoted runner/config validation remains bounded to `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed`; repointing the tracked config or broadening runtime support is a later manual control-plane/repo slice, not something automation does itself.
-- The tracked repo config currently arms that reopened pair; changing or clearing it remains a manual control-plane action.
+- It is the only automation input. The runner does not infer shadow targets from `docs/PROJECT_STATE.md` or `docs/STRATEGY_REGISTRY.md`.
+- Stage 2 policy allows the same local-only recurring evidence workflow to be reused for any shadow target that is explicitly opened and configured in the manual control plane.
+- The current promoted runner/config validation remains bounded to the approved primary candidate plus the supported near-path shadow family; changing the tracked target list remains a manual control-plane action.
+- The tracked repo config currently arms one reopened target; changing, reordering, adding, or clearing targets remains manual.
 - Local replay stays separate from the primary local paper lane by requiring its own `state_key`.
 - If replay is enabled, the runner still fails closed unless the refreshed shadow review bundle reports `automation_decision: allow`.
 
 ## What Runs Each Day
 
-When an explicit active pair is configured, the runner executes these steps in order and stops on the first failure:
+When one or more explicit targets are configured, the runner refreshes EOD market data once for the union of required symbols, then iterates the configured targets in order and stops on the first target-specific failure.
 
-1. `scripts/update_data_eod.py`
-2. `scripts/stage2_shadow_compare.py`
-3. optional `scripts/paper_lane.py init` for the separate shadow replay state if replay is enabled and the shadow replay state does not exist yet
-4. optional `scripts/paper_lane.py status --signal-json-file ...`
-5. optional `scripts/paper_lane.py apply --signal-json-file ...`
+For each configured target, the runner executes these steps in order:
+
+1. `scripts/stage2_shadow_compare.py --pair-id ... --shadow-strategy-* ...`
+2. optional `scripts/paper_lane.py init` for the separate shadow replay state if replay is enabled and the shadow replay state does not exist yet
+3. optional `scripts/paper_lane.py status --signal-json-file ...`
+4. optional `scripts/paper_lane.py apply --signal-json-file ...`
 
 What this refreshes:
 
-- EOD market data for the explicitly configured primary/shadow ETF universe
+- EOD market data for the union of the explicitly configured primary/shadow ETF universes
 - retained shadow robustness artifacts, including parameter stability, subperiod tests, cost sensitivity, benchmark comparison, drawdown clustering, and walk-forward output
-- primary-vs-shadow comparison artifacts and the shadow scoreboard
+- primary-vs-shadow comparison artifacts and the shadow scoreboard for each configured target
 - optional local-only shadow replay evidence through the existing local paper-lane infrastructure
 
 What this does not do:
@@ -97,11 +104,11 @@ Once a bounded shadow strategy/pair has been opened manually in the control plan
 - optional local-only shadow replay through the separate shadow replay paper state when `local_replay.enabled` is `true` and the refreshed bundle reports `automation_decision: allow`
 - cumulative retained manifests, JSON artifacts, JSONL/CSV/XLSX logs, and summary output
 - other recurring information-gathering steps appropriate to the explicitly opened/configured Stage 2 shadow target
-- fail-closed locking, first-failure stop behavior, and explicit no-op behavior when no active pair is configured
+- fail-closed locking, first-failure stop behavior, and explicit no-op behavior when no targets are configured
 
 Daily EOD automation in this lane means scheduled invocation of the existing local-only runner only.
 It does not mean automatic control-plane changes.
-In promoted repo truth today, the tracked config/runtime exercises that workflow for `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed`; future explicitly opened/configured Stage 2 shadow targets may inherit the same local-only workflow only through a later manual control-plane/config update and any needed repo slice.
+In promoted repo truth today, the tracked config/runtime exercises that workflow for one reopened target; future explicitly opened/configured Stage 2 shadow targets may inherit the same local-only workflow only through a later manual control-plane/config update and any needed repo slice.
 
 ## Artifact Locations
 
@@ -139,18 +146,19 @@ Retained comparison/report refresh:
 
 Single-instance lock:
 
-- `<archive_root>/stage2_shadow_ops/<pair_id_or_unconfigured>/stage2_shadow_daily_ops.lock`
+- single-target / unconfigured runs: `<archive_root>/stage2_shadow_ops/<pair_id_or_unconfigured>/stage2_shadow_daily_ops.lock`
+- multi-target runner scope: `<archive_root>/stage2_shadow_ops/<multi_target_scope>/stage2_shadow_daily_ops.lock`
 
 If a second scheduler launch starts while a run is active, it exits non-zero immediately and does not rewrite the cumulative JSONL/CSV/XLSX artifacts.
 
 ## No-Op Behavior
 
-If `active_pair` is `null`, the runner:
+If `targets` is empty, the runner:
 
 - exits `0`
 - writes a retained run manifest outside the repo tree
 - appends a cumulative JSONL/CSV/XLSX row with `overall_result=noop`
-- records `no_op_reason=no_active_pair_configured`
+- records `no_op_reason=no_configured_targets`
 
 This is intentional.
 The runner never guesses a shadow target from docs or from the last completed shadow slice.
@@ -200,5 +208,5 @@ Inspect the exact Task Scheduler install plan before registering it:
 
 - This doc describes the local-only Stage 2 shadow ops lane and retained artifacts only.
 - It does not replace `docs/PROJECT_STATE.md` as the current-state checkpoint.
-- Current repo truth keeps the tracked runtime armed to one explicitly reopened pair, but Stage 2 policy allows the same local-only workflow to be reused for later explicitly opened/configured shadow targets without changing the manual control-plane boundary.
+- Current repo truth keeps the tracked runtime armed to one explicitly reopened target, but Stage 2 policy allows the same local-only workflow to be reused for later explicitly opened/configured shadow targets without changing the manual control-plane boundary.
 - Use `docs/FIRST_LIVE_PROGRAM.md` for stage policy and `docs/FIRST_LIVE_EXIT_CRITERIA.md` for stage gates.
