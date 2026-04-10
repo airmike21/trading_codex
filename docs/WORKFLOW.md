@@ -55,6 +55,7 @@ Current project state lives in `docs/PROJECT_STATE.md`.
 - Stage and commit only approved files.
 - Never use broad staging such as `git add .`.
 - Validation must pass before commit.
+- Control-plane doc slices must run `.venv/bin/python -m pytest tests/test_control_plane_docs.py` as part of required validation.
 - If anything is wrong, stop and return to Builder.
 - Never patch the runtime checkout or promotion workspace by hand.
 
