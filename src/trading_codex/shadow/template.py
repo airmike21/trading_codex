@@ -145,13 +145,13 @@ def build_local_shadow_template(
     )
 
 
-def build_primary_live_candidate_v1_vol_managed_shadow_template(
+def _build_primary_live_candidate_v1_near_path_shadow_template(
     *,
-    strategy_id: str = "primary_live_candidate_v1_vol_managed",
-    defensive_symbols: Iterable[str] = ("SHY", "BIL", "CASH"),
-    gate_symbol: str = "SPY",
-    gate_sma_window: int = 200,
-    max_drawdown: float = -0.20,
+    strategy_id: str,
+    defensive_symbols: Iterable[str],
+    gate_symbol: str,
+    gate_sma_window: int,
+    max_drawdown: float,
 ) -> ShadowStrategyTemplate:
     normalized_defensives = _normalize_symbols(defensive_symbols)
     if "CASH" not in normalized_defensives:
@@ -176,6 +176,40 @@ def build_primary_live_candidate_v1_vol_managed_shadow_template(
                 allowed_defensive_symbols=normalized_defensives,
             ),
         ),
+    )
+
+
+def build_primary_live_candidate_v1_vol_managed_shadow_template(
+    *,
+    strategy_id: str = "primary_live_candidate_v1_vol_managed",
+    defensive_symbols: Iterable[str] = ("SHY", "BIL", "CASH"),
+    gate_symbol: str = "SPY",
+    gate_sma_window: int = 200,
+    max_drawdown: float = -0.20,
+) -> ShadowStrategyTemplate:
+    return _build_primary_live_candidate_v1_near_path_shadow_template(
+        strategy_id=strategy_id,
+        defensive_symbols=defensive_symbols,
+        gate_symbol=gate_symbol,
+        gate_sma_window=gate_sma_window,
+        max_drawdown=max_drawdown,
+    )
+
+
+def build_primary_live_candidate_v1_etf_rotation_shadow_template(
+    *,
+    strategy_id: str = "primary_live_candidate_v1_etf_rotation",
+    defensive_symbols: Iterable[str] = ("BIL", "CASH"),
+    gate_symbol: str = "SPY",
+    gate_sma_window: int = 200,
+    max_drawdown: float = -0.20,
+) -> ShadowStrategyTemplate:
+    return _build_primary_live_candidate_v1_near_path_shadow_template(
+        strategy_id=strategy_id,
+        defensive_symbols=defensive_symbols,
+        gate_symbol=gate_symbol,
+        gate_sma_window=gate_sma_window,
+        max_drawdown=max_drawdown,
     )
 
 
