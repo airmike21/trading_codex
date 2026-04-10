@@ -10,7 +10,7 @@ Use it for current project state, active slice status, blockers, warnings, and e
 - Checkpoint reference: use the promoted commit containing this file as the resume anchor; resolve the current `origin/master` SHA from git when that exact value matters
 - Active Builder branch: none recorded in this live checkpoint
 - Active slice base SHA: n/a until the next active Builder slice is opened from this checkpoint state
-- Workspace alignment note: Builder and Reviewer are still parked on the completed Brain-in-Codex cutover state, so neither workspace is itself the active current slice from repo truth
+- Workspace alignment note: Builder and Reviewer checkout positions are not themselves authoritative live state; verify current slice/review alignment from explicit command output in the active workspaces rather than inferring it from this checkpoint
 
 ## Program Position
 
