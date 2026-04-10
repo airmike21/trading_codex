@@ -7,9 +7,9 @@ Use it for current project state, active slice status, blockers, warnings, and e
 
 ## Resume Snapshot
 
-- Current promoted SHA: `d6e1495510bd830285c611e5fbf726c765645f2d` (`origin/master` and promoted repo truth represented by this checkpoint)
+- Checkpoint reference: use the promoted commit containing this file as the resume anchor; resolve the current `origin/master` SHA from git when that exact value matters
 - Active Builder branch: none recorded in this live checkpoint
-- Active slice base SHA: n/a until the next active Builder slice is opened from promoted repo truth
+- Active slice base SHA: n/a until the next active Builder slice is opened from this checkpoint state
 - Workspace alignment note: Builder and Reviewer are still parked on the completed Brain-in-Codex cutover state, so neither workspace is itself the active current slice from repo truth
 
 ## Program Position
