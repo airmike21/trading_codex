@@ -14,6 +14,7 @@ Repo-state rules
 - Prefer the more specific durable repo doc when durable docs conflict on policy.
 - Treat docs/PROJECT_STATE.md as the only live checkpoint for current state, blockers, and expected next move.
 - Do not duplicate live project state across durable docs or AGENTS files.
+- In promoted control-plane docs, do not use self-invalidating live-state wording that becomes false immediately after promotion; exact SHAs are allowed only when clearly labeled as historical anchors rather than current live-state claims.
 
 Workflow rules
 - Use docs/WORKFLOW.md for role boundaries.

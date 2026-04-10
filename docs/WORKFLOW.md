@@ -1,6 +1,6 @@
 # Workflow
 
-Last updated: 2026-04-06
+Last updated: 2026-04-10
 
 This document defines the strict four-role workflow for Trading Codex changes and promotions.
 Use it with `docs/PROMOTION_RUNBOOK.md`.
@@ -14,6 +14,7 @@ Current project state lives in `docs/PROJECT_STATE.md`.
 - Tell Human which commands to run, in order.
 - Verify the command output.
 - Verify Builder's exact file list before any promotion.
+- Reject promotion guidance when promoted control-plane wording would become false immediately after promotion; require promotion-stable wording or clearly labeled historical anchors instead of live-state claims that expire on merge.
 - Refuse promotion when file scope, validation, review freshness, base ref, or environment is wrong.
 
 ### Builder
@@ -28,6 +29,7 @@ Current project state lives in `docs/PROJECT_STATE.md`.
 
 - Validate Builder's changes when review is required.
 - Approve or reject the exact Builder commit under review.
+- Reject self-invalidating live-state wording in promoted control-plane docs; exact SHAs are acceptable only when clearly labeled as historical anchors.
 - Treat review as stale if Builder changes the commit after review.
 
 ### Human
