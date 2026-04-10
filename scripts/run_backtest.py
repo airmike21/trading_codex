@@ -18,8 +18,10 @@ from trading_codex.backtest.next_rebalance import compute_next_rebalance_date
 from trading_codex.backtest.shadow_artifacts import write_shadow_review_artifacts
 from trading_codex.data import LocalStore
 from trading_codex.shadow import (
+    PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID,
     PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
     build_shadow_template_for_strategy,
+    primary_live_candidate_v1_etf_rotation_shadow_config,
     primary_live_candidate_v1_vol_managed_shadow_config,
 )
 from trading_codex.strategies.dual_mom_vol10_cash import DualMomentumVol10CashStrategy
@@ -101,6 +103,7 @@ def parse_args() -> argparse.Namespace:
             "xsmom_v1",
             "dual_mom_v1",
             "dual_mom_vol10_cash",
+            PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID,
             PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
             "valmom_v1",
         ],
@@ -477,6 +480,16 @@ def parse_args() -> argparse.Namespace:
             args.vol_lookback = shadow_defaults.vol_lookback
         if not _cli_flag_provided(raw_argv, "--vol-update"):
             args.vol_update = shadow_defaults.vol_update
+    if args.strategy == PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID:
+        shadow_defaults = primary_live_candidate_v1_etf_rotation_shadow_config()
+        if not _cli_flag_provided(raw_argv, "--xs-lookback"):
+            args.xs_lookback = shadow_defaults.momentum_lookback
+        if not _cli_flag_provided(raw_argv, "--xs-top-n"):
+            args.xs_top_n = shadow_defaults.top_n
+        if not _cli_flag_provided(raw_argv, "--xs-rebalance"):
+            args.xs_rebalance = str(shadow_defaults.rebalance)
+        if not _cli_flag_provided(raw_argv, "--defensive"):
+            args.defensive = shadow_defaults.defensive_symbol
     if args.strategy == "dual_mom_vol10_cash":
         if vol_update_requested:
             parser.error(
@@ -1180,6 +1193,7 @@ def maybe_write_trades(
         "risk_parity_erc",
         "tsmom_v1",
         "xsmom_v1",
+        PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID,
         "dual_mom_v1",
         PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
         "dual_mom_vol10_cash",
@@ -2092,19 +2106,46 @@ def main() -> None:
         )
         plot_label = "tsmom_v1"
         rebalance_cadence = args.ts_rebalance
-    elif args.strategy == "xsmom_v1":
-        defensive_symbol = _normalize_defensive_symbol(args.defensive)
-        symbols_to_load = args.symbols + ([defensive_symbol] if defensive_symbol else [])
+    elif args.strategy in {"xsmom_v1", PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID}:
+        if args.strategy == PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID:
+            shadow_config = primary_live_candidate_v1_etf_rotation_shadow_config(
+                symbols=args.symbols,
+                defensive_symbol=args.defensive,
+                momentum_lookback=args.xs_lookback,
+                top_n=args.xs_top_n,
+                rebalance=args.xs_rebalance,
+                vol_target=args.vol_target,
+                vol_lookback=args.vol_lookback,
+                vol_min=args.min_leverage,
+                vol_max=args.max_leverage,
+                vol_update=args.vol_update,
+            )
+            risk_symbols = list(shadow_config.risk_symbols)
+            defensive_symbol = shadow_config.defensive_symbol
+            args.xs_lookback = shadow_config.momentum_lookback
+            args.xs_top_n = shadow_config.top_n
+            args.xs_rebalance = str(shadow_config.rebalance)
+            args.defensive = shadow_config.defensive_symbol
+            args.vol_target = shadow_config.vol_target
+            args.vol_lookback = shadow_config.vol_lookback
+            args.min_leverage = shadow_config.vol_min
+            args.max_leverage = shadow_config.vol_max
+            args.vol_update = shadow_config.vol_update
+            plot_label = PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID
+        else:
+            risk_symbols = list(dict.fromkeys(args.symbols))
+            defensive_symbol = _normalize_defensive_symbol(args.defensive)
+            plot_label = "xsmom_v1"
+        symbols_to_load = risk_symbols + ([defensive_symbol] if defensive_symbol else [])
         symbols_to_load = list(dict.fromkeys(symbols_to_load))
         bars = load_multi_asset_bars(store, symbols_to_load, args.start, args.end)
         strategy = CrossSectionalMomentumV1Strategy(
-            symbols=args.symbols,
+            symbols=risk_symbols,
             lookback=args.xs_lookback,
             top_n=args.xs_top_n,
             rebalance=args.xs_rebalance,
             defensive=defensive_symbol,
         )
-        plot_label = "xsmom_v1"
         rebalance_cadence = args.xs_rebalance
     elif args.strategy == "dual_mom_v1":
         risk_symbols = list(dict.fromkeys(args.symbols))
@@ -2233,6 +2274,7 @@ def main() -> None:
         "risk_parity_erc",
         "tsmom_v1",
         "xsmom_v1",
+        PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID,
         "dual_mom_v1",
         PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID,
         "dual_mom_vol10_cash",
@@ -2290,6 +2332,8 @@ def main() -> None:
             next_rebalance = args.ts_rebalance
         elif args.strategy == "xsmom_v1":
             next_rebalance = args.xs_rebalance
+        elif args.strategy == PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID:
+            next_rebalance = args.xs_rebalance
         elif args.strategy == "dual_mom_v1":
             next_rebalance = args.dm_rebalance
         elif args.strategy == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID:
@@ -2331,6 +2375,8 @@ def main() -> None:
             defensive_symbol=(
                 args.dm_defensive_symbol
                 if args.strategy == PRIMARY_LIVE_CANDIDATE_V1_VOL_MANAGED_ID
+                else args.defensive
+                if args.strategy == PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID
                 else None
             ),
             leverage=latest_leverage,
@@ -2511,6 +2557,19 @@ def main() -> None:
             realized_vol_at_last_update=realized_vol_at_last_update,
         )
     elif args.strategy == "xsmom_v1":
+        maybe_print_latest_dual(
+            bars,
+            result.weights,  # type: ignore[arg-type]
+            rebalance_cadence,
+            print_latest_enabled,
+            vol_target=args.vol_target,
+            vol_update=args.vol_update,
+            latest_realized_vol=latest_realized_vol,
+            latest_leverage=latest_leverage,
+            leverage_last_update_date=leverage_last_update_date,
+            realized_vol_at_last_update=realized_vol_at_last_update,
+        )
+    elif args.strategy == PRIMARY_LIVE_CANDIDATE_V1_ETF_ROTATION_ID:
         maybe_print_latest_dual(
             bars,
             result.weights,  # type: ignore[arg-type]

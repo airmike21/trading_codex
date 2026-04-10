@@ -15,6 +15,7 @@ from trading_codex.shadow import (
     PositionCapConfig,
     RiskInvariantConfig,
     TurnoverCapConfig,
+    build_primary_live_candidate_v1_etf_rotation_shadow_template,
     build_primary_live_candidate_v1_vol_managed_shadow_template,
     evaluate_risk_invariants,
 )
@@ -203,6 +204,53 @@ def test_primary_live_candidate_shadow_template_blocks_when_risk_stays_on_during
     assert "regime_guardrail_breach" in blocking_reasons
     assert outputs.reports["shadow_review_bundle"]["shadow_review_state"] == "blocked"
     assert outputs.reports["review_summary"]["automation_decision"] == "block"
+
+
+def test_primary_live_candidate_etf_rotation_shadow_template_standardizes_outputs_for_clean_near_path_case() -> None:
+    end = pd.Timestamp.now().normalize()
+    index = pd.bdate_range(end=end, periods=260)
+    spy_close = _price_series(index, np.full(len(index), 0.0010), 100.0)
+    bil_close = _price_series(index, np.full(len(index), 0.0001), 100.0)
+    bars = _panel_from_prices({"SPY": spy_close, "BIL": bil_close})
+
+    weights = pd.DataFrame({"SPY": 1.0, "BIL": 0.0}, index=index, dtype=float)
+    turnover = pd.Series(0.0, index=index)
+    equity = pd.Series(np.linspace(1.0, 1.35, len(index)), index=index)
+    latest_price = float(spy_close.iloc[-1])
+    target_shares = int(10_000.0 // latest_price)
+
+    outputs = build_primary_live_candidate_v1_etf_rotation_shadow_template(
+        defensive_symbols=("BIL", "CASH")
+    ).build_outputs(
+        bars=bars,
+        weights=weights,
+        turnover=turnover,
+        equity=equity,
+        next_action_payload={
+            "date": index[-1].date().isoformat(),
+            "strategy": "xsmom_v1_shadow_impl",
+            "action": "HOLD",
+            "symbol": "SPY",
+            "price": latest_price,
+            "target_shares": target_shares,
+            "resize_prev_shares": None,
+            "resize_new_shares": None,
+            "next_rebalance": index[-1].date().isoformat(),
+            "event_id": "shadow-event-etf-rotation-clean",
+        },
+        metrics_summary={"gross_cagr": 0.12, "net_cagr": 0.10, "gross_sharpe": 1.0, "net_sharpe": 0.9},
+        cost_assumptions={"slippage_bps": 5.0, "commission_per_trade": 0.0, "commission_bps": 0.0},
+    )
+
+    assert outputs.signal["shadow_strategy_id"] == "primary_live_candidate_v1_etf_rotation"
+    assert outputs.target_weights["current"]["SPY"] == 1.0
+    assert outputs.target_weights["active_symbols"] == ["SPY"]
+    assert outputs.diagnostics["risk_invariants"]["blocking_reasons"] == []
+    assert outputs.diagnostics["risk_invariants"]["checks"]["regime_guardrails"]["status"] == "pass"
+    assert outputs.diagnostics["risk_invariants"]["checks"]["drawdown_kill_switch"]["status"] == "pass"
+    assert outputs.reports["shadow_review_bundle"]["strategy"] == "primary_live_candidate_v1_etf_rotation"
+    assert outputs.reports["review_summary"]["automation_decision"] == "allow"
+    assert "## Risk Invariants" in outputs.reports["shadow_review_markdown"]
 
 
 def test_run_backtest_shadow_artifacts_include_standardized_shadow_template_fields(

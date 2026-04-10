@@ -363,6 +363,27 @@ def test_primary_live_candidate_vol_managed_cli_defaults_parse(monkeypatch):
     assert args.vol_update == "rebalance"
 
 
+def test_primary_live_candidate_etf_rotation_cli_defaults_parse(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_backtest.py",
+            "--strategy",
+            "primary_live_candidate_v1_etf_rotation",
+        ],
+    )
+
+    args = parse_args()
+    assert args.strategy == "primary_live_candidate_v1_etf_rotation"
+    assert args.symbols == ["SPY", "QQQ", "IWM", "EFA"]
+    assert args.xs_lookback == 63
+    assert args.xs_top_n == 1
+    assert args.xs_rebalance == "M"
+    assert args.defensive == "BIL"
+    assert args.vol_target is None
+
+
 def test_valmom_v1_cli_args_parse(monkeypatch):
     monkeypatch.setattr(
         sys,
