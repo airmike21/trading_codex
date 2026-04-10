@@ -1,22 +1,22 @@
 # Project State
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 This is the single live checkpoint for Trading Codex.
 Use it for current project state, active slice status, blockers, warnings, and expected next move.
 
 ## Resume Snapshot
 
-- Current promoted SHA: `44696d94c9b72508956052e830eee1694a585894` (`origin/master` and runtime SHA represented by this checkpoint)
-- Active Builder branch: none recorded on promoted `master`
-- Active slice base SHA: n/a on promoted `master`
-- Reviewer aligned to Builder: yes for promoted content
+- Current promoted SHA: `d6e1495510bd830285c611e5fbf726c765645f2d` (`origin/master` and promoted repo truth represented by this checkpoint)
+- Active Builder branch: none recorded in this live checkpoint
+- Active slice base SHA: n/a until the next active Builder slice is opened from promoted repo truth
+- Workspace alignment note: Builder and Reviewer are still parked on the completed Brain-in-Codex cutover state, so neither workspace is itself the active current slice from repo truth
 
 ## Program Position
 
 - Current stage: Stage 2 in progress; Stage 1 complete; live not authorized
 - Current objective: stay in Stage 2 forward-evidence accumulation / hold for the approved IBKR PaperTrader lane for `primary_live_candidate_v1`; re-enter bounded Stage 2 shadow-only work in parallel by human override while keeping it local-only, manual, and outside the approved IBKR PaperTrader lane; keep the bounded Stage 2 shadow daily-ops lane armed to the explicitly reopened target `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed` so the installed scheduler refreshes retained evidence automatically in that same local-only shadow lane while the official `current_decision` remains manual; record `primary_live_candidate_v1_etf_rotation` as the next approved bounded shadow candidate without claiming it is already opened/configured in tracked runtime live state
-- Last completed milestone: the bounded Stage 2 shadow daily-ops runtime slice promoted at `44696d94c9b72508956052e830eee1694a585894` now supports schema-version-2 `targets` for multiple explicitly opened/configured local-only shadow targets, while the tracked repo config remains intentionally armed to the reopened `primary_live_candidate_v1` vs `primary_live_candidate_v1_vol_managed` target so scheduled runs refresh retained evidence there instead of producing an explicit retained no-op
+- Last completed milestone: the Brain-in-Codex cutover pack is now promoted at `d6e1495510bd830285c611e5fbf726c765645f2d`, adding the repo-root Codex startup/standing instructions plus the first-pass cutover checklist while leaving the Stage 2 forward-evidence hold, the reopened explicit shadow pair, and the bounded shadow-only queue unchanged in repo truth
 - Runtime / lane status:
   - the approved primary IBKR PaperTrader operational acceptance path is in place and remains the only approved Stage 2 persistent paper-execution lane
   - Stage 2 is not exited because forward evidence is still accumulating over time
